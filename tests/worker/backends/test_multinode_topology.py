@@ -1291,8 +1291,8 @@ async def test_manual_dp_candidate_preserves_partial_global_world(
         AsyncMock(return_value=0),
     )
     monkeypatch.setattr(
-        'gpustack.policies.candidate_selectors.vllm_resource_fit_selector.estimate_offloaded_lookup_bytes',
-        lambda *_: 0,
+        'gpustack.policies.candidate_selectors.vllm_resource_fit_selector.estimate_offloaded_lookup_bytes_from_weights',
+        AsyncMock(return_value=0),
     )
     selector.should_skip_candidate_func = lambda fn: False
     candidate = SimpleNamespace(

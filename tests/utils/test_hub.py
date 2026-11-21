@@ -1,6 +1,13 @@
+import io
+import json
+from types import SimpleNamespace
+
+import httpx2
 import pytest
+import requests
 from tenacity import retry, stop_after_attempt, wait_fixed
 from transformers import PretrainedConfig
+from urllib3.response import HTTPResponse
 from gpustack.utils import hub, model_config
 from gpustack.utils.hub import (
     FileEntry,
@@ -10,6 +17,7 @@ from gpustack.utils.hub import (
     match_hugging_face_files,
     match_model_scope_file_paths,
     read_repo_file_content,
+    read_safetensors_tensors,
 )
 from gpustack.worker.downloaders import select_model_scope_file_info
 from gpustack.schemas.models import (
@@ -415,3 +423,66 @@ def test_match_file_paths_in_subdir_and_mmproj_at_root():
         extra_file_path="*mmproj*.gguf",
     )
     assert ms_matched == expected
+
+
+TABLE = {"dtype": "I8", "data_offsets": [0, 8]}
+SHARDS = {
+    "model-1.safetensors": {"model.layers.1.engram.embed.weight": TABLE},
+    "model-2.safetensors": {"__metadata__": {}, "model.layers.2.mlp.weight": TABLE},
+    "consolidated.safetensors": {"model.layers.3.engram.embed.weight": TABLE},
+}
+
+
+def shard_range(name, start, end):
+    raw = json.dumps(SHARDS[name]).encode()
+    return (len(raw).to_bytes(8, "little") + raw)[start:end]
+
+
+@pytest.mark.parametrize(
+    "source", [SourceEnum.HUGGING_FACE, SourceEnum.MODEL_SCOPE, "offline"]
+)
+def test_read_safetensors_tensors(config, monkeypatch, source):
+    """Root shard headers are read by byte range and cached by file listing."""
+    reads = []
+
+    def cat_file(path, start, end, cache_type):
+        if source == "offline":
+            raise httpx2.ConnectError("unreachable")
+        reads.append(path)
+        return shard_range(path.split("/")[-1], start, end)
+
+    def get(url, headers, **_):
+        start, end = map(int, headers["Range"].removeprefix("bytes=").split("-"))
+        reads.append(url)
+        response = requests.Response()
+        response.status_code = 206
+        response.raw = HTTPResponse(
+            io.BytesIO(shard_range(url.split("FilePath=")[1], start, end + 1)),
+            preload_content=False,
+        )
+        return response
+
+    monkeypatch.setattr(
+        hub, "HfFileSystem", lambda token: SimpleNamespace(cat_file=cat_file)
+    )
+    monkeypatch.setattr(hub, "HubApi", lambda: SimpleNamespace(get_cookies=dict))
+    monkeypatch.setattr(hub.requests, "get", get)
+    monkeypatch.setattr(
+        hub, "list_repo", lambda *_, **__: [{"name": n, "size": 1} for n in SHARDS]
+    )
+    if source == SourceEnum.MODEL_SCOPE:
+        model = Model(source=source, model_scope_model_id="org/ms")
+    else:
+        model = Model(
+            source=SourceEnum.HUGGING_FACE, huggingface_repo_id=f"org/{source}"
+        )
+    if source == "offline":
+        with pytest.raises(ConnectionError, match="unreachable"):
+            read_safetensors_tensors(model, ".engram.embed.")
+        return
+    expected = {"model.layers.1.engram.embed.weight": TABLE}
+    assert read_safetensors_tensors(model, ".engram.embed.") == expected
+    assert len(reads) == 4
+    assert not any("consolidated" in read for read in reads)
+    assert read_safetensors_tensors(model, ".engram.embed.") == expected
+    assert len(reads) == 4

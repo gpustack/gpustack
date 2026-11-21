@@ -1,5 +1,6 @@
 """Backend-aware accounting for offloaded PLE and Engram tables."""
 
+import asyncio
 import json
 import logging
 from typing import Any, Dict, List, Literal, Optional
@@ -15,6 +16,7 @@ from gpustack.utils.command import (
     find_last_parameter,
     flatten_to_argv,
 )
+from gpustack.utils.hub import read_safetensors_tensors
 
 logger = logging.getLogger(__name__)
 LookupTableKind = Literal["ple", "engram"]
@@ -24,6 +26,17 @@ _LOOKUP_ARCHITECTURES = {
     "Qwen4ExpForCausalLM": "ple",
     "Qwen4ExpForConditionalGeneration": "ple",
 }
+# Checkpoint module names of the tables, matched with the parent separator.
+_LOOKUP_TENSOR_MARKERS = {
+    "engram": ".engram.embed.",
+    "ple": ".ple.ple_embedding.ngram_embedding.",
+}
+_FLOAT_TENSOR_BYTES = {"F16": 2, "BF16": 2, "F32": 4}
+WEIGHT_HEADER_TIMEOUT = 15
+
+
+class _MissingTableMetadata(ValueError):
+    """The configuration lacks the table dimensions or storage precision."""
 
 
 def _backend_version(model: Model) -> Optional[Version]:
@@ -209,7 +222,9 @@ def _vllm_cpu_offload_enabled(model: Model) -> bool:
     return False
 
 
-def estimate_offloaded_lookup_bytes(model: Model, config: Any) -> int:
+def estimate_offloaded_lookup_bytes(
+    model: Model, config: Any, raise_missing_metadata: bool = False
+) -> int:
     """Estimate table bytes from already-loaded architecture and precision metadata.
 
     Unsupported formats or incomplete dimensions retain the full-weight VRAM
@@ -231,6 +246,7 @@ def estimate_offloaded_lookup_bytes(model: Model, config: Any) -> int:
     Args:
         model: Deployment settings, including offload and resource overrides.
         config: Loaded model configuration as a dictionary or attribute object.
+        raise_missing_metadata: Raise if the table metadata is absent.
 
     Returns:
         Bytes for one full, unreplicated set of lookup tables.
@@ -252,8 +268,8 @@ def estimate_offloaded_lookup_bytes(model: Model, config: Any) -> int:
             quantization = _get(config, "quantization_config") or {}
         if not isinstance(quantization, dict):
             raise ValueError("Unsupported quantization metadata")
-        _validate_runtime_quantization(model, quantization)
         _validate_custom_table_format(model, config, text_config, quantization)
+        _validate_runtime_quantization(model, quantization)
         if kind == "engram":
             if (
                 get_backend(model) == BackendEnum.SGLANG
@@ -262,13 +278,59 @@ def estimate_offloaded_lookup_bytes(model: Model, config: Any) -> int:
                 raise ValueError("Unsupported SGLang Engram precision")
             return _estimate_engram(text_config, quantization)
         return _estimate_ple(model, config, text_config, quantization)
-    except (ValueError, TypeError, KeyError):
+    except (ValueError, TypeError, KeyError) as e:
+        if raise_missing_metadata and isinstance(e, _MissingTableMetadata):
+            raise
         logger.warning(
             "Cannot estimate offloaded lookup tables from the configuration for %s; "
             "using the full weight size for VRAM; table RAM is not estimated. "
             "Set GPUSTACK_MODEL_VRAM_CLAIM "
             "and GPUSTACK_MODEL_RAM_CLAIM to override the estimate.",
             model.name,
+        )
+        return 0
+
+
+async def estimate_offloaded_lookup_bytes_from_weights(
+    model: Model, config: Any, token: Optional[str] = None
+) -> int:
+    """Estimate table bytes, reading safetensors headers when the config cannot.
+
+    Tables of checkpoints whose configuration lacks their dimensions or
+    precision, such as Ascend ModelSlim quantizations, are the stored tensor
+    sizes, with floating-point tables rescaled to an explicit --dtype. The
+    configuration goes first as it models load-time conversions without reads.
+    """
+    try:
+        return estimate_offloaded_lookup_bytes(model, config, True)
+    except _MissingTableMetadata:
+        kind = get_offloaded_lookup_table_kind(
+            model, _get(config, "architectures"), config
+        )
+    dtype = (find_last_parameter(model.backend_parameters, ["dtype"]) or "auto").lower()
+    try:
+        # A timed-out read keeps running and caches its result for later passes.
+        tensors = await asyncio.wait_for(
+            asyncio.to_thread(
+                read_safetensors_tensors, model, _LOOKUP_TENSOR_MARKERS[kind], token
+            ),
+            timeout=WEIGHT_HEADER_TIMEOUT,
+        )
+        total = 0
+        for tensor in tensors.values():
+            start, end = tensor["data_offsets"]
+            element = _FLOAT_TENSOR_BYTES.get(tensor["dtype"])
+            if element and dtype != "auto":
+                total += (end - start) // element * _dtype_bytes(dtype)
+            else:
+                total += end - start
+        return total
+    except (asyncio.TimeoutError, OSError, ValueError, TypeError, KeyError) as e:
+        logger.warning(
+            "Cannot read lookup table sizes from the weights of %s: %r; "
+            "using the full weight size for VRAM.",
+            model.name,
+            e,
         )
         return 0
 
@@ -299,10 +361,19 @@ def _validate_runtime_quantization(model: Model, quantization: Dict) -> None:
     if quant is not None and get_backend(model) == BackendEnum.VLLM:
         quant = quant.lower()
     if quant is not None and quant != quantization.get("quant_method"):
+        # Ascend ModelSlim checkpoints can omit the quantization metadata.
+        if quant == "ascend" and "quant_method" not in quantization:
+            raise _MissingTableMetadata("Missing Ascend quantization metadata")
         raise ValueError("Runtime quantization differs from checkpoint metadata")
 
 
 def _estimate_engram(config: Any, quantization: Dict) -> int:
+    # Ascend quantization metadata does not describe the table precision.
+    if quantization.get("quant_method") == "ascend" or any(
+        _get(config, key) is None
+        for key in ("engram_layer_ids", "engram_num_embeddings", "engram_head_dim")
+    ):
+        raise _MissingTableMetadata("Missing Engram table dimensions or precision")
     layers = _layer_ids(config, "engram_layer_ids")
     if not layers:
         return 0
@@ -370,6 +441,12 @@ def _engram_row_bytes(quantization: Dict, layers: List[int], dim: int) -> int:
 
 
 def _estimate_ple(model: Model, root: Any, config: Any, quantization: Dict) -> int:
+    dimensions = ("ple_layer_ids", "ngram_vocab_size_base", "ple_embed_dim")
+    if quantization.get("quant_method") == "ascend" or any(
+        _get(config, key) is None
+        for key in (*dimensions, "ngram_size", "heads_per_ngram")
+    ):
+        raise _MissingTableMetadata("Missing PLE table dimensions or precision")
     layers = _layer_ids(config, "ple_layer_ids")
     if not layers:
         return 0

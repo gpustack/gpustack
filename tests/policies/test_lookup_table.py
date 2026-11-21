@@ -2,6 +2,7 @@ from types import SimpleNamespace
 from copy import deepcopy
 from itertools import combinations
 import json
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -13,8 +14,10 @@ from gpustack.policies.candidate_selectors.vllm_resource_fit_selector import (
 from gpustack.policies.candidate_selectors.sglang_resource_fit_selector import (
     SGLangResourceFitSelector,
 )
+from gpustack.policies import lookup_table
 from gpustack.policies.lookup_table import (
     estimate_offloaded_lookup_bytes,
+    estimate_offloaded_lookup_bytes_from_weights,
     get_offloaded_lookup_table_kind,
 )
 from gpustack.policies.resource_view import ResourceView
@@ -2534,3 +2537,130 @@ async def test_sglang_lookup_resource_overrides_are_independent(config, ram, vra
     assert selector._vram_claim == (
         int((20 * GIB - TABLE_BYTES) * 1.2 + 2 * GIB) if vram is None else vram
     )
+
+
+DEEPSEEK_ASCEND = {
+    "architectures": ["DeepseekV41ForCausalLM"],
+    "quantization_config": {"quant_method": "ascend"},
+}
+QWEN_ASCEND = {
+    "architectures": ["Qwen4ExpForCausalLM"],
+    "dtype": "bfloat16",
+    **{key: 8 for key in ("ngram_vocab_size_base", "ple_embed_dim", "ngram_size")},
+    "ple_layer_ids": [1],
+    "heads_per_ngram": 1,
+}
+# Weight size of the W4A8 checkpoint in the issue.
+ASCEND_WEIGHTS = int(492.34 * GIB)
+ENGRAM = {
+    "model.layers.1.engram.embed.weight": {"dtype": "I8", "data_offsets": [0, 183]},
+    "model.layers.1.engram.embed.scale": {"dtype": "U8", "data_offsets": [9, 14]},
+}
+PLE_TABLE = "model.layers.0.ple.ple_embedding.ngram_embedding.weight"
+PLE = {PLE_TABLE: {"dtype": "BF16", "data_offsets": [0, 95]}}
+VLLM_DEEPSEEK = ["--quantization=ascend", '--engram-config={"cpu_offload":true}']
+QWEN_ARGS = ["--quantization=ascend"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "backend, checkpoint, args, tensors, table_gib",
+    [
+        (BackendEnum.VLLM, DEEPSEEK_ASCEND, VLLM_DEEPSEEK, ENGRAM, 188),
+        (BackendEnum.VLLM, QWEN_ASCEND, QWEN_ARGS, PLE, 95),
+        (BackendEnum.VLLM, QWEN_ASCEND, [*QWEN_ARGS, "--dtype=float32"], PLE, 190),
+        (BackendEnum.SGLANG, QWEN_ASCEND, QWEN_ARGS, PLE, 95),
+    ],
+    ids=["vllm_deepseek_w4a8", "vllm_qwen", "vllm_qwen_float32", "sglang_qwen"],
+)
+async def test_ascend_lookup_tables_move_from_vram_to_ram(
+    config, backend, checkpoint, args, tensors, table_gib, caplog
+):
+    """Selectors size Ascend tables missing from the config from weight headers."""
+    m = model(backend_version="0.30.0", backend_parameters=args)
+    m.backend = backend
+    selector_class = (
+        SGLangResourceFitSelector
+        if backend == BackendEnum.SGLANG
+        else VLLMResourceFitSelector
+    )
+    selector = selector_class(config, m, [], resource_view=ResourceView([]))
+    tensors = {
+        name: {**t, "data_offsets": [o * GIB for o in t["data_offsets"]]}
+        for name, t in tensors.items()
+    }
+    with (
+        patch(
+            "gpustack.policies.candidate_selectors.base_candidate_selector.get_pretrained_config_with_workers",
+            new=AsyncMock(return_value=safe_pretrained_config_from_dict(checkpoint)),
+        ),
+        patch(
+            "gpustack.policies.utils.get_model_weight_size",
+            return_value=ASCEND_WEIGHTS,
+        ),
+        patch.object(
+            lookup_table, "read_safetensors_tensors", return_value=tensors
+        ) as read,
+    ):
+        await selector.select_candidates([linux_nvidia_1_4090_24gx1()])
+    read.assert_called_once()
+    table = table_gib * GIB
+    assert selector._vram_claim == int((ASCEND_WEIGHTS - table) * 1.2 + 2 * GIB)
+    assert selector._ram_claim == table
+    assert "Cannot estimate offloaded lookup tables" not in caplog.text
+
+
+SGLANG_MXFP4 = {"quant_method": "ascend", "engram_embed_quant": "mxfp4"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "checkpoint, args, backend",
+    [
+        (DEEPSEEK_ASCEND, ["--quantization=awq"], BackendEnum.VLLM),
+        ({**QWEN_ASCEND, "engram_quant": "nvfp4"}, QWEN_ARGS, BackendEnum.VLLM),
+        (
+            {**DEEPSEEK_ASCEND, "quantization_config": SGLANG_MXFP4},
+            ["--quantization=ascend", '--engram-config={"placement":"cpu"}'],
+            BackendEnum.SGLANG,
+        ),
+    ],
+    ids=["runtime_quantization_mismatch", "custom_table_format", "sglang_precision"],
+)
+async def test_rejected_lookup_formats_skip_weight_headers(
+    caplog, checkpoint, args, backend
+):
+    """Unsupported table formats keep the full weight size without reading headers."""
+    m = model(backend_version="0.30.0", backend_parameters=args)
+    m.backend = backend
+    with patch.object(lookup_table, "read_safetensors_tensors") as read:
+        assert await estimate_offloaded_lookup_bytes_from_weights(m, checkpoint) == 0
+    read.assert_not_called()
+    assert "using the full weight size for VRAM" in caplog.text
+
+
+def slow_read(*_):
+    time.sleep(0.2)
+    return {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "read, logged",
+    [
+        (FileNotFoundError("no weights"), "FileNotFoundError"),
+        (slow_read, "TimeoutError"),
+    ],
+    ids=["io", "timeout"],
+)
+async def test_unreadable_weight_headers_keep_full_weight_size(caplog, read, logged):
+    """Failed or timed-out header reads keep the full weight size and say why."""
+    m = model(backend_version="0.30.0", backend_parameters=VLLM_DEEPSEEK)
+    with (
+        patch.object(lookup_table, "WEIGHT_HEADER_TIMEOUT", 0.01),
+        patch.object(lookup_table, "read_safetensors_tensors", side_effect=read),
+    ):
+        assert (
+            await estimate_offloaded_lookup_bytes_from_weights(m, DEEPSEEK_ASCEND) == 0
+        )
+    assert f"weights of lookup: {logged}" in caplog.text
