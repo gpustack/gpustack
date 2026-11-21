@@ -31,7 +31,7 @@ from gpustack.gateway.utils import (
 )
 from gpustack.routes.plugins import RouteGatewayEntry
 from gpustack.routes.plugins.lb.config import LB_CONTEXT_CR_NAME
-from gpustack.utils.network import is_ipaddress
+from gpustack.utils.network import is_ipaddress, join_host_port
 
 logger = logging.getLogger(__name__)
 
@@ -250,18 +250,12 @@ def _redis_registry_from_parsed(
         # Verified against a live gateway's cluster dump; writing 6379
         # here points the plugin at a cluster that does not exist.
         port = 80
-        host = parsed.hostname
-        if ":" in host:
-            # An IPv6 literal: urlparse strips the brackets, but the
-            # host:port domain needs them back to tell the literal
-            # apart from the port.
-            host = f"[{host}]"
         # host:port only — netloc would drag any userinfo along into the
         # domain, and credentials belong in the plugin config, not in the
         # Envoy cluster address. A static registry encodes the real
         # backend port in the domain, so an omitted port means Redis's
         # own default, never 80.
-        domain = f"{host}:{url_port or 6379}"
+        domain = join_host_port(parsed.hostname, url_port or 6379)
     else:
         # The standard port when the URL omits it — None would propagate
         # into the registry and the plugin's service_port.

@@ -37,6 +37,11 @@ from gpustack.utils.model_instance_workers import (
     model_instance_metrics_source_inventory,
     model_instance_metrics_placements,
 )
+from gpustack.utils.network import (
+    format_bind_address,
+    join_host_port,
+    resolve_bind_host,
+)
 import logging
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -69,6 +74,7 @@ class MetricExporter(Collector):
     def __init__(self, cfg: Config):
         self._cache_metrics = ([], 0.0)
         self._port = cfg.metrics_port
+        self._host = getattr(cfg, "host", None)
 
     def collect(self):
         metrics, collected_at = self._cache_metrics
@@ -536,14 +542,16 @@ class MetricExporter(Collector):
 
             config = uvicorn.Config(
                 app,
-                host="0.0.0.0",
+                host=resolve_bind_host(self._host),
                 port=self._port,
                 access_log=False,
                 log_level="error",
             )
 
             setup_logging()
-            logger.info(f"Serving metric exporter on {config.host}:{config.port}.")
+            logger.info(
+                f"Serving metric exporter on {format_bind_address(config.host, config.port)}."
+            )
             server = uvicorn.Server(config)
             await server.serve()
         except Exception as e:
@@ -570,7 +578,9 @@ async def _metrics_targets(session: AsyncSession, is_proxy: bool):
             key = (worker.cluster_id, worker.cluster.name)
             if key not in cluster_workers:
                 cluster_workers[key] = []
-            cluster_workers[key].append(f"{preferred_address}:{worker.metrics_port}")
+            cluster_workers[key].append(
+                join_host_port(preferred_address, worker.metrics_port)
+            )
     for (cluster_id, cluster_name), endpoints in cluster_workers.items():
         targets.append(
             {
@@ -687,7 +697,7 @@ def _parse_scrape_address(value) -> Optional[Tuple[str, str, str]]:
         return None
     port = parsed.port or (443 if scheme == "https" else 80)
     return (
-        f"{parsed.hostname}:{port}",
+        join_host_port(parsed.hostname, port),
         _normalize_metrics_path(parsed.path),
         scheme,
     )
@@ -769,7 +779,7 @@ def _managed_cache_service_groups(
         groups.append(
             {
                 "labels": labels,
-                "targets": [f"{address}:{metrics_port}"],
+                "targets": [join_host_port(address, metrics_port)],
             }
         )
     return groups

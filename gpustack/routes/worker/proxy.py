@@ -23,7 +23,7 @@ from gpustack.api.exceptions import (
     ErrorResponse,
 )
 from gpustack import envs
-from gpustack.utils.network import use_proxy_env_for_url
+from gpustack.utils.network import join_host_port, use_proxy_env_for_url
 from gpustack.utils.stall import stall_error_sse
 from gpustack.gateway.utils import router_header_key
 from gpustack.utils.model_instance_workers import parse_model_instance_target
@@ -222,7 +222,7 @@ async def proxy(path: str, request: Request):  # noqa: C901
         logger.debug(
             f"Proxying request to worker at port {target_service_port} for path: {path}"
         )
-        url = f"http://{worker_ip_getter()}:{target_service_port}/{path}"
+        url = f"http://{join_host_port(worker_ip_getter(), target_service_port)}/{path}"
         if request.url.query:
             url = f"{url}?{request.url.query}"
         headers = dict(request.headers)

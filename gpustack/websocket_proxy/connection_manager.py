@@ -270,24 +270,27 @@ class RemoteConnectionManager:
         URL format: tcp://host:port
         Note: Unix socket URLs are not supported and will raise an error.
         """
+        from .address import join_host_port, strip_brackets
+
         parsed = urllib.parse.urlparse(target_url)
 
         if parsed.scheme == "unix":
             raise ValueError(
                 "RemoteConnectionManager does not support Unix socket connections"
             )
+        if not parsed.hostname or parsed.port is None:
+            raise ValueError(f"Invalid target URL: {target_url}")
 
-        # TCP connection
-        target = f"{parsed.hostname}:{parsed.port}"
+        # TCP connection: preserve RFC 3986 brackets for IPv6 CONNECT targets.
+        target = join_host_port(parsed.hostname, parsed.port)
+        peer_host = strip_brackets(self.peer_address)
 
         logger.trace(
-            f"[RemoteConnectionManager] Forwarding to {self.peer_address}:{self.proxy_port} -> {target}"
+            f"[RemoteConnectionManager] Forwarding to {join_host_port(peer_host, self.proxy_port)} -> {target}"
         )
 
         # Connect to the remote proxy
-        reader, writer = await asyncio.open_connection(
-            self.peer_address, self.proxy_port
-        )
+        reader, writer = await asyncio.open_connection(peer_host, self.proxy_port)
 
         # For HTTP CONNECT method, we need to send CONNECT request to the proxy
         # The proxy will then connect to the target

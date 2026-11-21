@@ -39,8 +39,11 @@ from gpustack.routes.token import worker_auth
 from gpustack.api.auth import worker_auth as worker_request_auth
 from gpustack.server import catalog
 from gpustack.utils.network import (
+    format_bind_address,
     get_first_non_loopback_ip,
     get_ifname_by_ip_hostname,
+    host_cidr,
+    resolve_bind_host,
 )
 from gpustack.client import ClientSet
 from gpustack.logging import setup_logging
@@ -118,7 +121,7 @@ class Worker:
         self._config = cfg
         self._is_embedded = cfg.server_role() == Config.ServerRole.BOTH
         self._log_dir = cfg.log_dir
-        self._address = "0.0.0.0"
+        self._address = resolve_bind_host(cfg.host)
         self._exporter_enabled = not cfg.disable_worker_metrics
         self._async_tasks = []
         self._worker_ip, self._worker_ifname = self._detect_worker_ip_and_ifname()
@@ -344,11 +347,12 @@ class Worker:
         if self._config.proxy_mode == ModelInstanceProxyModeEnum.TUNNEL:
             docker_sock = Path("/var/run/docker.sock")
             sockets = [str(docker_sock)] if docker_sock.exists() else []
+            worker_cidr = host_cidr(self.worker_ip())
             # Start websocket proxy message client to handle CONNECT_REQUEST from server
             self._message_client = MessageClient(
                 server_endpoint=self._config.get_server_url(),
                 client_id=uuid.UUID(self.worker_uuid()),
-                cidrs=[f"{self.worker_ip()}/32"] if self.worker_ip() else [],
+                cidrs=[worker_cidr] if worker_cidr else [],
                 unix_sockets=sockets,
                 authenticator=BearerTokenAuthenticator(headers=self._clientset.headers),
             )
@@ -438,7 +442,9 @@ class Worker:
         )
 
         setup_logging()
-        worker_api_message = f"Serving worker APIs on {config.host}:{config.port}."
+        worker_api_message = (
+            f"Serving worker APIs on {format_bind_address(config.host, config.port)}."
+        )
         if not self._is_embedded:
             logger.debug(worker_api_message)
             logger.info(f"Worker gateway mode: {self._config.gateway_mode.value}.")
@@ -487,7 +493,7 @@ class Worker:
                 logger.warning(
                     f"Failed to detect worker IP from interface {detected_ifname}. Using first non-loopback IP."
                 )
-                # avoid edge case where the detected_ifname has no valid IPv4 address
+                # avoid edge case where the detected_ifname has no valid IP address
                 detected_ip = get_first_non_loopback_ip()
 
             if detected_ifname is None:
@@ -519,8 +525,9 @@ class Worker:
 
         if self._message_client:
             loop = asyncio.get_event_loop()
+            worker_cidr = host_cidr(self._worker_ip)
             asyncio.run_coroutine_threadsafe(
-                self._message_client.update_cidrs([f"{self._worker_ip}/32"]),
+                self._message_client.update_cidrs([worker_cidr] if worker_cidr else []),
                 loop,
             )
 

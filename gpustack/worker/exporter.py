@@ -25,6 +25,7 @@ from gpustack.utils.hardware_metrics import (
     is_gpu_partition,
     verified_gpu_devices,
 )
+from gpustack.utils.network import format_bind_address, resolve_bind_host
 from gpustack.worker.collector import WorkerStatusCollector
 from gpustack.worker.runtime_metrics_aggregator import runtime_metrics_values
 import uvicorn
@@ -650,14 +651,16 @@ class MetricExporter(Collector):
 
             config = uvicorn.Config(
                 app,
-                host="0.0.0.0",
+                host=resolve_bind_host(getattr(self._config, "host", None)),
                 port=self._port,
                 access_log=False,
                 log_level="error",
             )
 
             setup_logging()
-            logger.info(f"Serving metric exporter on {config.host}:{config.port}.")
+            logger.info(
+                f"Serving metric exporter on {format_bind_address(config.host, config.port)}."
+            )
             server = uvicorn.Server(config)
             server.run()
         except Exception as e:

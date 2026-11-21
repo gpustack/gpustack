@@ -152,10 +152,11 @@ def desired_members(
     address is exactly that distinction, and it is measured at 18ms with
     requests in flight — so changing the ratio does not interrupt them.
     """
+    from gpustack.utils.network import join_host_port
     from gpustack.utils.pd_router_membership import instance_router_peers
 
     return {
-        f"http://{ip}:{port}": instance.role
+        f"http://{join_host_port(ip, port)}": instance.role
         for instance in instances
         for ip, port, _ in instance_router_peers(instance, worker_ip_by_id)
     }
@@ -175,10 +176,11 @@ def desired_member_ports(
     request and decode has nowhere to rendezvous. The band is the same one the
     peer flag renders from, so the two paths cannot drift apart.
     """
+    from gpustack.utils.network import join_host_port
     from gpustack.utils.pd_router_membership import instance_router_peers
 
     return {
-        f"http://{ip}:{port}": named
+        f"http://{join_host_port(ip, port)}": named
         for instance in instances
         for ip, port, named in instance_router_peers(instance, worker_ip_by_id)
         if named
@@ -209,8 +211,10 @@ def desired_member_snapshot(
 
 
 def _peer_epochs(snapshot: Sequence[Dict[str, Any]]) -> Dict[str, Tuple]:
+    from gpustack.utils.network import join_host_port
+
     return {
-        f"http://{peer['ip']}:{peer['port']}": (
+        f"http://{join_host_port(peer['ip'], peer['port'])}": (
             peer.get("id"),
             peer.get("restart_count", 0),
             peer.get("last_restart_time"),
@@ -281,10 +285,13 @@ def _scope(url: str, model_name: str, ports: Dict[str, int]) -> Dict[str, object
     member to the same router and having two vocabularies for that would be a
     second thing to keep in step.
     """
+    from gpustack.utils.network import format_url_host
+
     split = urlsplit(url)
     scope: Dict[str, object] = {"peer.url": url, "model_name": model_name}
     if split.hostname:
-        scope["peer.ip"] = split.hostname
+        scope["peer.ip"] = format_url_host(split.hostname)
+        scope["_raw_peer_ip"] = split.hostname
     if split.port:
         scope["peer.port"] = split.port
     for name, base in (ports or {}).items():
@@ -309,7 +316,10 @@ def _render(template: str, scope: Dict[str, object]) -> object:
     """
     whole = _PLACEHOLDER.fullmatch(template.strip())
     if whole:
-        return scope.get(whole.group(1), _MISSING)
+        key = whole.group(1)
+        if key == "peer.ip":
+            return scope.get("_raw_peer_ip", _MISSING)
+        return scope.get(key, _MISSING)
 
     missing = False
 

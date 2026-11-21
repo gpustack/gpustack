@@ -66,7 +66,7 @@ from gpustack.server.services import WorkerService
 from gpustack.schemas.config import ModelInstanceProxyModeEnum
 from gpustack.schemas.workers import Worker
 from gpustack.schemas.clusters import Cluster
-from gpustack.utils.network import is_ipaddress
+from gpustack.utils.network import is_ipaddress, join_host_port
 from kubernetes_asyncio import client as k8s_client
 from kubernetes_asyncio.client import ApiException, V1IngressTLS
 from gpustack import envs
@@ -426,7 +426,7 @@ def model_instance_registry(
     port = model_instance.port
     registry_type = "dns"
     if is_ipaddress(address):
-        domain = f"{address}:{model_instance.port}"
+        domain = join_host_port(address, model_instance.port)
         port = 80
         registry_type = "static"
     return McpBridgeRegistry(
@@ -457,7 +457,7 @@ def _worker_reserve_proxy_registry(
     port = worker.port
     registry_type = "dns"
     if is_ipaddress(address):
-        domain = f"{address}:{worker.port}"
+        domain = join_host_port(address, worker.port)
         port = 80
         registry_type = "static"
     return McpBridgeRegistry(
@@ -490,7 +490,7 @@ def _worker_tunnel_proxy_registry(
     protocol = "http" if result.scheme == "http" else "https"
     port = result.port or (80 if protocol == "http" else 443)
     return McpBridgeRegistry(
-        domain=f"{result.hostname}:{port}",
+        domain=join_host_port(result.hostname, port),
         port=80,
         name=name_override or f"{cluster_worker_prefix(worker.cluster_id)}{worker.id}",
         protocol=protocol,

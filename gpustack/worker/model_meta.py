@@ -7,6 +7,7 @@ from gpustack.schemas.models import (
     Model,
     CategoryEnum,
 )
+from gpustack.utils.network import join_host_port
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,7 @@ def get_meta_from_running_instance(
         meta_path = "/info"
 
     try:
-        url = f"http://{mi.worker_ip}:{mi.port}{meta_path}"
+        url = f"http://{join_host_port(mi.worker_ip, mi.port)}{meta_path}"
         response = requests.get(url, timeout=1)
         response.raise_for_status()
 

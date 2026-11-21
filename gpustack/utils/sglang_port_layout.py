@@ -21,6 +21,7 @@ from gpustack.utils.model_instance_workers import (
     sglang_parallelism,
     sglang_smg_mode,
 )
+from gpustack.utils.network import join_host_port
 
 SGLANG_CONNECTING_BAND = '_sglang_connecting'
 SGLANG_ENGINE_API_BAND = '_sglang_engine_api'
@@ -301,7 +302,7 @@ class SGLangPortLayout:
         # Non-DPA legacy instances publish the connecting port at the tail.
         connecting = band.base if band is not None else published[-1]
         host = instance.worker_ip if self.nnodes > 1 else '127.0.0.1'
-        arguments = ['--dist-init-addr', f'{host}:{connecting}']
+        arguments = ['--dist-init-addr', join_host_port(host, connecting)]
         if self.nccl_offset is not None:
             arguments.extend(['--nccl-port', str(connecting + self.nccl_offset)])
         if self.nnodes > 1:

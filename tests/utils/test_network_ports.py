@@ -367,3 +367,53 @@ def test_is_port_reusable_reports_a_free_port_reusable():
     probe.close()
 
     assert is_port_reusable(port) is True
+
+
+def _ipv6_loopback_available() -> bool:
+    try:
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as s:
+            s.bind(("::1", 0))
+        return True
+    except OSError:
+        return False
+
+
+_NO_IPV6_SKIP = pytest.mark.skipif(
+    not _ipv6_loopback_available(),
+    reason="IPv6 loopback (::1) is not available on this host",
+)
+
+
+@_NO_IPV6_SKIP
+def test_is_port_available_sees_an_ipv6_bound_socket():
+    """An IPv6-only socket on [::1]:port does not hold 0.0.0.0:port, so
+    probing IPv4 alone would report the port free and collide at launch."""
+    holder = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    try:
+        if hasattr(socket, "IPPROTO_IPV6"):
+            holder.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+        holder.bind(("::1", 0))
+        port = holder.getsockname()[1]
+
+        assert is_port_available(port, "::1") is False
+        assert is_port_available(port, "[::1]") is False
+        assert is_port_available(port, "127.0.0.1") is False
+    finally:
+        holder.close()
+
+
+@_WINDOWS_SKIP
+@_NO_IPV6_SKIP
+def test_is_port_reusable_rejects_a_live_ipv6_loopback_listener():
+    holder = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    try:
+        holder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if hasattr(socket, "IPPROTO_IPV6"):
+            holder.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+        holder.bind(("::1", 0))
+        holder.listen(1)
+        port = holder.getsockname()[1]
+
+        assert is_port_reusable(port) is False
+    finally:
+        holder.close()
