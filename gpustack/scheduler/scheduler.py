@@ -86,6 +86,11 @@ from gpustack.schemas.model_files import ModelFileStateEnum
 from gpustack.schemas.model_sets import ModelSpec
 from gpustack.schemas.principals import _platform_principal_id
 from gpustack.utils.unit import byte_to_gib
+from gpustack.utils.model_resources import (
+    non_model_workload_enabled,
+    non_model_workload_resources,
+)
+from gpustack.validation.non_model_workload import validate_non_model_workload
 from gpustack.utils.model_instance_workers import (
     get_model_instance_workloads,
     model_instance_legacy_stop,
@@ -265,6 +270,13 @@ class Scheduler:
                     instance.state = ModelInstanceStateEnum.ANALYZING
                     instance.state_message = "Evaluating resource requirements"
                     await ModelInstanceService(session).update(instance)
+
+                validate_non_model_workload(model)
+                if non_model_workload_enabled(model):
+                    # Services still need their source files, but have no model
+                    # architecture or weights to evaluate before placement.
+                    await self._queue.put(instance)
+                    return
 
                 # Get available workers for potential remote parsing
                 workers = await Worker.all(session)
@@ -1142,6 +1154,25 @@ def _instance_scheduling_model(
     )
 
 
+def _accelerator_free_placement(
+    model: Union[Model, ModelSpec], role: Optional[str]
+) -> Tuple[bool, Optional[int], Optional[str]]:
+    """Resolve service resources before role projection erases role declarations."""
+    try:
+        validate_non_model_workload(model)
+    except ValueError as exc:
+        return False, None, str(exc)
+    if non_model_workload_enabled(model):
+        declared_ram = non_model_workload_resources(model).memory
+        # The 2 GiB default is only a scheduling reservation, not a container
+        # memory limit. Container limits require an explicit user declaration.
+        ram = declared_ram if declared_ram is not None else ROUTER_DEFAULT_MEMORY
+        return True, ram, None
+    cpu_only = role_takes_no_accelerator(model, role)
+    ram_claim = role_container_resources(model, role).memory if cpu_only else None
+    return cpu_only, ram_claim, None
+
+
 async def find_candidate(
     session: AsyncSession,
     config: Config,
@@ -1173,6 +1204,8 @@ async def find_candidate(
                 - A list of messages for the scheduling process.
     """
 
+    cpu_only, ram_claim, resource_error = _accelerator_free_placement(model, role)
+
     # A retry can retain its previous resource claim. Counting that claim would
     # make the instance compete with its own reservation and reject otherwise
     # available workers. Exclude its main and subordinate bindings from both
@@ -1185,7 +1218,7 @@ async def find_candidate(
             _model_cohort(model_instances, model_id), model_id
         )
     )
-    admission_message = _incompatible_cohort_message(
+    admission_message = resource_error or _incompatible_cohort_message(
         model, workers, model_instances, require_managed
     )
     if admission_message:
@@ -1204,16 +1237,8 @@ async def find_candidate(
         )
     )
 
-    # Read before projecting: the answer is a property of the ROLE — the router
-    # is a proxy and loads no weights — and the projection flattens the role's
-    # overrides onto the model, after which there is no role left to ask.
-    cpu_only = role_takes_no_accelerator(model, role)
-    # Same reason, same moment: `resources` is role-OWN too, and only the
-    # accelerator-free branch consumes it.
-    ram_claim = role_container_resources(model, role).memory if cpu_only else None
-    # Read here too, and for the third time for the same reason: both of these
-    # are properties of the MODEL and its ROLES, and the projection below
-    # flattens the roles away.
+    # Read before projection: topology and anchors belong to the model's roles,
+    # which the effective scheduling model below flattens away.
     topology = await _group_topology(session, model, group_id, workers)
     anchors = [
         spec.name

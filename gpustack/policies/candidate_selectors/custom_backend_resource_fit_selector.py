@@ -97,11 +97,10 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
         # `get_resource_claim` then falls back to the weights estimate.
         self._reserved_vram = 0
 
-        # Set for a member that takes no accelerator at all — today, a
-        # disaggregated group's router. Distinct from `cpu_offloading`, which
-        # means "GPU placement preferred, CPU acceptable": this one means the
-        # GPU paths must not be tried, because a candidate found on one would
-        # be a router holding a card it will never use.
+        # Set for workloads that require neither accelerators nor model weights.
+        # Distinct from `cpu_offloading`, which means "GPU placement preferred,
+        # CPU acceptable": the GPU paths must not be tried, because they would
+        # reserve a card the workload will never use.
         self._cpu_only = cpu_only
 
         # The accelerator-free role's declared memory, resolved by the caller
@@ -233,7 +232,7 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
         """
         if self._cpu_only:
             # Deliberately not estimated. `estimate_model_vram` sizes the
-            # model's weights, and this member never loads them — a router
+            # model's weights, and this service never loads them — a router
             # proxies requests to the members that do. Estimating anyway is
             # not merely wasted work: it is what made a router ask for the
             # weights' worth of VRAM and sit unschedulable on a full host.

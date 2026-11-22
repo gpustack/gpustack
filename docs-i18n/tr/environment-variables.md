@@ -219,7 +219,9 @@ Bu ağırlıklar ve pencereler, önceden doldurma-kod çözme ayrıştırılmı�
 |-----------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------|----------------|
 | `GPUSTACK_MODEL_SERVING_COMMAND_SCRIPT_DISABLED`          | Otomatik sunum komutu komut dosyası yürütmesini devre dışı bırakın. `1` veya `true` olarak ayarlandığında, paket kurulumunu ve diğer kurulum görevlerini yürüten komut dosyası çalışmayacaktır. | `0`     | Modeli |
 | `PYPI_PACKAGES_INSTALL`                                   | Model hizmet ortamına kurulacak ek PyPI paketleri. Birden fazla paket boşluklarla ayrılmalıdır. Komut dosyası, varsa `uv pip install`'i, aksi takdirde `pip install`'yi kullanacaktır. | (boş) | Modeli |
-| `GPUSTACK_MODEL_RAM_CLAIM`                                | Kapasite planlaması için zamanlayıcı tarafından kullanılan, model için kullanıcı tarafından beyan edilen RAM gereksinimi (Bayt cinsinden). | (boş) | Modeli |
+| `GPUSTACK_NON_MODEL_WORKLOAD`                           | Model ağırlıklarını yüklemeyen bağımsız servisler için hızlandırıcı atamadan zamanlamayı etkinleştirir (`true`, `1`, `yes` veya `on`, büyük/küçük harf ayrımı yoktur). [Model Yüklemeyen İş Yükleri](#non-model-workloads) bölümüne bakın. | `false` | Modeli |
+| `GPUSTACK_MODEL_CPU_CLAIM`                              | Model yüklemeyen iş yükleri için isteğe bağlı CPU çekirdek sayısı; sonlu ve pozitif bir sayı olmalıdır. GPUStack zamanlama kapasitesinde değil, konteyner kaynaklarında kullanılır. | (boş) | Modeli |
+| `GPUSTACK_MODEL_RAM_CLAIM`                              | Zamanlayıcının kapasite planlaması için kullanıcı tarafından belirtilen RAM gereksinimi (bayt). `GPUSTACK_NON_MODEL_WORKLOAD=true` olduğunda konteyner bellek sınırını da belirler ve en az 64 MiB (67108864 bayt) olan bir tam sayı olmalıdır. | (boş) | Modeli |
 | `GPUSTACK_MODEL_VRAM_CLAIM`                               | Kapasite planlama için zamanlayıcı tarafından kullanılan, model için kullanıcı tarafından beyan edilen VRAM gereksinimi (Bayt cinsinden). | (boş) | Modeli |
 | `GPUSTACK_APPLY_QWEN3_RERANKER_TEMPLATES`                 | Qwen3 yeniden sıralama şablonlarını istek gövdesine uygulayın. https://huggingface.co/Qwen/Qwen3-Reranker-0.6B.'deki talimatlara bakın | (boş) | Modeli |
 | `GPUSTACK_SKIP_MODEL_EVALUATION`                          | Dağıtım sırasında model değerlendirme veya doğrulama adımını atlar. | (boş) | Modeli |
@@ -253,6 +255,42 @@ Sunum komut dosyası otomatik olarak şunları yönetir:
 - `PYPI_PACKAGES_INSTALL`'de belirtilen ek PyPI paketlerini yükleme
 - Paket kurulumu için hem `uv pip` hem de `pip` desteği
 - Özel PyPI endekslerini `PIP_INDEX_URL` ve `PIP_EXTRA_INDEX_URL` aracılığıyla yönetme
+
+#### Model Yüklemeyen İş Yükleri { #non-model-workloads }
+
+Dynamo frontend gibi model ağırlıklarını yüklemeyen bağımsız bir servis için,
+dağıtımın ortam değişkenlerinde `GPUSTACK_NON_MODEL_WORKLOAD=true` ayarlayın:
+
+```yaml
+env:
+  GPUSTACK_NON_MODEL_WORKLOAD: "true"
+  GPUSTACK_MODEL_RAM_CLAIM: "4294967296"  # Optional: 4 GiB
+  GPUSTACK_MODEL_CPU_CLAIM: "1.5"  # Optional: 1.5 CPU cores
+```
+
+Bu mod, model mimarisi ve ağırlıklara dayalı kaynak değerlendirmesini atlar.
+GPUStack GPU atamaz ve VRAM ayırmaz. Kaynak dosyası kontrolleri, indirmeler ve bağlamalar
+uygulanmaya devam eder; böylece servis tokenizer dosyalarını kullanabilir. Bayrak,
+arka uç sürümünün çerçevesinden bağımsızdır ve normal CPU model çıkarımını değiştirmez.
+
+Varsayılan olarak zamanlayıcı 2 GiB RAM ayırır; konteyner için CPU veya bellek
+kaynağı bildirilmez. Açıkça belirtilen `GPUSTACK_MODEL_RAM_CLAIM`, hem zamanlayıcı
+ayırmasını hem de konteynerin kesin bellek sınırını belirler. Geçersiz kaynak
+bildirimleri dağıtım oluşturulurken veya güncellenirken reddedilir.
+
+Docker CPU shares (göreli ağırlık) kullanırken Kubernetes, CPU requests ve limits
+değerlerini eşit ayarlar (kesin üst sınır). Her iki çalışma zamanı da bildirilen
+belleği kesin üst sınır olarak uygular. Docker ayrıca bellek sınırı ile bellek ve
+swap toplamı sınırını aynı değere ayarlayarak ek swap kullanımını devre dışı bırakır.
+İki kaynak da bildirilmediğinde Kubernetes pod'ları BestEffort QoS sınıfındadır.
+
+Özel arka uç sürümü kullanan dağıtımlar veya görüntü ve komutun açıkça belirtildiği
+**Custom** arka ucu desteklenir. Manuel `gpu_selector.gpu_ids`, `gpu_type_selector`
+ve yerel çok rollü/PD dağıtımları reddedilir. Bu ayarları kullanmak için bayrağı
+kapatın. Konteyner ayrıcalıkları ve ortam değişkenleri Custom arka ucunun normal
+davranışını izler. Görüntü ve uygulamayı CPU çalışması için yapılandırın: konteynerler
+GPU aygıtlarına erişmeye devam edebilir ve Docker yansıtılmış dağıtımları worker'ın
+aygıt isteklerini devralabilir.
 
 ## GPUStack Çalışma Zamanı Ortamı Değişkenleri { #gpustack-runtime-environment-variables }
 

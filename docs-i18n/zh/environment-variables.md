@@ -222,7 +222,9 @@ TLS 协议版本配置会写入 `GPUSTACK_GATEWAY_MIRROR_INGRESS_NAME` 指定的
 |-----------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------|----------------|
 | `GPUSTACK_MODEL_SERVING_COMMAND_SCRIPT_DISABLED`          | 禁用自动推理服务命令脚本。设为 `1` 或 `true` 时，不执行负责软件包安装及其他准备任务的脚本。                                                                                                                                                         | `0`     | 模型          |
 | `PYPI_PACKAGES_INSTALL`                                   | 在模型推理环境中安装的额外 PyPI 包。多个包以空格分隔。可用时脚本使用 `uv pip install`，否则使用 `pip install`。                                                                                                                              | (empty) | 模型          |
-| `GPUSTACK_MODEL_RAM_CLAIM`                                | 用户声明的模型 RAM 需求（单位为 Byte），供调度器进行容量规划。                                                                                                                                                                                                                         | (empty) | 模型          |
+| `GPUSTACK_NON_MODEL_WORKLOAD`                           | 为不加载模型权重的独立服务启用无加速器调度（接受 `true`、`1`、`yes` 或 `on`，不区分大小写）。参见[非模型工作负载](#non-model-workloads)。 | `false` | 模型 |
+| `GPUSTACK_MODEL_CPU_CLAIM`                              | 非模型工作负载的可选 CPU 核数，必须为有限的正数。用于容器资源配置，不参与 GPUStack 的调度容量计算。 | (empty) | 模型 |
+| `GPUSTACK_MODEL_RAM_CLAIM`                              | 用户声明的 RAM 需求（单位为字节），供调度器进行容量规划。设置 `GPUSTACK_NON_MODEL_WORKLOAD=true` 时，还会作为容器内存限制，必须为不小于 64 MiB（67108864 字节）的整数。 | (empty) | 模型 |
 | `GPUSTACK_MODEL_VRAM_CLAIM`                               | 用户声明的模型 VRAM 需求（单位为 Byte），供调度器进行容量规划。                                                                                                                                                                                                                        | (empty) | 模型          |
 | `GPUSTACK_APPLY_QWEN3_RERANKER_TEMPLATES`                 | 向请求体应用 Qwen3 reranker 模板。使用方法请参阅 https://huggingface.co/Qwen/Qwen3-Reranker-0.6B。                                                                                                                                                                                                    | (empty) | 模型          |
 | `GPUSTACK_SKIP_MODEL_EVALUATION`                          | 在部署时跳过模型评估或验证步骤。                                                                                                                                                                                                                                                            | (empty) | 模型          |
@@ -256,6 +258,37 @@ GPUSTACK_MODEL_SERVING_COMMAND_SCRIPT_DISABLED=1
 - 安装 `PYPI_PACKAGES_INSTALL` 指定的额外 PyPI 包
 - 同时支持使用 `uv pip` 和 `pip` 安装软件包
 - 通过 `PIP_INDEX_URL` 和 `PIP_EXTRA_INDEX_URL` 处理自定义 PyPI 索引
+
+#### 非模型工作负载 { #non-model-workloads }
+
+对于不加载模型权重的独立服务（例如 Dynamo frontend），在部署的环境变量中设置
+`GPUSTACK_NON_MODEL_WORKLOAD=true`：
+
+```yaml
+env:
+  GPUSTACK_NON_MODEL_WORKLOAD: "true"
+  GPUSTACK_MODEL_RAM_CLAIM: "4294967296"  # Optional: 4 GiB
+  GPUSTACK_MODEL_CPU_CLAIM: "1.5"  # Optional: 1.5 CPU cores
+```
+
+此模式跳过模型架构和基于权重的资源评估。GPUStack 不分配 GPU、不预留显存。
+文件来源检查、下载和挂载仍然生效，服务可以继续使用 tokenizer 文件。该开关独立于
+后端版本的推理框架，不改变普通 CPU 模型推理行为。
+
+默认情况下，调度器预留 2 GiB RAM，容器不声明 CPU 或内存资源。显式设置
+`GPUSTACK_MODEL_RAM_CLAIM` 会同时指定调度预留和容器内存硬上限。
+创建或更新部署时会拒绝非法的资源声明。
+
+Docker 将 CPU 声明转换为 CPU shares（相对权重），Kubernetes 则设置相同的 CPU
+requests 和 limits（硬上限）。两种运行时都会将声明的内存作为硬上限；Docker
+还会将内存上限与内存加 swap 上限设为相同的值，从而禁止额外使用 swap。
+未声明这两种资源时，Kubernetes Pod 的 QoS 等级为 BestEffort。
+
+支持自定义后端版本，以及直接指定镜像和命令的 **Custom** 后端。启用时拒绝手动指定
+`gpu_selector.gpu_ids`、`gpu_type_selector`，以及原生多角色/PD 部署；使用这些配置时
+需关闭该开关。容器权限和环境变量沿用 Custom 后端的常规处理方式。请自行配置镜像和
+应用以 CPU 方式运行：容器仍可能访问 GPU 设备，Docker 镜像继承部署模式也可能继承
+worker 的设备请求。
 
 ## GPUStack Runtime 环境变量 { #gpustack-runtime-environment-variables }
 

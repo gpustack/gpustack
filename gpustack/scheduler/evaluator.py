@@ -90,6 +90,7 @@ from gpustack.utils.hub import (
 )
 from gpustack.utils.task import run_in_thread
 from gpustack.utils.profiling import time_decorator
+from gpustack.utils.model_resources import non_model_workload_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -1151,6 +1152,16 @@ async def lmcache_service_serves_hybrid_models(
     )
 
 
+async def _evaluate_model_architecture(model: ModelSpec, workers: List[Worker]) -> None:
+    """Only inference workloads need an architecture or a weight-based estimate."""
+    if non_model_workload_enabled(model):
+        return
+    if is_gguf_model(model):
+        await scheduler.evaluate_gguf_model(model, workers=workers)
+    elif not is_audio_model(model):
+        await scheduler.evaluate_pretrained_config(model, workers=workers)
+
+
 async def evaluate_model_metadata(
     config: Config,
     model: ModelSpec,
@@ -1203,10 +1214,7 @@ async def evaluate_model_metadata(
                     huggingface_token=config.huggingface_token,
                 )
 
-        if is_gguf_model(model):
-            await scheduler.evaluate_gguf_model(model, workers=workers)
-        elif not is_audio_model(model):
-            await scheduler.evaluate_pretrained_config(model, workers=workers)
+        await _evaluate_model_architecture(model, workers)
     except Exception as e:
         if model.env and model.env.get("GPUSTACK_SKIP_MODEL_EVALUATION"):
             logger.warning(f"Ignore model evaluation error for model {model.name}: {e}")
@@ -1242,6 +1250,9 @@ async def set_default_spec(
     """
     Set the default spec for the model if it matches the catalog spec.
     """
+    if non_model_workload_enabled(model):
+        return False
+
     selected_workers, _ = await LabelMatchingFilter(model).filter(workers)
     model_spec_in_catalog = await get_catalog_spec_by_source_key(
         session,
