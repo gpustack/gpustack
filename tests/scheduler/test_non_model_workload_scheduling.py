@@ -90,13 +90,16 @@ def deployment(**kwargs):
 @pytest.mark.parametrize("cpu_offloading", [False, True])
 @pytest.mark.parametrize("gpu_full", [False, True])
 @pytest.mark.parametrize("ram", [None, 4, 16])
+@pytest.mark.parametrize("cpu", [None, "1.5"])
 async def test_non_model_placement_uses_only_ram(
-    config, scheduling, version, cpu_offloading, gpu_full, ram
+    config, scheduling, version, cpu_offloading, gpu_full, ram, cpu
 ):
     worker, estimate = scheduling
     env = {"GPUSTACK_NON_MODEL_WORKLOAD": "true"}
     if ram is not None:
         env["GPUSTACK_MODEL_RAM_CLAIM"] = str(ram * GIB)
+    if cpu is not None:
+        env["GPUSTACK_MODEL_CPU_CLAIM"] = cpu
     model = deployment(
         backend="Custom" if version == "direct-image" else "custom-frontend",
         backend_version=None if version == "direct-image" else version,
@@ -171,6 +174,23 @@ async def test_invalid_saved_gpu_selection_fails_even_without_workers(config, se
     )
     assert candidate is None
     assert "not supported" in messages[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "key", ["GPUSTACK_MODEL_CPU_CLAIM", "GPUSTACK_MODEL_RAM_CLAIM"]
+)
+async def test_invalid_saved_resource_limits_fail_before_scheduling(config, key):
+    candidate, messages = await scheduler.find_candidate(
+        None,
+        config,
+        deployment(env={"GPUSTACK_NON_MODEL_WORKLOAD": "true", key: "0"}),
+        [],
+        [],
+        resource_view=ResourceView([]),
+    )
+    assert candidate is None
+    assert key in messages[0]
 
 
 @pytest.mark.asyncio
@@ -260,10 +280,11 @@ async def test_non_model_gguf_filename_completion_keeps_zero_vram(
 
 
 @pytest.mark.asyncio
-async def test_instance_analysis_queues_non_model_service_without_loading_model_metadata(
-    monkeypatch,
-):
+@pytest.mark.parametrize("ram", [None, "0"])
+async def test_non_model_instance_analysis_validates_before_queueing(monkeypatch, ram):
     model = deployment()
+    if ram is not None:
+        model.env["GPUSTACK_MODEL_RAM_CLAIM"] = ram
     instance = new_model_instance(
         1, "frontend", 1, state=ModelInstanceStateEnum.ANALYZING
     )
@@ -279,7 +300,19 @@ async def test_instance_analysis_queues_non_model_service_without_loading_model_
     monkeypatch.setattr(scheduler.Model, "one_by_id", AsyncMock(return_value=model))
     worker_lookup = AsyncMock(side_effect=AssertionError("metadata is not required"))
     monkeypatch.setattr(scheduler.Worker, "all", worker_lookup)
-    monkeypatch.setattr(scheduler, "ModelInstanceService", MagicMock())
+    update = AsyncMock()
+    monkeypatch.setattr(
+        scheduler,
+        "ModelInstanceService",
+        MagicMock(return_value=SimpleNamespace(update=update)),
+    )
     await instance_scheduler._evaluate_instance(instance)
-    instance_scheduler._queue.put.assert_awaited_once_with(instance)
+    if ram is None:
+        instance_scheduler._queue.put.assert_awaited_once_with(instance)
+        update.assert_not_awaited()
+    else:
+        instance_scheduler._queue.put.assert_not_awaited()
+        assert instance.state == ModelInstanceStateEnum.ERROR
+        assert "GPUSTACK_MODEL_RAM_CLAIM" in instance.state_message
+        update.assert_awaited_once_with(instance)
     worker_lookup.assert_not_awaited()

@@ -25,11 +25,15 @@ def test_disabled_non_model_workload_does_not_follow_worker_environment(
 
 
 @pytest.mark.parametrize(
-    "ram,expected",
-    [(None, 2), ("0", 0), (str(4 * 1024**3), 4), ("invalid", 2), ("-1", 2)],
+    "cpu,ram",
+    [(None, None), ("0.25", None), (None, 64 * 1024**2), ("1.5", 4 * 1024**3)],
 )
-def test_non_model_resources_use_explicit_ram_or_router_defaults(ram, expected):
-    env = {} if ram is None else {"GPUSTACK_MODEL_RAM_CLAIM": ram}
+def test_non_model_container_resources_require_explicit_declarations(cpu, ram):
+    env = {}
+    if cpu is not None:
+        env["GPUSTACK_MODEL_CPU_CLAIM"] = cpu
+    if ram is not None:
+        env["GPUSTACK_MODEL_RAM_CLAIM"] = str(ram)
     resources = non_model_workload_resources(SimpleNamespace(env=env))
-    assert resources.cpu == 2
-    assert resources.memory == expected * 1024**3
+    assert resources.cpu == (float(cpu) if cpu is not None else None)
+    assert resources.memory == ram

@@ -1155,11 +1155,12 @@ class InferenceServer(ABC):
             If the GPUs assigned to the model instance are of different types.
         """
         resources = ContainerResources()
-        validate_non_model_workload(self._model_spec or self._model)
         if non_model_workload_enabled(self._model):
             declared = non_model_workload_resources(self._model)
-            resources["cpu"] = declared.cpu
-            resources["memory"] = declared.memory
+            if declared.cpu is not None:
+                resources["cpu"] = declared.cpu
+            if declared.memory is not None:
+                resources["memory"] = declared.memory
             return resources
         # Ahead of both device paths, because this role declares CPU and memory
         # *instead of* any device key and that is true on either one: with

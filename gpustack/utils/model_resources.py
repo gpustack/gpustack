@@ -1,11 +1,12 @@
 """Deployment resource declarations shared by scheduling and container creation."""
 
-from gpustack.policies.utils import get_ram_claim_from_model_env
+from gpustack.utils.model_env import (
+    get_non_model_cpu_claim,
+    get_non_model_ram_claim,
+)
 from gpustack.schemas.models import (
     ModelSpecBase,
     RoleResources,
-    ROUTER_DEFAULT_CPU,
-    ROUTER_DEFAULT_MEMORY,
 )
 
 NON_MODEL_WORKLOAD_ENV = "GPUSTACK_NON_MODEL_WORKLOAD"
@@ -18,9 +19,12 @@ def non_model_workload_enabled(model: ModelSpecBase) -> bool:
 
 
 def non_model_workload_resources(model: ModelSpecBase) -> RoleResources:
-    """Use the same RAM declaration for admission and the service's container."""
-    ram = get_ram_claim_from_model_env(model)
+    """Read user-configured CPU and memory for a non-model workload.
+
+    Values come from the deployment's environment variables. Unset resources
+    remain None; no default resource values are added.
+    """
     return RoleResources(
-        cpu=ROUTER_DEFAULT_CPU,
-        memory=ram if ram is not None else ROUTER_DEFAULT_MEMORY,
+        cpu=get_non_model_cpu_claim(model),
+        memory=get_non_model_ram_claim(model),
     )

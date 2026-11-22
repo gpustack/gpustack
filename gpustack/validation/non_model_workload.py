@@ -5,6 +5,7 @@ from gpustack.schemas.models import ModelSpecBase
 from gpustack.utils.model_resources import (
     NON_MODEL_WORKLOAD_ENV,
     non_model_workload_enabled,
+    non_model_workload_resources,
 )
 
 
@@ -43,3 +44,4 @@ def validate_non_model_workload(model: ModelSpecBase) -> None:
             f"gpu_type_selector is not supported with {NON_MODEL_WORKLOAD_ENV}. "
             "Remove it or disable the non-model workload setting."
         )
+    non_model_workload_resources(model)

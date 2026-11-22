@@ -41,6 +41,61 @@ async def test_custom_and_direct_image_deployments_are_valid(backend):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["create", "update", "saved"])
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("GPUSTACK_MODEL_RAM_CLAIM", value)
+        for value in ("0", "-1", "1048576", "67108863", "bad", "", "1.5")
+    ]
+    + [
+        ("GPUSTACK_MODEL_CPU_CLAIM", value)
+        for value in ("0", "-0.5", "bad", "", "nan", "inf", "-inf")
+    ],
+)
+async def test_invalid_resources_are_rejected_at_admission(operation, key, value):
+    env = {"GPUSTACK_NON_MODEL_WORKLOAD": "true", key: value}
+    stored = None
+    incoming = deployment(env=env)
+    if operation != "create":
+        stored = Model(
+            **deployment(env=env if operation == "saved" else {}).model_dump()
+        )
+        fields = {
+            "name": "frontend",
+            "source": "local_path",
+            "local_path": "/models/tokenizer",
+        }
+        if operation == "update":
+            fields["env"] = env
+        incoming = ModelUpdate.model_validate(fields)
+    with pytest.raises(BadRequestException) as exc:
+        await validate_model_in(MagicMock(), incoming, stored=stored)
+    assert exc.value.status_code == 400
+    assert key in exc.value.message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "declarations",
+    [
+        {},
+        {"GPUSTACK_MODEL_RAM_CLAIM": "67108864"},
+        {"GPUSTACK_MODEL_CPU_CLAIM": "0.25"},
+        {"GPUSTACK_MODEL_CPU_CLAIM": "1.5", "GPUSTACK_MODEL_RAM_CLAIM": "4294967296"},
+    ],
+)
+async def test_optional_resource_limits_are_valid_on_create_and_update(declarations):
+    incoming = deployment(env={"GPUSTACK_NON_MODEL_WORKLOAD": "true", **declarations})
+    await validate_model_in(MagicMock(), incoming)
+    stored = Model(**incoming.model_dump())
+    update = ModelUpdate.model_validate(
+        {"name": "frontend", "source": "local_path", "local_path": "/models/tokenizer"}
+    )
+    await validate_model_in(MagicMock(), update, stored=stored)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "fields,message",
     [
@@ -75,6 +130,7 @@ def test_role_local_flag_cannot_enter_group_resource_policy():
 @pytest.mark.parametrize("enabled", [None, "false"])
 def test_absent_or_disabled_flag_does_not_restrict_existing_gpu_or_pd_config(enabled):
     env = {} if enabled is None else {"GPUSTACK_NON_MODEL_WORKLOAD": enabled}
+    env.update({"GPUSTACK_MODEL_RAM_CLAIM": "0", "GPUSTACK_MODEL_CPU_CLAIM": "bad"})
     validate_non_model_workload(
         deployment(
             backend="vLLM",

@@ -233,7 +233,9 @@ These weights and windows apply to deployments that declare roles — a prefill-
 |-----------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------|----------------|
 | `GPUSTACK_MODEL_SERVING_COMMAND_SCRIPT_DISABLED`          | Disable the automatic serving command script execution. When set to `1` or `true`, the script that handles package installation and other setup tasks will not run.                                                                                                                                                         | `0`     | Model          |
 | `PYPI_PACKAGES_INSTALL`                                   | Additional PyPI packages to install in the model serving environment. Multiple packages should be space-separated. The script will use `uv pip install` if available, otherwise `pip install`.                                                                                                                              | (empty) | Model          |
-| `GPUSTACK_MODEL_RAM_CLAIM`                                | User-declared RAM requirement (in Byte) for the model, used by the scheduler for capacity planning.                                                                                                                                                                                                                         | (empty) | Model          |
+| `GPUSTACK_NON_MODEL_WORKLOAD`                           | Enable accelerator-free scheduling for standalone services that do not load model weights (`true`, `1`, `yes`, or `on`, case-insensitive). See [Non-model Workloads](#non-model-workloads). | `false` | Model |
+| `GPUSTACK_MODEL_CPU_CLAIM`                              | Optional CPU cores for non-model workloads; must be a finite, positive number. Used for container resources, not GPUStack scheduling capacity. | (empty) | Model |
+| `GPUSTACK_MODEL_RAM_CLAIM`                              | User-declared RAM requirement (in bytes) for scheduler capacity planning. With `GPUSTACK_NON_MODEL_WORKLOAD=true`, also sets the container memory limit and must be an integer of at least 64 MiB (67108864 bytes). | (empty) | Model |
 | `GPUSTACK_MODEL_VRAM_CLAIM`                               | User-declared VRAM requirement (in Byte) for the model, used by the scheduler for capacity planning.                                                                                                                                                                                                                        | (empty) | Model          |
 | `GPUSTACK_APPLY_QWEN3_RERANKER_TEMPLATES`                 | Apply Qwen3 reranker templates to the request body. See instructions in https://huggingface.co/Qwen/Qwen3-Reranker-0.6B.                                                                                                                                                                                                    | (empty) | Model          |
 | `GPUSTACK_SKIP_MODEL_EVALUATION`                          | Skips the model evaluation or validation step during deployment.                                                                                                                                                                                                                                                            | (empty) | Model          |
@@ -249,38 +251,6 @@ These weights and windows apply to deployments that declare roles — a prefill-
 | `GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_TIMEOUT`           | Timeout in seconds for each periodic inference health check request. Defaults to 25 for SGLang PD engine roles and 15 otherwise; an explicit value takes precedence.                                                                                                                                                        | `15/25` | Model          |
 | `GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_FAILURE_THRESHOLD` | Number of consecutive inference health check failures before marking the instance as unhealthy.                                                                                                                                                                                                                             | `3`     | Model          |
 | `GPUSTACK_ENABLE_CUDA_MINOR_VERSION_COMPATIBILITY`        | Allow lower-minor CUDA devices to run higher-minor images. Set globally on the worker or per model; per-model takes precedence.                                                                                                                                                                                             | `false` | Worker & Model |
-
-#### Non-model Workloads
-
-Set `GPUSTACK_NON_MODEL_WORKLOAD=true` in the deployment's environment for a
-standalone service that does not load model weights, such as a Dynamo frontend:
-
-```yaml
-env:
-  GPUSTACK_NON_MODEL_WORKLOAD: "true"
-  GPUSTACK_MODEL_RAM_CLAIM: "4294967296"  # Optional: 4 GiB
-```
-
-This mode skips model architecture and weight-based resource evaluation, selects
-only CPU candidates, and declares only CPU and memory resources for the container.
-GPUStack assigns no GPU and reserves no VRAM. It defaults to 2 CPU and 2 GiB RAM;
-`GPUSTACK_MODEL_RAM_CLAIM` overrides the RAM used by both scheduling and container
-creation. CPU is a container
-request, not a capacity dimension in GPUStack's scheduler. Source file checks,
-downloads, and mounts still apply, so the service can use tokenizer files.
-
-The flag defaults to false and accepts `true`, `1`, `yes`, or `on`
-(case-insensitive). Configure it on the deployment, not the GPUStack server or
-worker process. It is independent of the backend version's framework and does
-not change ordinary CPU model inference. Supported deployments use a custom
-backend version or the **Custom** backend with an explicit image and command.
-Manual `gpu_selector.gpu_ids`, `gpu_type_selector`, and native multi-role/PD
-deployments are rejected. Disable the flag to use those settings.
-
-Container privileges and environment variables follow the Custom backend's normal
-behavior. Configure the image and application for CPU execution. Containers may
-still access GPU devices; Docker mirrored deployments can also inherit the
-worker's device requests.
 
 #### Usage Example
 
@@ -299,6 +269,42 @@ The serving command script automatically handles:
 - Installing additional PyPI packages specified in `PYPI_PACKAGES_INSTALL`
 - Supporting both `uv pip` and `pip` for package installation
 - Handling custom PyPI indices via `PIP_INDEX_URL` and `PIP_EXTRA_INDEX_URL`
+
+#### Non-model Workloads
+
+Set `GPUSTACK_NON_MODEL_WORKLOAD=true` in the deployment's environment for a
+standalone service that does not load model weights, such as a Dynamo frontend:
+
+```yaml
+env:
+  GPUSTACK_NON_MODEL_WORKLOAD: "true"
+  GPUSTACK_MODEL_RAM_CLAIM: "4294967296"  # Optional: 4 GiB
+  GPUSTACK_MODEL_CPU_CLAIM: "1.5"  # Optional: 1.5 CPU cores
+```
+
+This mode skips model architecture and weight-based resource evaluation. GPUStack
+assigns no GPU and reserves no VRAM. Source file checks, downloads, and mounts still
+apply, so the service can use tokenizer files. The flag is independent of the
+backend version's framework and does not change ordinary CPU model inference.
+
+By default, the scheduler reserves 2 GiB RAM, while the container has no CPU or
+memory resource declaration. An explicit `GPUSTACK_MODEL_RAM_CLAIM` sets both the
+scheduler reservation and a hard container memory limit. Invalid resource
+declarations are rejected when creating or updating a deployment.
+
+Docker uses CPU shares (relative weight), while Kubernetes sets equal CPU requests
+and limits (a hard cap). Both runtimes enforce the declared memory as a hard cap;
+Docker also disables additional swap by setting the memory and memory-plus-swap
+limits to the same value. With neither resource declared, Kubernetes pods have
+BestEffort QoS.
+
+Supported deployments use a custom backend version or the **Custom** backend with
+an explicit image and command. Manual `gpu_selector.gpu_ids`, `gpu_type_selector`,
+and native multi-role/PD deployments are rejected. Disable the flag to use those
+settings. Container privileges and environment variables follow the Custom
+backend's normal behavior. Configure the image and application for CPU execution:
+containers may still access GPU devices, and Docker mirrored deployments can
+inherit the worker's device requests.
 
 ## GPUStack Runtime Environment Variables
 

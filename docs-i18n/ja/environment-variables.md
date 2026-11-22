@@ -237,7 +237,9 @@ TLS バージョンの設定は `GPUSTACK_GATEWAY_MIRROR_INGRESS_NAME` で
 |-----------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------|----------------|
 | `GPUSTACK_MODEL_SERVING_COMMAND_SCRIPT_DISABLED`          | サービングコマンドスクリプトの自動実行を無効化。`1` または `true` にすると、パッケージのインストールなどの準備を行うスクリプトを実行しません。 | `0`     | モデル |
 | `PYPI_PACKAGES_INSTALL`                                   | モデルの提供環境に追加でインストールする PyPI パッケージ。複数は空白区切りで指定します。利用可能なら `uv pip install`、なければ `pip install` を使用します。 | （空） | モデル |
-| `GPUSTACK_MODEL_RAM_CLAIM`                                | ユーザーが申告するモデルの RAM 要件（バイト）。スケジューラーの容量計画に使用します。 | （空） | モデル |
+| `GPUSTACK_NON_MODEL_WORKLOAD`                           | モデルの重みをロードしない独立サービスに対して、アクセラレーターを割り当てないスケジューリングを有効にします（`true`、`1`、`yes`、`on`、大文字・小文字を区別しない）。[モデルをロードしないワークロード](#non-model-workloads)を参照してください。 | `false` | モデル |
+| `GPUSTACK_MODEL_CPU_CLAIM`                              | モデルをロードしないワークロードの任意の CPU コア数。有限の正数である必要があります。コンテナのリソースに使用し、GPUStack のスケジューリング容量には使用しません。 | （空） | モデル |
+| `GPUSTACK_MODEL_RAM_CLAIM`                              | スケジューラーの容量計画に使用する、ユーザーが申告した RAM 要件（バイト）。`GPUSTACK_NON_MODEL_WORKLOAD=true` の場合はコンテナのメモリ上限にもなり、64 MiB（67108864 バイト）以上の整数である必要があります。 | （空） | モデル |
 | `GPUSTACK_MODEL_VRAM_CLAIM`                               | ユーザーが申告するモデルの VRAM 要件（バイト）。スケジューラーの容量計画に使用します。 | （空） | モデル |
 | `GPUSTACK_APPLY_QWEN3_RERANKER_TEMPLATES`                 | リクエスト本文に Qwen3 リランカーのテンプレートを適用します。https://huggingface.co/Qwen/Qwen3-Reranker-0.6B の手順を参照。 | （空） | モデル |
 | `GPUSTACK_SKIP_MODEL_EVALUATION`                          | デプロイ時のモデル評価または検証を省略します。 | （空） | モデル |
@@ -253,38 +255,6 @@ TLS バージョンの設定は `GPUSTACK_GATEWAY_MIRROR_INGRESS_NAME` で
 | `GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_TIMEOUT`           | 各定期推論ヘルスチェック要求のタイムアウト（秒）。デフォルトは SGLang PD エンジンロールで 25、それ以外で 15 です。明示した値を優先します。 | `15/25` | モデル |
 | `GPUSTACK_MODEL_INFERENCE_HEALTH_CHECK_FAILURE_THRESHOLD` | インスタンスを異常と判定するまでの推論ヘルスチェックの連続失敗回数。 | `3`     | モデル |
 | `GPUSTACK_ENABLE_CUDA_MINOR_VERSION_COMPATIBILITY`        | CUDA のマイナーバージョンが低いデバイスで、より高いマイナーバージョンのイメージを実行できるようにします。ワーカー全体またはモデルごとに設定でき、モデル側が優先されます。 | `false` | ワーカーとモデル |
-
-#### モデルをロードしないワークロード { #non-model-workloads }
-
-Dynamo frontend など、モデルの重みをロードしない独立したサービスでは、
-デプロイメントの環境変数に `GPUSTACK_NON_MODEL_WORKLOAD=true` を設定します。
-
-```yaml
-env:
-  GPUSTACK_NON_MODEL_WORKLOAD: "true"
-  GPUSTACK_MODEL_RAM_CLAIM: "4294967296"  # Optional: 4 GiB
-```
-
-このモードはモデルアーキテクチャと重みに基づくリソース評価をスキップし、CPU 候補のみを
-選択して、コンテナに CPU とメモリのリソースのみを宣言します。GPUStack は GPU を
-割り当てず、VRAM も予約しません。既定値は 2 CPU と
-2 GiB RAM です。`GPUSTACK_MODEL_RAM_CLAIM` はスケジューリングとコンテナ作成の両方で
-使用する RAM を上書きします。CPU はコンテナのリソース要求であり、GPUStack の
-スケジューラーの容量判定には含まれません。ファイルの確認、ダウンロード、マウントは
-引き続き適用されるため、tokenizer ファイルを利用できます。
-
-既定は無効です。`true`、`1`、`yes`、`on` を大文字小文字を区別せず受け付けます。
-GPUStack server/worker プロセスではなく、デプロイメントに設定してください。
-バックエンドバージョンのフレームワークとは独立しており、通常の CPU モデル推論は
-変更しません。カスタムバックエンドバージョン、またはイメージとコマンドを明示する
-**Custom** バックエンドに対応します。手動の `gpu_selector.gpu_ids`、
-`gpu_type_selector`、ネイティブの複数ロール/PD デプロイメントとの併用は拒否されます。
-これらを使用する場合は、このフラグを無効にしてください。
-
-コンテナの権限と環境変数は Custom バックエンドの通常の処理に従います。
-CPU で実行するようにイメージとアプリケーションを設定してください。コンテナは引き続き
-GPU デバイスにアクセスできる場合があり、Docker のミラーデプロイメントでは worker の
-デバイス要求を継承する場合もあります。
 
 #### 使用例 { #usage-example }
 
@@ -303,6 +273,43 @@ GPUSTACK_MODEL_SERVING_COMMAND_SCRIPT_DISABLED=1
 - `PYPI_PACKAGES_INSTALL` に指定した追加の PyPI パッケージのインストール。
 - パッケージインストールでの `uv pip` と `pip` の両方のサポート。
 - `PIP_INDEX_URL` と `PIP_EXTRA_INDEX_URL` によるカスタム PyPI インデックスの処理。
+
+#### モデルをロードしないワークロード { #non-model-workloads }
+
+Dynamo frontend など、モデルの重みをロードしない独立サービスでは、デプロイの
+環境変数に `GPUSTACK_NON_MODEL_WORKLOAD=true` を設定します。
+
+```yaml
+env:
+  GPUSTACK_NON_MODEL_WORKLOAD: "true"
+  GPUSTACK_MODEL_RAM_CLAIM: "4294967296"  # Optional: 4 GiB
+  GPUSTACK_MODEL_CPU_CLAIM: "1.5"  # Optional: 1.5 CPU cores
+```
+
+このモードでは、モデルアーキテクチャと重みに基づくリソース評価をスキップします。
+GPUStack は GPU を割り当てず、VRAM を予約しません。ソースファイルの確認、
+ダウンロード、マウントは引き続き行われるため、tokenizer ファイルを利用できます。
+このフラグはバックエンドバージョンのフレームワークとは独立しており、
+通常の CPU モデル推論の動作は変わりません。
+
+既定では、スケジューラーは 2 GiB の RAM を予約し、コンテナには CPU やメモリの
+リソース宣言を設定しません。`GPUSTACK_MODEL_RAM_CLAIM` を明示すると、スケジューラーの
+予約量とコンテナのメモリ上限の両方が設定されます。不正なリソース宣言は
+デプロイの作成時または更新時に拒否されます。
+
+Docker は CPU shares（相対的な重み）を使用します。Kubernetes は CPU の requests と
+limits を同じ値に設定し、上限を適用します。どちらのランタイムも宣言したメモリ量を
+上限として適用します。Docker はさらにメモリ上限とメモリ＋swap 上限を同じ値に設定し、
+追加の swap 使用を無効にします。どちらのリソースも宣言しない場合、Kubernetes Pod の
+QoS クラスは BestEffort になります。
+
+カスタムバックエンドバージョン、またはイメージとコマンドを明示した **Custom**
+バックエンドを使用するデプロイが対象です。手動の `gpu_selector.gpu_ids`、
+`gpu_type_selector`、ネイティブのマルチロール/PD デプロイは拒否されます。これらを
+使用する場合はフラグを無効にしてください。コンテナの権限と環境変数は Custom
+バックエンドの通常の動作に従います。イメージとアプリケーションを CPU 実行用に
+設定してください。コンテナは引き続き GPU デバイスにアクセスできる場合があり、
+Docker のミラーデプロイでは worker のデバイス要求を継承する場合もあります。
 
 ## GPUStack Runtime の環境変数 { #gpustack-runtime-environment-variables }
 

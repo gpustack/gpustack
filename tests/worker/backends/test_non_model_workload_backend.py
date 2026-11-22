@@ -44,6 +44,56 @@ def frontend(config, monkeypatch):
     return backend
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize(
+    "selector, error",
+    [
+        (
+            {"gpu_selector": GPUSelector(gpu_ids=["worker:cuda:0"])},
+            "Manual GPU selection",
+        ),
+        (
+            {"gpu_type_selector": GPUTypeSelector(type="test-slice")},
+            "gpu_type_selector",
+        ),
+    ],
+)
+def test_get_model_rejects_gpu_conflicts_for_non_model_services(
+    frontend, enabled, selector, error
+):
+    model = frontend._model.model_copy(update=selector)
+    model.env = {"GPUSTACK_NON_MODEL_WORKLOAD": str(enabled).lower()}
+    frontend._clientset = MagicMock()
+    frontend._clientset.models.get.return_value = model
+
+    if enabled:
+        with pytest.raises(ValueError, match=error):
+            frontend.get_model()
+    else:
+        frontend.get_model()
+        assert frontend._model is model
+
+
+@pytest.fixture(
+    params=[
+        {},
+        {"cpu": 1.5},
+        {"memory": 64 * 1024**2},
+        {"cpu": 2.0, "memory": 4 * GIB},
+    ],
+    ids=["undeclared", "cpu-only", "ram-only", "both"],
+)
+def declared_resources(frontend, request):
+    for resource, value in request.param.items():
+        key = (
+            "GPUSTACK_MODEL_CPU_CLAIM"
+            if resource == "cpu"
+            else "GPUSTACK_MODEL_RAM_CLAIM"
+        )
+        frontend._model.env[key] = str(value)
+    return request.param
+
+
 def capture_workload(monkeypatch, backend, env=None):
     plans = []
     monkeypatch.setattr(custom, "create_workload", plans.append)
@@ -63,19 +113,15 @@ def capture_workload(monkeypatch, backend, env=None):
     return plans[0]
 
 
-@pytest.mark.parametrize("ram", [None, 0, 4])
-def test_frontend_plan_contains_only_cpu_and_matching_ram(monkeypatch, frontend, ram):
-    if ram is not None:
-        frontend._model.env["GPUSTACK_MODEL_RAM_CLAIM"] = str(ram * GIB)
+def test_frontend_plan_contains_only_declared_cpu_and_ram(
+    monkeypatch, frontend, declared_resources
+):
     # Even a stale instance binding cannot turn this service into a GPU request.
     frontend._model_instance.gpu_indexes = [0]
     plan = capture_workload(monkeypatch, frontend)
     assert plan.instance_type is None
     container = plan.containers[0]
-    assert container.resources == {
-        "cpu": 2,
-        "memory": (2 if ram is None else ram) * GIB,
-    }
+    assert container.resources == declared_resources
     assert container.execution.privileged
     env = {item.name: item.value for item in container.envs}
     assert env["CUDA_VISIBLE_DEVICES"] == "-1"
@@ -106,23 +152,6 @@ def test_non_model_preserves_runtime_device_environment(
     assert env == device_env
 
 
-@pytest.mark.parametrize("mount_all", [False, True])
-@pytest.mark.parametrize("selector", ["gpu_selector", "gpu_type_selector"])
-def test_worker_refuses_conflicting_gpu_requests(
-    monkeypatch, frontend, selector, mount_all
-):
-    value = (
-        GPUSelector(gpu_ids=["worker:cuda:0"])
-        if selector == "gpu_selector"
-        else GPUTypeSelector(type="test-slice")
-    )
-    setattr(frontend._model, selector, value)
-    with pytest.raises(ValueError, match="not supported"):
-        frontend._get_configured_resources(mount_all_devices=mount_all)
-    with pytest.raises(ValueError, match="not supported"):
-        capture_workload(monkeypatch, frontend)
-
-
 @pytest.mark.parametrize("mirrored", [False, True])
 @pytest.mark.parametrize(
     "device_env",
@@ -133,7 +162,7 @@ def test_worker_refuses_conflicting_gpu_requests(
     ],
 )
 def test_docker_conversion_preserves_cpu_resources_and_gpu_visibility(
-    monkeypatch, frontend, mirrored, device_env
+    monkeypatch, frontend, mirrored, device_env, declared_resources
 ):
     monkeypatch.setattr(
         "gpustack.utils.runtime.DockerDeployer.is_supported", lambda *_: True
@@ -144,7 +173,7 @@ def test_docker_conversion_preserves_cpu_resources_and_gpu_visibility(
     monkeypatch.setattr(runtime_envs, "GPUSTACK_RUNTIME_DEPLOY_MIRRORED_NAME", "worker")
     workload = capture_workload(monkeypatch, frontend, env=device_env)
     assert isinstance(workload, DockerWorkloadPlan)
-    assert workload.containers[0].resources == {"cpu": 2, "memory": 2 * GIB}
+    assert workload.containers[0].resources == declared_resources
     workload.validate_and_default()
     device_request = docker.types.DeviceRequest(
         driver="nvidia", count=-1, capabilities=[["gpu"]]
@@ -182,14 +211,17 @@ def test_docker_conversion_preserves_cpu_resources_and_gpu_visibility(
     expected_env = {**(worker_env if mirrored else {}), **device_env}
     for key in worker_env:
         assert options["environment"].get(key) == expected_env.get(key)
-    assert options["cpu_shares"] == 2048
-    assert options["mem_limit"] == options["mem_reservation"] == 2 * GIB
+    cpu = declared_resources.get("cpu")
+    assert options.get("cpu_shares") == (cpu * 1024 if cpu is not None else None)
+    assert "cpu_quota" not in options
+    for key in ("mem_limit", "mem_reservation", "memswap_limit"):
+        assert options.get(key) == declared_resources.get("memory")
     assert options["privileged"] is True
 
 
 @pytest.mark.parametrize("injection", ["kdp", "env"])
 def test_kubernetes_conversion_requests_no_gpu_resource(
-    monkeypatch, frontend, injection
+    monkeypatch, frontend, injection, declared_resources
 ):
     plan = capture_workload(monkeypatch, frontend)
     workload = kubernetes_runtime.KubernetesWorkloadPlan(**plan.__dict__)
@@ -212,8 +244,13 @@ def test_kubernetes_conversion_requests_no_gpu_resource(
     )
     pod = deployer._create_pod(workload, {})
     container = pod.spec.containers[0]
-    assert container.resources.requests == container.resources.limits
-    assert set(container.resources.requests) == {"cpu", "memory"}
+    if declared_resources:
+        assert container.resources.requests == container.resources.limits
+        assert container.resources.requests == {
+            key: str(value) for key, value in declared_resources.items()
+        }
+    else:
+        assert all(item.resources is None for item in pod.spec.containers)
     assert container.security_context.privileged
     assert not any("instance-type" in key for key in pod.metadata.labels)
     env = {item.name: item.value for item in container.env}

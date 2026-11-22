@@ -1162,7 +1162,11 @@ def _accelerator_free_placement(
     except ValueError as exc:
         return False, None, str(exc)
     if non_model_workload_enabled(model):
-        return True, non_model_workload_resources(model).memory, None
+        declared_ram = non_model_workload_resources(model).memory
+        # The 2 GiB default is only a scheduling reservation, not a container
+        # memory limit. Container limits require an explicit user declaration.
+        ram = declared_ram if declared_ram is not None else ROUTER_DEFAULT_MEMORY
+        return True, ram, None
     cpu_only = role_takes_no_accelerator(model, role)
     ram_claim = role_container_resources(model, role).memory if cpu_only else None
     return cpu_only, ram_claim, None
