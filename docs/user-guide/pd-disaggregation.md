@@ -384,14 +384,15 @@ consumes nine of them. If you run several such members per host, widen
 
 ## Constraints
 
-Configuration that would produce a group serving wrong answers is rejected at
-save time rather than at run time:
+Supported tensor-parallel topologies depend on the engine version, model, and KV
+connector. An unsupported topology can fail at startup or during KV transfer.
+After both roles start, send an inference request and confirm that Decode
+receives remote KV.
+
+GPUStack checks these settings when saving a deployment.
 
 - **Prefill and decode must declare the same context length.** No engine checks
   this, and a mismatch is invisible until a long prompt arrives.
-- **Decode's tensor parallelism must be at least prefill's.** The engine does
-  assert this, but reports it as an internal error inside decode rather than as
-  a configuration problem.
 - **Data type, KV cache data type, block size and KV cache layout must agree**
   between the two sides.
 - **A role's engine must be one the chosen mode can configure.** Mixing engines

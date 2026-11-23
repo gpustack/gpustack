@@ -9,11 +9,6 @@ prefill, leave decode alone.
 Substituting the defaults is the obvious repair and is wrong for every
 parameter below, which is why this module exists instead.
 
-* `--tensor-parallel-size` unwritten is **not 1**. GPUStack injects the
-  member's own card count when a role is silent and lands on one worker
-  (`get_auto_parallelism_arguments`, in both the vLLM and the SGLang backend),
-  so a prefill at TP2 beside a silent two-card decode is a correct deployment
-  that a static 1 would refuse.
 * `--dtype` and `--kv-cache-dtype` default to `auto`, whose meaning is "follow
   the checkpoint". Resolving it needs the model's config, and this runs on the
   admission path with no session to fetch one.
@@ -33,7 +28,6 @@ deployment that would have run.
 
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from gpustack.schemas.pd_modes import PDTensorParallelPairingEnum
 from gpustack.utils.command import find_last_int_parameter, find_last_parameter
 
 # The parameters that must agree between prefill and decode, with every
@@ -55,13 +49,6 @@ PAIRING_MAX_LEN = [
     "max_model_len",
     "context-length",
     "context_length",
-]
-PAIRING_TP = [
-    "tensor-parallel-size",
-    "tensor_parallel_size",
-    "tp",
-    "tp-size",
-    "tp_size",
 ]
 PAIRING_MUST_MATCH: Dict[str, List[str]] = {
     "dtype": ["dtype"],
@@ -90,24 +77,6 @@ alone settles it.
 """
 
 _FOLLOWS_THE_MODEL_DEFAULT = "auto"
-
-# Every parallelism flag, not just tp. Writing any one of them turns off
-# GPUStack's injection wholesale (`get_auto_parallelism_arguments` returns
-# early on the first one it finds), so a role that writes only `--dp` runs the
-# engine's own tp default rather than its card count -- and which default that
-# is belongs to the engine.
-PAIRING_ANY_PARALLELISM = PAIRING_TP + [
-    "data-parallel-size",
-    "data_parallel_size",
-    "dp",
-    "dp-size",
-    "dp_size",
-    "pipeline-parallel-size",
-    "pipeline_parallel_size",
-    "pp",
-    "pp-size",
-    "pp_size",
-]
 
 AGREE = "agree"
 DIFFER = "differ"
@@ -201,121 +170,6 @@ def compare_max_model_len(
     else:
         verdict = UNDECIDABLE
     return verdict, prefill_len, decode_len
-
-
-def selector_spans_workers(role) -> bool:
-    """Whether this role's own pin puts one replica on more than one machine.
-
-    Told apart from "not pinned at all", which `selector_cards_per_replica`
-    cannot do -- both answer None there, and a caller that reads None as
-    "nothing was said" will happily substitute a number of its own. For a
-    distributed member that number is wrong by construction: the world size is
-    split into tp and pp much further down the vLLM path, and a guess made here
-    lands in a descriptor the engine then contradicts.
-
-    False for an unpinned role, which is the ordinary case and says nothing
-    either way.
-    """
-    selector = getattr(role, "gpu_selector", None)
-    gpu_ids = getattr(selector, "gpu_ids", None) if selector is not None else None
-    if not gpu_ids:
-        return False
-    # "worker_name:device:index" -- more than one worker name and the member is
-    # distributed, so the card count is not the world size.
-    return len({str(gpu_id).rsplit(":", 2)[0] for gpu_id in gpu_ids}) > 1
-
-
-def selector_cards_per_replica(role) -> Optional[int]:
-    """How many cards one replica of this role is pinned to, when the pin is
-    unambiguous about it.
-
-    Read off the role's **own** `gpu_selector` and never the Model's. A
-    model-level selector is the pool the whole deployment draws from; dividing
-    it by one role's replica count would invent a per-role number, and invent
-    the same one for the other role.
-
-    Deliberately silent unless the count is exact, because everything this
-    feeds is a refusal.
-
-    `gpus_per_replica` is the authority when it is set, because that is the
-    field `_set_gpu_count` reads. When it is not, the count is `len(gpu_ids)`
-    and *not* `len(gpu_ids) // replicas`: the division belongs to
-    `set_model_gpus_per_replica`, which runs on the Model and deliberately does
-    not reach a role's projection, so a role's selector is read whole. Rather
-    than reproduce that asymmetry this answers only for a single-replica role,
-    where the two readings coincide and no arithmetic is being guessed at.
-
-    A pin spread over several workers is silent for a different reason: that is
-    a distributed member, and `cal_distributed_parallelism_arguments` splits its
-    world size into tp and pp much further down the vLLM path.
-    """
-    if selector_spans_workers(role):
-        return None
-
-    selector = getattr(role, "gpu_selector", None)
-    gpu_ids = getattr(selector, "gpu_ids", None) if selector is not None else None
-    if not gpu_ids:
-        return None
-
-    per_replica = getattr(selector, "gpus_per_replica", None)
-    if not per_replica:
-        if (getattr(role, "replicas", None) or 1) != 1:
-            return None
-        per_replica = len(gpu_ids)
-    return per_replica if per_replica >= 1 else None
-
-
-def effective_tensor_parallelism(role, parameters: Sequence[str]) -> Optional[int]:
-    """The tensor parallelism this role will actually run, or None when the
-    spec cannot say.
-
-    Three cases, and the middle one is the whole reason this is not a
-    `find_int_parameter` call:
-
-    * the role writes a tp -- that is the answer, whatever its cards say;
-    * the role writes no parallelism at all and pins its own cards -- GPUStack
-      injects `--tensor-parallel-size <cards>` for a single-worker member, so
-      the pinned count is the answer, and a role pinned to a single card really
-      does run TP1. That is the mismatch this makes catchable: prefill at TP2
-      beside a decode pinned to one card is refused today by nothing at all;
-    * anything else -- no pin, or a role writing dp or pp but not tp, or a pin
-      spread over workers -- has no answer here, and the caller marks the
-      deployment rather than refusing it.
-    """
-    declared = find_last_int_parameter(parameters, PAIRING_TP)
-    if declared is not None:
-        return declared
-    if find_last_parameter(parameters, PAIRING_ANY_PARALLELISM) is not None:
-        return None
-    return selector_cards_per_replica(role)
-
-
-def tensor_parallel_rule(mode) -> PDTensorParallelPairingEnum:
-    """The direction a resolved recipe imposes on prefill vs decode.
-
-    The direction belongs to the KV connector rather than to PD, which is why
-    it is read off the mode at all: NIXL needs decode at least as wide as
-    prefill, vllm-ascend's Mooncake needs the opposite (Huawei's reference
-    deployment is prefill TP4 / decode TP1), and `custom` injects no connector
-    GPUStack knows. A mode the catalog could not resolve is held to the NIXL
-    rule, which is what every mode was held to before the rule became
-    declarable.
-    """
-    if mode is None:
-        return PDTensorParallelPairingEnum.DECODE_GE_PREFILL
-    return mode.pairing.tensor_parallel
-
-
-def violates_tensor_parallel_direction(
-    rule: PDTensorParallelPairingEnum, *, prefill_tp: int, decode_tp: int
-) -> bool:
-    """Whether these two widths break the rule. One place, because admission
-    and placement have to answer it the same way."""
-    if rule == PDTensorParallelPairingEnum.DECODE_GE_PREFILL:
-        return decode_tp < prefill_tp
-    if rule == PDTensorParallelPairingEnum.PREFILL_GE_DECODE:
-        return prefill_tp < decode_tp
-    return False
 
 
 def _same(left: Optional[str], right: Optional[str]) -> bool:

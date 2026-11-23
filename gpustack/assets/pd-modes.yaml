@@ -559,8 +559,6 @@ modes:
       # changes use the router restart path.
       membership_api: {}
       health_path: /health
-    pairing:
-      tensor_parallel: any
 
   - name: sglang-mooncake
     transport: Mooncake
@@ -931,14 +929,6 @@ modes:
     #   P: MultiConnector[PD(P), AscendStoreConnector(P)]
     #   D: MultiConnector[PD(D), AscendStoreConnector(D)]
     # MultiConnector resolves to AscendMultiConnector in vllm-ascend.
-    pairing:
-      # The opposite of NIXL's rule. This connector carries both roles' tp/dp in
-      # its config so a decode rank can gather KV from several prefill ranks;
-      # Huawei's reference deployment (910C, 3P1D) is prefill TP4 / decode TP1,
-      # which the NIXL default rejected outright. A decode wider than its
-      # prefill has not been measured here, so the rule stays one-directional
-      # rather than `any` until it is.
-      tensor_parallel: prefill_ge_decode
     # {{net_device}} lands on HCCL_SOCKET_IFNAME / GLOO_SOCKET_IFNAME /
     # TP_SOCKET_IFNAME here, not on UCX_NET_DEVICES: these are handshake
     # sockets, and the KV bytes never touch them — CANN moves them over the
@@ -1139,7 +1129,3 @@ modes:
       membership_update: manual
       protocol: user_provided
     kv_lease: null
-    # No connector GPUStack knows, so no tensor-parallel direction it can vouch
-    # for either way; the user's engine is the judge.
-    pairing:
-      tensor_parallel: any
