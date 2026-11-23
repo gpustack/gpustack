@@ -1017,58 +1017,8 @@ class DegradationReasonEnum(str, Enum):
     release line the floor was ever measured against."""
 
     PAIRING_UNVERIFIED = "pairing_unverified"
-    """A pairing factor whose two effective values GPUStack could not compare —
-    usually one role declaring it and the other going silent.
-
-    The factors prefill and decode must share — the context window, the tensor
-    parallelism, the dtypes, the block size, the KV cache layout. Comparing
-    them only when *both* roles write them down would pass a group where one
-    side is silent by not checking it, and that is the ordinary way a group is
-    misconfigured: edit prefill, leave decode alone.
-
-    **A marker and not a 400, because the silent side's value is genuinely
-    unknown here.** Substituting the engines' defaults was the obvious repair
-    and is wrong for every one of these: an unwritten `--tensor-parallel-size`
-    is the member's card count and not 1, since GPUStack injects it itself; an
-    unwritten `--dtype` is `auto`, which needs the checkpoint's config to
-    resolve and admission has no session to fetch one; `--block-size` and
-    `--kv-cache-layout` are settled by the platform and the attention backend,
-    `VLLM_KV_CACHE_LAYOUT` included, so any constant written down would drift
-    into a false alarm on a later vLLM. A pair this marker describes is very
-    often correct — what it reports is that nothing verified it, which is not
-    the same claim as "this is broken".
-
-    **An explicit `auto` is silence, not a third value.** `--dtype auto`
-    against `--dtype float16` lands here rather than being refused: on a float16
-    checkpoint the two are the same run, and telling them apart needs the config
-    file admission cannot open. Writing `auto` down does not turn a question
-    into an answer.
-
-    A divergence GPUStack *can* prove — two concrete values that differ — is
-    still refused at admission. Both sides silent is deliberately not marked:
-    two roles taking the same default from the same engine on the same model
-    agree whatever it resolves to."""
-
     PAIRING_TP_MISPLACED = "pairing_tp_misplaced"
-    """The cards the members actually got break the recipe's tensor-parallel
-    direction.
-
-    The admission check can only read the spec, and the spec routinely does not
-    contain the number: a role that writes no `--tensor-parallel-size` and pins
-    no cards runs whatever the scheduler gives it. Placement is where that
-    stops being unknown — every member's `gpu_indexes` is written down, the
-    engines derive tp from exactly that for a single-worker member, and the
-    direction the recipe declares (`PDMode.pairing.tensor_parallel`) can
-    finally be applied to the deployment that exists rather than the one that
-    was described.
-
-    **Marked, never enforced.** By the time this is knowable the members are
-    placed and, usually, serving; failing them would take down a group to
-    report a shape it is already running. Under NIXL the shape does break —
-    a decode narrower than its prefill raises an `IndexError` inside decode on
-    first transfer — but that failure belongs to the engine and arrives with
-    its own message. This is the attribution: the reason that IndexError exists
-    is a placement, and the placement is written on the model."""
+    """Supports reading persisted states with this reason."""
 
     def __str__(self):
         return self.value

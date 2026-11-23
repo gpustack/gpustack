@@ -1,21 +1,4 @@
-"""Prefill/decode pairing pre-checks.
-
-The division of labour with the engine is what these tests encode. Most
-handshake factors are hashed by the connector and rejected on contact, so
-checking them here buys attribution rather than safety. Two are different, and
-they are why this validation exists at all:
-
-* `max_model_len` is checked by nothing. With prefill's window wider than
-  decode's the handshake passes, KV transfers, short prompts answer normally,
-  and only a prompt above decode's window fails — at decode, after prefill has
-  already computed it. The user believes the deployment serves prefill's
-  window.
-* a decode narrower than its prefill is asserted at run time, but surfaces as
-  an `IndexError` inside decode rather than as a configuration error. That is
-  NIXL's rule; the direction belongs to the connector and is read off the
-  recipe (`PDMode.pairing`), because vllm-ascend's Mooncake wants the
-  opposite and `custom` injects no connector at all.
-"""
+"""Prefill/decode pairing pre-checks."""
 
 from contextlib import contextmanager
 
@@ -124,81 +107,36 @@ def test_matching_context_lengths_pass():
 # --- tensor parallelism ---------------------------------------------------- #
 
 
-def test_a_decode_narrower_than_its_prefill_is_refused():
-    with rejects("tensor parallelism"):
-        validate_role_pairing(
-            _model_in(
-                _roles(
-                    prefill_params=["--tensor-parallel-size=8"],
-                    decode_params=["--tensor-parallel-size=4"],
-                )
-            )
-        )
-
-
-def test_a_wider_decode_is_allowed():
-    """The constraint is one-directional: decode must be at least prefill."""
+@pytest.mark.parametrize("mode", list(PDModeEnum))
+@pytest.mark.parametrize("prefill_tp,decode_tp", [(4, 8), (8, 4)])
+def test_tp_direction_is_delegated_to_the_engine(mode, prefill_tp, decode_tp):
     validate_role_pairing(
         _model_in(
             _roles(
-                prefill_params=["-tp", "4"],
-                decode_params=["-tp", "8"],
-            )
+                prefill_params=[f"--tensor-parallel-size={prefill_tp}"],
+                decode_params=["-tp", str(decode_tp)],
+            ),
+            mode=mode,
         )
     )
 
 
-def test_the_direction_is_the_connectors_not_pds():
-    """vllm-ascend's Mooncake gathers a decode rank's KV from several prefill
-    ranks; Huawei's reference deployment is prefill TP4 / decode TP1 — the
-    exact shape NIXL's rule forbids. Holding every recipe to NIXL's rule
-    rejected a working deployment, so the recipe declares its own."""
+def test_ascend_prefill_context_parallelism_is_admitted_with_wider_decode_tp():
     validate_role_pairing(
         _model_in(
             _roles(
-                prefill_params=["--tensor-parallel-size=4"],
-                decode_params=["--tensor-parallel-size=1"],
+                prefill_params=[
+                    "--tensor-parallel-size=1",
+                    "--prefill-context-parallel-size=8",
+                ],
+                decode_params=[
+                    "--tensor-parallel-size=8",
+                    "--prefill-context-parallel-size=1",
+                ],
             ),
             mode=PDModeEnum.VLLM_ASCEND_MOONCAKE,
         )
     )
-
-
-def test_the_ascend_recipe_is_held_to_its_own_direction():
-    with rejects("prefill runs tensor parallelism 1, below decode's 4"):
-        validate_role_pairing(
-            _model_in(
-                _roles(
-                    prefill_params=["--tensor-parallel-size=1"],
-                    decode_params=["--tensor-parallel-size=4"],
-                ),
-                mode=PDModeEnum.VLLM_ASCEND_MOONCAKE,
-            )
-        )
-
-
-def test_custom_injects_no_connector_so_no_direction_is_enforced():
-    """The user's engine is the judge: GPUStack knows nothing about the
-    connector they wrote into `--kv-transfer-config`."""
-    for prefill, decode in (("8", "4"), ("4", "8")):
-        validate_role_pairing(
-            _model_in(
-                _roles(prefill_params=["-tp", prefill], decode_params=["-tp", decode]),
-                mode=PDModeEnum.CUSTOM,
-            )
-        )
-
-
-def test_an_unresolvable_mode_falls_back_to_the_nixl_rule(monkeypatch):
-    """What every recipe was held to before the direction became declarable,
-    so a catalog that cannot answer changes nothing."""
-    from gpustack.validation.pd import pairing
-
-    monkeypatch.setattr(pairing, "get_pd_mode", lambda name: None)
-    with rejects("decode runs tensor parallelism 4, below prefill's 8"):
-        validate_role_pairing(
-            _model_in(_roles(prefill_params=["-tp", "8"], decode_params=["-tp", "4"]))
-        )
 
 
 # --- factors the engine also checks, caught here for attribution ----------- #
@@ -398,116 +336,10 @@ def test_the_last_spelling_wins_as_argparse_reads_it():
     )
 
 
-# --- one side silent -------------------------------------------------------- #
-#
-# The rules above must also hold when only one role writes the parameter down,
-# because that is the ordinary way a group is misconfigured: edit prefill,
-# leave decode alone. Substituting the engines' defaults is not the answer —
-# an unwritten tp is the member's card count and not 1, an unwritten dtype is
-# `auto` and needs the checkpoint to resolve, and block size and KV cache
-# layout belong to the platform and the attention backend. So the test is "are
-# both effective values determinable", and what is not determinable is
-# reported instead of refused.
-
-
-def _selector(*gpu_ids):
-    return GPUSelector(gpu_ids=list(gpu_ids))
-
-
-def _silent_side_roles(prefill=None, decode=None):
-    return [
-        prefill or RoleSpec(name="prefill", replicas=1),
-        decode or RoleSpec(name="decode", replicas=1),
-        RoleSpec(name="router", replicas=1),
-    ]
-
-
-def test_a_decode_pinned_to_one_card_is_narrower_than_a_prefill_at_tp2():
-    """The shape a both-sides-written check lets straight through: decode
-    writes no tp, but it pins a single card, GPUStack injects the card count
-    for a single-worker member, and a decode that runs TP1 under a prefill at
-    TP2 is exactly the inversion NIXL reports as an IndexError."""
-    with rejects("decode runs tensor parallelism 1, below prefill's 2"):
-        validate_role_pairing(
-            _model_in(
-                _silent_side_roles(
-                    prefill=RoleSpec(
-                        name="prefill",
-                        replicas=1,
-                        backend_parameters=["--tensor-parallel-size=2"],
-                    ),
-                    decode=RoleSpec(
-                        name="decode",
-                        replicas=1,
-                        gpu_selector=_selector("w1:npu:0"),
-                    ),
-                )
-            )
-        )
-
-
-def test_a_decode_that_pins_nothing_is_reported_rather_than_refused():
-    """The same prefill against a decode that says nothing at all. Its cards
-    are the scheduler's to choose, so its tensor parallelism is not knowable
-    from the spec — and holding it to 1 would refuse the two-card decode that
-    would have paired perfectly. Accepted, and marked."""
-    model_in = _model_in(
-        _silent_side_roles(
-            prefill=RoleSpec(
-                name="prefill",
-                replicas=1,
-                backend_parameters=["--tensor-parallel-size=2"],
-            ),
-        )
-    )
-    validate_role_pairing(model_in)
-    assert "tensor parallelism" in undecidable_factors(
-        model_in.roles[0], model_in.roles[1], model_in.backend_parameters
-    )
-
-
-def test_a_pin_spread_over_two_workers_says_nothing_about_tp():
-    """A member spanning workers has its world size split into tp and pp
-    further down the vLLM path, so the pinned count is not the tensor
-    parallelism and cannot refuse anything."""
-    model_in = _model_in(
-        _silent_side_roles(
-            prefill=RoleSpec(
-                name="prefill",
-                replicas=1,
-                backend_parameters=["--tensor-parallel-size=4"],
-            ),
-            decode=RoleSpec(
-                name="decode",
-                replicas=1,
-                gpu_selector=_selector("w1:npu:0", "w2:npu:0"),
-            ),
-        )
-    )
-    validate_role_pairing(model_in)
-
-
-def test_a_role_that_writes_dp_but_not_tp_is_not_read_as_its_card_count():
-    """Writing any parallelism flag turns GPUStack's injection off wholesale,
-    so a decode with `--data-parallel-size 2` on two pinned cards runs the
-    engine's own tp default rather than 2. Which default that is belongs to the
-    engine, so nothing here refuses."""
-    model_in = _model_in(
-        _silent_side_roles(
-            prefill=RoleSpec(
-                name="prefill",
-                replicas=1,
-                backend_parameters=["--tensor-parallel-size=4"],
-            ),
-            decode=RoleSpec(
-                name="decode",
-                replicas=1,
-                backend_parameters=["--data-parallel-size=2"],
-                gpu_selector=_selector("w1:npu:0", "w1:npu:1"),
-            ),
-        )
-    )
-    validate_role_pairing(model_in)
+def test_asymmetric_tp_is_admitted_when_a_role_pins_cards():
+    roles = _roles(prefill_params=["--tensor-parallel-size=2"])
+    roles[1].gpu_selector = GPUSelector(gpu_ids=["w1:cuda:0"])
+    validate_role_pairing(_model_in(roles))
 
 
 def test_an_explicit_auto_and_a_silent_side_are_the_same_declaration():
@@ -591,18 +423,6 @@ def test_the_underscore_spelling_of_the_context_window_is_too():
         )
 
 
-def test_the_underscore_spelling_of_tp_is_too():
-    with rejects("decode runs tensor parallelism 4, below prefill's 8"):
-        validate_role_pairing(
-            _model_in(
-                _roles(
-                    prefill_params=["--tp_size=8"],
-                    decode_params=["--tensor_parallel_size=4"],
-                )
-            )
-        )
-
-
 def test_a_flag_written_twice_is_compared_as_argparse_reads_it():
     """Last wins. A prefill carrying `--dtype bfloat16 --dtype float16` runs
     float16, so comparing the first value would clear a pair that diverges —
@@ -677,51 +497,3 @@ def test_a_model_level_value_both_roles_inherit_is_not_reported():
         )
         == []
     )
-
-
-def test_a_multi_replica_pin_is_not_divided_by_its_replica_count():
-    """`_set_gpu_count` reads a role's selector whole — the division by
-    `replicas` belongs to `set_model_gpus_per_replica`, which runs on the Model
-    and deliberately never reaches a role's projection. Reproducing that
-    arithmetic here would have read this decode as TP1 and refused a pair that
-    runs."""
-    model_in = _model_in(
-        _silent_side_roles(
-            prefill=RoleSpec(
-                name="prefill",
-                replicas=1,
-                backend_parameters=["--tensor-parallel-size=2"],
-            ),
-            decode=RoleSpec(
-                name="decode",
-                replicas=2,
-                gpu_selector=_selector("w1:npu:0", "w1:npu:1"),
-            ),
-        )
-    )
-    validate_role_pairing(model_in)
-    assert "tensor parallelism" in undecidable_factors(
-        model_in.roles[0], model_in.roles[1], model_in.backend_parameters
-    )
-
-
-def test_an_explicit_gpus_per_replica_is_the_authority():
-    """The field `_set_gpu_count` reads first, so when it is set the pin is
-    unambiguous however many replicas the role runs."""
-    decode = RoleSpec(name="decode", replicas=2)
-    decode.gpu_selector = GPUSelector(
-        gpu_ids=["w1:npu:0", "w1:npu:1"], gpus_per_replica=1
-    )
-    with rejects("decode runs tensor parallelism 1, below prefill's 2"):
-        validate_role_pairing(
-            _model_in(
-                _silent_side_roles(
-                    prefill=RoleSpec(
-                        name="prefill",
-                        replicas=1,
-                        backend_parameters=["--tensor-parallel-size=2"],
-                    ),
-                    decode=decode,
-                )
-            )
-        )

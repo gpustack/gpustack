@@ -829,18 +829,7 @@ class PDRouter(BaseModel):
 
 
 class PDTensorParallelPairingEnum(str, Enum):
-    """Which way a prefill/decode tensor-parallel mismatch is allowed to go.
-
-    The direction is the connector's, not PD's. vLLM's NixlConnector maps
-    each decode rank onto a slice of one prefill rank and asserts "Decode TP
-    cannot be smaller than prefill TP" (measured: it surfaces as an
-    IndexError inside decode). vllm-ascend's Mooncake connector carries both
-    sides' tp/dp in its config precisely so a decode rank can gather from
-    several prefill ranks — Huawei's reference deployment is prefill TP4 /
-    decode TP1, the exact shape the NIXL rule forbids. One rule for every
-    recipe therefore rejects a working Ascend deployment, so the rule is
-    declared per recipe.
-    """
+    """Tensor-parallel pairing values for clients of the PD mode API."""
 
     DECODE_GE_PREFILL = "decode_ge_prefill"
     """decode's tensor parallelism must be at least prefill's (NIXL)."""
@@ -851,19 +840,9 @@ class PDTensorParallelPairingEnum(str, Enum):
 
 
 class PDPairing(BaseModel):
-    """Cross-role constraints the recipe's connector imposes.
+    """Compatibility field for clients of the PD mode API."""
 
-    Only the ones that differ between connectors live here. Factors every
-    connector hashes on contact (dtype, block size, KV layout) and the one
-    nothing checks (`max_model_len`) are the same for all recipes and stay in
-    the validation code.
-    """
-
-    tensor_parallel: PDTensorParallelPairingEnum = (
-        PDTensorParallelPairingEnum.DECODE_GE_PREFILL
-    )
-    """Default is the NIXL rule, which every shipped recipe satisfies; a recipe
-    whose connector differs declares so."""
+    tensor_parallel: PDTensorParallelPairingEnum = PDTensorParallelPairingEnum.ANY
 
 
 class PDNetDevicePlaneEnum(str, Enum):
@@ -1011,8 +990,7 @@ class PDMode(BaseModel):
     is not measurable for it."""
 
     pairing: PDPairing = PDPairing()
-    """Connector-specific cross-role constraints, read by admission. Absent
-    means the NIXL defaults — see ``PDPairing``."""
+    """The engine owns tensor-parallel pairing validation."""
 
     net_device_plane: PDNetDevicePlaneEnum = PDNetDevicePlaneEnum.DATA
     """Which plane this recipe's ``{{net_device}}`` rides — see

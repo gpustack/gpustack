@@ -237,10 +237,11 @@ Varsayılan aralık **64 bağlantı noktası** içerir; bu çoğu dağıtım iç
 
 ## Kısıtlamalar { #constraints }
 
+Desteklenen tensör paralelliği topolojileri çıkarım motorunun sürümüne, modele ve KV bağlayıcısına bağlıdır. Uyumsuz bir topoloji başlatma veya KV aktarımı sırasında hata verebilir. Her iki rol başladıktan sonra bir çıkarım isteği gönderin ve Decode rolünün uzak KV verisini aldığını doğrulayın.
+
 Yanlış yanıtlar sunan bir grup oluşturacak yapılandırma, çalışma zamanından ziyade kaydetme zamanında reddedilir:
 
 - **Ön doldurma ve kod çözme aynı bağlam uzunluğunu bildirmelidir.** Hiçbir motor bunu kontrol etmez ve uzun bir komut gelene kadar bir uyumsuzluk görünmez.
-- **Kod çözmenin tensör paralelliği en azından önceden doldurmanınki olmalıdır.** Motor bunu iddia eder, ancak bunu bir yapılandırma sorunu yerine kod çözme içindeki dahili bir hata olarak bildirir.
 - **Veri türü, KV önbellek veri türü, blok boyutu ve KV önbellek düzeni iki taraf arasında** aynı olmalıdır.
 - **Bir rolün motoru, seçilen modun yapılandırabileceği bir motor olmalıdır.** Motorları roller arasında karıştırmak, bağlantı parametrelerinin sizin sağlayacağınız `custom` modunu gerektirir.
 - **`custom` modunu kullanan ayrıştırılmış bir dağıtım aynı zamanda genişletilmiş bir KV önbelleği de kullanamaz.** Diğer modlardan her biri sizin için ikisini oluşturur (bkz. [Paylaşılan bir KV önbelleğini onunla kullanma](#using-a-shared-kv-cache-with-it)); `custom` hiçbir bağlayıcı yapılandırması eklemez, bu nedenle önbelleği oluşturacak hiçbir şey yoktur; birleştirilmiş yapılandırmayı kendiniz yazın.

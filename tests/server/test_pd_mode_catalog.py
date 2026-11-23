@@ -216,21 +216,12 @@ def test_constraining_custom_fails_the_load():
     assert "custom" in str(excinfo.value)
 
 
-def test_tensor_parallel_direction_is_the_connectors_to_declare():
-    """One rule for every recipe rejects a working Ascend deployment:
-    Huawei's Ascend reference is prefill TP4 / decode TP1, which NIXL's
-    "decode at least prefill" forbids. So the direction is a recipe
-    declaration. The default is NIXL's, and `custom`, which injects no
-    connector, has no direction to vouch for."""
-    nixl = get_pd_mode(PDModeEnum.VLLM_NIXL.value)
-    ascend = get_pd_mode(PDModeEnum.VLLM_ASCEND_MOONCAKE.value)
-    custom = get_pd_mode(PDModeEnum.CUSTOM.value)
-    assert nixl.pairing.tensor_parallel is PDTensorParallelPairingEnum.DECODE_GE_PREFILL
+@pytest.mark.parametrize("mode", list(PDModeEnum))
+def test_tensor_parallel_direction_is_unrestricted_in_the_catalog(mode):
     assert (
-        ascend.pairing.tensor_parallel
-        is not PDTensorParallelPairingEnum.DECODE_GE_PREFILL
+        get_pd_mode(mode.value).pairing.tensor_parallel
+        is PDTensorParallelPairingEnum.ANY
     )
-    assert custom.pairing.tensor_parallel is PDTensorParallelPairingEnum.ANY
 
 
 def test_exactly_one_recipe_is_preferred_per_engine_accelerator_pair():

@@ -13,8 +13,7 @@ from gpustack.schemas.models import (
     ModelUpdate,
     RoleNameEnum,
 )
-from gpustack.schemas.pd_modes import PDTensorParallelPairingEnum, iter_placeholders
-from gpustack.server.pd_mode_catalog import get_pd_mode
+from gpustack.schemas.pd_modes import iter_placeholders
 from gpustack.utils.command import find_last_parameter, flatten_to_argv
 from gpustack.validation.pd.common import model_field
 from gpustack.validation.pd.environment import (
@@ -27,10 +26,7 @@ from gpustack.validation.pd.parameters import (
     PAIRING_MUST_MATCH,
     compare_max_model_len,
     compare_must_match,
-    effective_tensor_parallelism,
     role_parameters,
-    tensor_parallel_rule,
-    violates_tensor_parallel_direction,
 )
 
 
@@ -105,45 +101,6 @@ def _check_pairing_toggles(
         )
 
 
-def _check_tensor_parallel_pairing(disaggregation, *, prefill_tp, decode_tp) -> None:
-    """Apply the recipe's declared tensor-parallel direction.
-
-    The direction belongs to the KV connector, so it is read off the mode
-    (`PDMode.pairing.tensor_parallel`) rather than written here: NIXL needs
-    decode at least as wide as prefill, vllm-ascend's Mooncake needs the
-    opposite (Huawei's reference deployment is prefill TP4 / decode TP1), and
-    `custom` injects no connector GPUStack knows. A mode the catalog cannot
-    resolve is held to the NIXL rule, which is what every mode was held to
-    before the rule became declarable.
-    """
-    mode_name = disaggregation.mode.value
-    rule = tensor_parallel_rule(get_pd_mode(mode_name))
-    if not violates_tensor_parallel_direction(
-        rule, prefill_tp=prefill_tp, decode_tp=decode_tp
-    ):
-        return
-
-    if rule == PDTensorParallelPairingEnum.DECODE_GE_PREFILL:
-        raise BadRequestException(
-            message=(
-                f"decode runs tensor parallelism {decode_tp}, below prefill's "
-                f"{prefill_tp}. A decode narrower than its prefill cannot "
-                f"receive that prefill's KV layout, and the engine reports it "
-                f"as an IndexError inside decode rather than as a "
-                f"configuration error. decode's tensor parallelism must be at "
-                f"least prefill's."
-            )
-        )
-    raise BadRequestException(
-        message=(
-            f"prefill runs tensor parallelism {prefill_tp}, below decode's "
-            f"{decode_tp}. pd mode '{mode_name}' gathers each decode rank's "
-            f"KV from prefill ranks, which needs prefill's tensor "
-            f"parallelism to be at least decode's."
-        )
-    )
-
-
 def validate_role_pairing(  # noqa: C901
     model_in: Union[ModelCreate, ModelUpdate, ModelSpecBase],
     stored: Optional[Model] = None,
@@ -153,9 +110,10 @@ def validate_role_pairing(  # noqa: C901
     """Reject provably incompatible parameter and environment configurations.
 
     Context lengths must agree even when the engine handshake accepts them.
-    Tensor-parallel direction is connector-specific; other factors describe KV
-    representation and transfer compatibility. Unknown effective values stay
-    undecidable and are reported through ``pairing_unverified``.
+    The engine and its connector check the parallel topology at startup or
+    during KV transfer.
+    Unknown effective values of pairing factors are reported through
+    ``pairing_unverified``.
 
     Args:
         model_in: The submitted deployment specification.
@@ -198,19 +156,6 @@ def validate_role_pairing(  # noqa: C901
                 f"after prefill has already computed it. Give both roles "
                 f"the same context length."
             )
-        )
-
-    # Effective, not declared. A role that writes no tp is not a role with an
-    # unknown one when it pins its own cards: the backend injects the card
-    # count for a single-worker member, so a decode pinned to one card beside a
-    # prefill at TP2 is a real inversion and worth catching. A role that pins
-    # nothing stays unknown and is reported as unverified rather than
-    # held to a 1 it was never going to run.
-    prefill_tp = effective_tensor_parallelism(prefill, prefill_params)
-    decode_tp = effective_tensor_parallelism(decode, decode_params)
-    if prefill_tp is not None and decode_tp is not None:
-        _check_tensor_parallel_pairing(
-            field("disaggregation"), prefill_tp=prefill_tp, decode_tp=decode_tp
         )
 
     _check_pairing_toggles(
@@ -263,11 +208,6 @@ def undecidable_factors(
     factors: List[str] = []
     if compare_max_model_len(prefill_params, decode_params)[0] == UNDECIDABLE:
         factors.append("context length")
-
-    prefill_tp = effective_tensor_parallelism(prefill, prefill_params)
-    decode_tp = effective_tensor_parallelism(decode, decode_params)
-    if (prefill_tp is None) != (decode_tp is None):
-        factors.append("tensor parallelism")
 
     for label, names in PAIRING_MUST_MATCH.items():
         if (
