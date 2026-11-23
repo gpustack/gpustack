@@ -83,6 +83,9 @@ from gpustack.utils.model_instance_workers import (
     model_instance_legacy_stop,
     requires_group_recovery,
     calculate_group_recovery_policy,
+    maintenance_inference_path_unavailable,
+    managed_workload_serving_apis,
+    model_instance_endpoints,
 )
 
 logger = logging.getLogger(__name__)
@@ -1404,6 +1407,7 @@ class ModelInstanceService:
             # An old launch snapshot must not select the next launch's policy.
             servers.group_recovery = None
             servers.legacy_stop = None
+            servers.maintenance_pending_worker_ids = []
             fields['model_config_snapshot'] = None
             candidate.model_config_snapshot = None
         candidate.distributed_servers = servers
@@ -1590,6 +1594,7 @@ class ModelInstanceService:
         self, instance: ModelInstance, workloads: List[ModelInstanceWorkload]
     ) -> bool:
         members = set(member_worker_ids(instance))
+        pending = set(instance.distributed_servers.maintenance_pending_worker_ids)
         if not workloads or {item.worker_id for item in workloads} != members:
             return False
         if any(
@@ -1604,7 +1609,7 @@ class ModelInstanceService:
                     for w in workloads
                 )
                 and bool(apis)
-                and all(w.component.ready for w in apis)
+                and all(w.component.ready or w.worker_id in pending for w in apis)
             )
         elif any(item.component is not None for item in workloads):
             engines = [
@@ -1626,40 +1631,142 @@ class ModelInstanceService:
                 and mains[0].component.ready
                 and len(smgs) == 1
                 and smgs[0].worker_id == instance.worker_id
-                and smgs[0].component.ready
+                and (smgs[0].component.ready or smgs[0].worker_id in pending)
                 and not smgs[0].component.stop_requested
                 and all(w.component is not None for w in workloads)
             )
         else:
             mains = [
-                placement
+                (item.worker_id, placement)
                 for item in workloads
                 for placement in item.dp_rank_placements
                 if placement.node_rank == 0
             ]
-            ready = bool(mains) and all(p.ready for p in mains)
+            ready = bool(mains) and all(
+                placement.ready or worker_id in pending
+                for worker_id, placement in mains
+            )
         if not ready or any(
             item.state != ModelInstanceWorkloadStateEnum.RUNNING for item in workloads
         ):
             return False
-        return await self._managed_workers_ready(members)
+        return await self._managed_workers_ready(members, instance=instance)
 
-    async def _managed_workers_ready(self, members: Set[int]) -> bool:
+    async def managed_maintenance_paths_unavailable(
+        self, instance: ModelInstance, worker: Worker
+    ) -> bool:
+        """Check serving paths while the caller holds the instance and Worker locks.
+
+        Workload observations remain unchanged. The triggering Worker's locked
+        facts are reused, and other API owners are read from current storage.
+        """
+        owners = {
+            endpoint.worker_id
+            for endpoint in model_instance_endpoints(
+                instance.model_copy(update={"state": ModelInstanceStateEnum.RUNNING})
+            )
+        }
+        if worker.id not in owners or not maintenance_inference_path_unavailable(
+            worker
+        ):
+            return False
+        others = owners - {worker.id}
+        workers = (
+            await Worker.all_by_ids(self.session, others, refresh=True)
+            if others
+            else []
+        )
+        by_id = {item.id: item for item in workers}
+        by_id[worker.id] = worker
+        return not any(
+            self._managed_inference_path_available(by_id.get(worker_id))
+            for worker_id in owners
+        )
+
+    @staticmethod
+    def _managed_worker_ready(
+        worker: Worker,
+        *,
+        allow_maintenance_disconnect: bool = False,
+        allow_maintenance_offline: bool = False,
+    ) -> bool:
+        return (
+            worker.deleted_at is None
+            and worker.state in (WorkerStateEnum.READY, WorkerStateEnum.MAINTENANCE)
+            and (
+                (
+                    allow_maintenance_offline
+                    and worker.state == WorkerStateEnum.MAINTENANCE
+                )
+                or not is_offline(
+                    worker.heartbeat_time, envs.WORKER_HEARTBEAT_GRACE_PERIOD
+                )[0]
+            )
+            and (
+                not worker.unreachable
+                or (
+                    allow_maintenance_disconnect
+                    and worker.state == WorkerStateEnum.MAINTENANCE
+                )
+            )
+        )
+
+    @classmethod
+    def _managed_inference_path_available(cls, worker: Optional[Worker]) -> bool:
+        if worker is None or worker.deleted_at is not None:
+            return False
+        if worker.state == WorkerStateEnum.MAINTENANCE:
+            return not maintenance_inference_path_unavailable(worker)
+        return cls._managed_worker_ready(worker)
+
+    async def _managed_workers_ready(
+        self, members: Set[int], *, instance: Optional[ModelInstance] = None
+    ) -> bool:
         workers = await Worker.all_by_ids(self.session, members, refresh=True)
         if {worker.id for worker in workers} != members:
             return False
-        for worker in workers:
-            if (
-                worker.deleted_at is not None
-                or worker.unreachable
-                or worker.state
-                not in (WorkerStateEnum.READY, WorkerStateEnum.MAINTENANCE)
-                or is_offline(
-                    worker.heartbeat_time, envs.WORKER_HEARTBEAT_GRACE_PERIOD
-                )[0]
-            ):
-                return False
-        return True
+        pending = (
+            set(instance.distributed_servers.maintenance_pending_worker_ids)
+            if instance is not None
+            else set()
+        )
+        retained_running = instance is not None and (
+            instance.state == ModelInstanceStateEnum.UNREACHABLE or bool(pending)
+        )
+        # Retained headless processes have no public inference path to restore.
+        # Include every declared API owner, including unconfirmed endpoints.
+        headless = (
+            members
+            - {
+                item.worker_id
+                for item in get_model_instance_workloads(instance) or []
+                if managed_workload_serving_apis(item)
+            }
+            if instance is not None
+            and instance.state == ModelInstanceStateEnum.UNREACHABLE
+            else set()
+        )
+        if not all(
+            self._managed_worker_ready(
+                worker,
+                allow_maintenance_disconnect=retained_running,
+                allow_maintenance_offline=worker.id in pending or worker.id in headless,
+            )
+            for worker in workers
+        ):
+            return False
+        if instance is None:
+            return True
+        owners = {
+            endpoint.worker_id
+            for endpoint in model_instance_endpoints(
+                instance.model_copy(update={"state": ModelInstanceStateEnum.RUNNING})
+            )
+        }
+        return any(
+            worker.id in owners and self._managed_inference_path_available(worker)
+            for worker in workers
+        )
 
     async def _managed_smg_reconcile(
         self,
@@ -1818,6 +1925,7 @@ class ModelInstanceService:
         # running; late reports for this generation fail after the locked bump.
         servers = instance.distributed_servers.model_copy(deep=True)
         servers.workloads = []
+        servers.maintenance_pending_worker_ids = []
         source = {
             "restart_count": count + 1,
             "last_restart_time": now,

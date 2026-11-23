@@ -1,10 +1,11 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from gpustack.schemas.cache_services import CacheServiceStateEnum
+from gpustack.schemas.config import ModelInstanceProxyModeEnum
 from gpustack.schemas.models import (
     DistributedServerCoordinateModeEnum,
     DistributedServers,
@@ -23,7 +24,10 @@ from gpustack.server.controllers import WorkerController
 from gpustack.server.worker_syncer import WorkerSyncer
 from gpustack.server.services import WorkerService, ModelInstanceService
 from gpustack.api.exceptions import ConflictException
-from gpustack.utils.model_instance_workers import get_model_instance_worker_match
+from gpustack.utils.model_instance_workers import (
+    get_model_instance_worker_match,
+    model_instance_endpoints,
+)
 from tests.fixtures.workers.fixtures import (
     linux_nvidia_1_4090_24gx1,
     linux_nvidia_2_4080_16gx2,
@@ -556,11 +560,208 @@ async def test_worker_controller_marks_distributed_subordinate_unreachable_when_
     assert subordinate_patch.state_message == "Worker is unreachable from the server"
 
 
+@pytest.fixture
+def legacy_worker(managed_worker, monkeypatch):
+    state = managed_worker
+    state.instance.distributed_servers.workloads = None
+    state.instance.distributed_servers.orchestration_mode = "legacy"
+    state.instance.distributed_servers.subordinate_workers[0].state = (
+        ModelInstanceStateEnum.RUNNING
+    )
+    monkeypatch.setattr("gpustack.server.controllers.async_session", lambda: state.cm)
+    monkeypatch.setattr(
+        ModelInstance, "all_by_field", AsyncMock(return_value=[state.instance])
+    )
+    state.update = AsyncMock()
+    monkeypatch.setattr(ModelInstanceService, "update", state.update)
+    return state
+
+
 @pytest.mark.asyncio
-async def test_worker_controller_deletes_distributed_instance_when_subordinate_worker_deleted():
+@pytest.mark.parametrize("headless", [False, True], ids=["main", "subordinate"])
+@pytest.mark.parametrize(
+    "change, unreachable, heartbeat_expired, expected_worker_state",
+    [
+        ("probe_failed", True, False, WorkerStateEnum.MAINTENANCE),
+        ("probe_recovered", False, False, WorkerStateEnum.MAINTENANCE),
+        ("enabled", True, False, WorkerStateEnum.MAINTENANCE),
+        ("disabled_healthy", False, False, WorkerStateEnum.READY),
+        ("disabled_heartbeat_lost", False, True, WorkerStateEnum.NOT_READY),
+        ("disabled_healthz_failed", True, False, WorkerStateEnum.UNREACHABLE),
+    ],
+)
+async def test_legacy_instance_availability_respects_maintenance(
+    legacy_worker,
+    headless,
+    change,
+    unreachable,
+    heartbeat_expired,
+    expected_worker_state,
+):
+    state = legacy_worker
+    subordinate = state.instance.distributed_servers.subordinate_workers[0]
+    worker = state.sub if headless else state.main
+    worker.proxy_mode = ModelInstanceProxyModeEnum.DIRECT
+    worker.state = WorkerStateEnum.MAINTENANCE
+    worker.state_message = "planned"
+    worker.maintenance = Maintenance(enabled=not change.startswith("disabled"))
+    worker.unreachable = unreachable
+    if heartbeat_expired:
+        worker.heartbeat_time -= timedelta(days=1)
+    worker.compute_state()
+    assert worker.state == expected_worker_state
+    if change.startswith("probe"):
+        changed_fields = {"unreachable": (not unreachable, unreachable)}
+    else:
+        previous = (
+            WorkerStateEnum.UNREACHABLE
+            if change == "enabled"
+            else WorkerStateEnum.MAINTENANCE
+        )
+        changed_fields = {"state": (previous, worker.state)}
+
+    await WorkerController(MagicMock())._reconcile(
+        Event(type=EventType.UPDATED, data=worker, changed_fields=changed_fields)
+    )
+
+    if expected_worker_state in (
+        WorkerStateEnum.MAINTENANCE,
+        WorkerStateEnum.READY,
+    ):
+        state.update.assert_not_awaited()
+        assert state.instance.state == ModelInstanceStateEnum.RUNNING
+        assert subordinate.state == ModelInstanceStateEnum.RUNNING
+    else:
+        state.update.assert_awaited_once()
+        changes = state.update.await_args.args[1]
+        if headless:
+            assert "state" not in changes
+            assert (
+                changes["distributed_servers"].subordinate_workers[0].state
+                == ModelInstanceStateEnum.UNREACHABLE
+            )
+        else:
+            assert changes["state"] == ModelInstanceStateEnum.UNREACHABLE
+            assert subordinate.state == ModelInstanceStateEnum.RUNNING
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("headless", [False, True], ids=["main", "subordinate"])
+@pytest.mark.parametrize(
+    "proxy_mode, unreachable, changed_field",
+    [
+        (ModelInstanceProxyModeEnum.WORKER, True, "unreachable"),
+        (ModelInstanceProxyModeEnum.TUNNEL, True, "unreachable"),
+        (ModelInstanceProxyModeEnum.TUNNEL, False, "proxy_address"),
+        (ModelInstanceProxyModeEnum.TUNNEL, False, "labels"),
+    ],
+)
+async def test_legacy_proxy_loss_marks_instances_unreachable(
+    legacy_worker, headless, proxy_mode, unreachable, changed_field
+):
+    state = legacy_worker
+    worker = state.sub if headless else state.main
+    worker.proxy_mode = proxy_mode
+    worker.unreachable = unreachable
+    worker.maintenance = Maintenance(enabled=True)
+    address = "http://127.0.0.1:30079"
+    worker.proxy_address = address if unreachable else None
+    worker.compute_state()
+    changes = {
+        "unreachable": (False, True),
+        "proxy_address": (address, None),
+        "labels": ({}, {"planned": "true"}),
+    }
+
+    await WorkerController(MagicMock())._reconcile(
+        Event(
+            type=EventType.UPDATED,
+            data=worker,
+            changed_fields={changed_field: changes[changed_field]},
+        )
+    )
+
+    if headless:
+        state.update.assert_not_awaited()
+    else:
+        state.update.assert_awaited_once()
+        assert (
+            state.update.await_args.args[1]["state"]
+            == ModelInstanceStateEnum.UNREACHABLE
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changed", ["engine_error", "reassigned"])
+async def test_maintenance_path_loss_rechecks_current_legacy_instance(
+    legacy_worker, changed
+):
+    s = legacy_worker
+    s.main.state = WorkerStateEnum.MAINTENANCE
+    s.main.proxy_mode = ModelInstanceProxyModeEnum.TUNNEL
+    s.main.proxy_address = None
+    current = s.instance.model_copy(deep=True)
+    if changed == "engine_error":
+        current.state = ModelInstanceStateEnum.ERROR
+        current.state_message = "engine failed"
+    else:
+        current.worker_id, current.worker_name = s.sub.id, s.sub.name
+    s.session.get.side_effect = lambda cls, key, **kwargs: (
+        current if cls is ModelInstance else s.main
+    )
+    await WorkerController(MagicMock())._reconcile(
+        Event(
+            type=EventType.UPDATED,
+            data=s.main,
+            changed_fields={"proxy_address": ("http://proxy", None)},
+        )
+    )
+    s.update.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("headless", [False, True], ids=["main", "subordinate"])
+@pytest.mark.parametrize("stale_disconnect", [False, True])
+async def test_tunnel_reconnect_does_not_change_legacy_instance_state(
+    legacy_worker, headless, stale_disconnect
+):
+    state = legacy_worker
+    worker = state.sub if headless else state.main
+    worker.proxy_mode = ModelInstanceProxyModeEnum.TUNNEL
+    worker.proxy_address = "http://127.0.0.1:30079"
+    worker.maintenance = Maintenance(enabled=True)
+    worker.compute_state()
+    hint = worker.model_copy(deep=True)
+    if stale_disconnect:
+        hint.proxy_address = None
+        changed_fields = {"proxy_address": (worker.proxy_address, None)}
+    else:
+        state.instance.state = ModelInstanceStateEnum.UNREACHABLE
+        state.instance.distributed_servers.subordinate_workers[0].state = (
+            ModelInstanceStateEnum.UNREACHABLE
+        )
+        changed_fields = {"proxy_address": (None, worker.proxy_address)}
+    before = state.instance.model_dump()
+
+    await WorkerController(MagicMock())._reconcile(
+        Event(type=EventType.UPDATED, data=hint, changed_fields=changed_fields)
+    )
+
+    state.update.assert_not_awaited()
+    assert state.instance.model_dump() == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("maintenance", [False, True])
+async def test_worker_controller_deletes_distributed_instance_when_subordinate_worker_deleted(
+    maintenance,
+):
     main_worker = linux_nvidia_1_4090_24gx1()
     subordinate_worker = linux_nvidia_2_4080_16gx2()
-    subordinate_worker.state = WorkerStateEnum.READY
+    subordinate_worker.state = (
+        WorkerStateEnum.MAINTENANCE if maintenance else WorkerStateEnum.READY
+    )
+    subordinate_worker.maintenance = Maintenance(enabled=maintenance)
 
     instance = new_model_instance(
         1,
@@ -758,26 +959,147 @@ async def test_stale_ready_event_still_observes_current_worker_loss(managed_work
 
 
 @pytest.mark.asyncio
-async def test_managed_maintenance_does_not_hide_a_lost_heartbeat(managed_worker):
-    from datetime import timedelta
-
+@pytest.mark.parametrize(
+    "headless", [True, False], ids=["compute-only", "direct-entry"]
+)
+async def test_maintenance_keeps_observed_running_workloads(managed_worker, headless):
     state = managed_worker
-    state.sub.state = WorkerStateEnum.MAINTENANCE
-    state.sub.heartbeat_time = datetime.now(timezone.utc) - timedelta(days=1)
+    worker = state.sub if headless else state.main
+    worker.proxy_mode = (
+        ModelInstanceProxyModeEnum.TUNNEL
+        if headless
+        else ModelInstanceProxyModeEnum.DIRECT
+    )
+    worker.state = WorkerStateEnum.MAINTENANCE
+    worker.heartbeat_time -= timedelta(days=1)
+    worker.unreachable = True
+    before = state.instance.model_dump()
     with (
         patch("gpustack.server.controllers.async_session", return_value=state.cm),
         patch.object(
             ModelInstance, "all_by_field", AsyncMock(return_value=[state.instance])
         ),
-        patch(
-            "gpustack.server.controllers.ModelInstanceService.update", AsyncMock()
-        ) as update,
+        patch.object(
+            Worker, "all_by_ids", AsyncMock(return_value=[state.main, state.sub])
+        ),
+        patch.object(ModelInstanceService, "update", AsyncMock()) as update,
     ):
         await WorkerController(MagicMock())._reconcile(
-            Event(type=EventType.CREATED, data=state.sub)
+            Event(
+                type=EventType.UPDATED,
+                data=worker,
+                changed_fields={"unreachable": (False, True)},
+            )
         )
-    update.assert_awaited_once()
-    assert update.await_args.args[1]["state"] == ModelInstanceStateEnum.UNREACHABLE
+    update.assert_not_awaited()
+    assert state.instance.model_dump() == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("report_first", [True, False])
+async def test_managed_maintenance_partial_loss_then_last_path_disconnects(
+    managed_worker,
+    report_first,
+):
+    s = managed_worker
+    first, second = s.main, s.sub
+    for worker in (first, second):
+        worker.state = WorkerStateEnum.MAINTENANCE
+        worker.proxy_mode = ModelInstanceProxyModeEnum.TUNNEL
+        worker.proxy_address = "http://proxy:30079"
+    placement = s.instance.distributed_servers.workloads[1].dp_rank_placements[0]
+    placement.node_rank, placement.dp_rank, placement.api_port, placement.ready = (
+        0,
+        1,
+        40001,
+        True,
+    )
+    controller = WorkerController(MagicMock())
+
+    async def apply(instance, source):
+        for key, value in source.items():
+            setattr(instance, key, value)
+
+    async def disconnect(worker):
+        worker.proxy_address = None
+        await controller._reconcile(
+            Event(
+                type=EventType.UPDATED,
+                data=worker,
+                changed_fields={"labels": ({}, {"zone": "a"})},
+            )
+        )
+
+    with (
+        patch("gpustack.server.controllers.async_session", return_value=s.cm),
+        patch.object(
+            ModelInstance, "all_by_field", AsyncMock(return_value=[s.instance])
+        ),
+        patch.object(Worker, "all_by_ids", AsyncMock(return_value=[first, second])),
+        patch.object(ModelInstanceService, "update", AsyncMock(side_effect=apply)),
+    ):
+        await disconnect(first)
+        assert s.instance.state == ModelInstanceStateEnum.RUNNING
+        assert [e.worker_id for e in model_instance_endpoints(s.instance)] == [
+            second.id
+        ]
+        first.proxy_address = "http://proxy:30079"
+        assert [e.worker_id for e in model_instance_endpoints(s.instance)] == [
+            second.id
+        ]
+        first.proxy_address = None
+        await disconnect(second)
+        assert s.instance.state == ModelInstanceStateEnum.UNREACHABLE
+        servers = s.instance.distributed_servers
+        assert set(servers.maintenance_pending_worker_ids) == {first.id, second.id}
+        assert all(
+            task.state == ModelInstanceWorkloadStateEnum.RUNNING
+            for task in servers.workloads
+        )
+        assert not any(p.ready for w in servers.workloads for p in w.dp_rank_placements)
+
+        async def reconnect():
+            first.proxy_address = "http://proxy:30079"
+            await controller._reconcile(
+                Event(
+                    type=EventType.UPDATED,
+                    data=first,
+                    changed_fields={"proxy_address": (None, first.proxy_address)},
+                )
+            )
+
+        if not report_first:
+            await reconnect()
+            assert s.instance.state == ModelInstanceStateEnum.UNREACHABLE
+
+        from gpustack.gateway.utils import model_instances_registry_list
+        from gpustack.routes.model_instances import _merge_workload_report
+        from gpustack.schemas.principals import PrincipalType
+        from gpustack.utils.model_instance_workers import worker_workload_report
+
+        observed = servers.workloads[0].model_copy(deep=True)
+        observed.dp_rank_placements[0].ready = True
+        report = worker_workload_report(s.instance, first.id, [observed])
+        ctx = SimpleNamespace(
+            user=SimpleNamespace(kind=PrincipalType.SYSTEM, worker=first)
+        )
+        s.instance.distributed_servers = _merge_workload_report(
+            s.instance, ctx, report, current_worker=first
+        )
+        second.heartbeat_time -= timedelta(days=1)
+        await ModelInstanceService(s.session).reconcile_managed_instance(
+            s.instance.id, s.instance.restart_count, allow_restart=False
+        )
+        if report_first:
+            assert s.instance.state == ModelInstanceStateEnum.UNREACHABLE
+            await reconnect()
+        assert s.instance.state == ModelInstanceStateEnum.RUNNING
+        assert [e.worker_id for e in model_instance_endpoints(s.instance)] == [first.id]
+        destinations = model_instances_registry_list(
+            [s.instance], {w.id: w for w in (first, second)}
+        )
+        assert len(destinations) == 1
+        assert destinations[0][2].name.endswith("-dp0")
 
 
 @pytest.mark.asyncio
@@ -1268,6 +1590,33 @@ async def test_worker_notifications_load_models_only_for_matched_instances(
     # fields; an `unreachable` flip rides the bare model event through
     # the Model controller instead of notifying twice.
     assert notify.await_count == int(matched and field != 'unreachable')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changes", [{"labels": ({}, {"zone": "a"})}, {}])
+async def test_maintenance_path_refreshes_routes_after_coalesced_update(
+    managed_worker, changes
+):
+    s = managed_worker
+    s.main.state = WorkerStateEnum.MAINTENANCE
+    s.main.proxy_mode = ModelInstanceProxyModeEnum.TUNNEL
+    model = new_model(s.instance.model_id, "model", huggingface_repo_id="org/model")
+    with (
+        patch("gpustack.server.controllers.async_session", return_value=s.cm),
+        patch.object(
+            ModelInstance, "all_by_fields", AsyncMock(return_value=[s.instance])
+        ),
+        patch.object(Model, "all_by_fields", AsyncMock(return_value=[model])),
+        patch("gpustack.server.controllers.event_bus.publish", AsyncMock()),
+        patch(
+            "gpustack.server.controllers.notify_model_route_target", AsyncMock()
+        ) as notify,
+    ):
+        await WorkerController(MagicMock())._notify_relatives(
+            Event(type=EventType.UPDATED, data=s.main, changed_fields=changes)
+        )
+    notify.assert_awaited_once()
+    assert "worker_inference_path" in notify.await_args.kwargs["event"].changed_fields
 
 
 @pytest.mark.asyncio

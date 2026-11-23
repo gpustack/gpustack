@@ -51,6 +51,7 @@ from gpustack.schemas.models import (
 from gpustack.utils.model_instance_workers import (
     ModelInstanceEndpoint,
     get_model_instance_workloads,
+    maintenance_inference_path_unavailable,
     model_instance_endpoints,
     parse_model_instance_target,
     resolve_model_instance_endpoint,
@@ -382,6 +383,15 @@ def model_instance_prefix(
     return f"{model_prefix(model_instance.model_id)}{model_instance.id}"
 
 
+def _owns_endpoint(worker, instance, endpoint) -> bool:
+    return (
+        worker is not None
+        and worker.id == endpoint.worker_id
+        and worker.deleted_at is None
+        and (instance.cluster_id is None or worker.cluster_id == instance.cluster_id)
+    )
+
+
 def model_instance_registry(
     model_instance: Union[ModelInstance, ModelInstancePublic],
     worker: Optional[Worker] = None,
@@ -391,16 +401,7 @@ def model_instance_registry(
         model_instance.distributed_servers
         and model_instance.distributed_servers.workloads is not None
     ):
-        if (
-            endpoint is None
-            or worker is None
-            or worker.id != endpoint.worker_id
-            or worker.deleted_at is not None
-            or (
-                model_instance.cluster_id is not None
-                and worker.cluster_id != model_instance.cluster_id
-            )
-        ):
+        if endpoint is None or not _owns_endpoint(worker, model_instance, endpoint):
             return None
         if endpoint not in model_instance_endpoints(model_instance):
             return None
@@ -411,6 +412,8 @@ def model_instance_registry(
                 "port": endpoint.port,
             }
         )
+    if worker is not None and maintenance_inference_path_unavailable(worker):
+        return None
     name = model_instance_prefix(model_instance)
     if endpoint is not None:
         name = endpoint.registry_name
@@ -1075,15 +1078,20 @@ def model_instances_registry_list(
     for model_instance in model_instances:
         if get_model_instance_workloads(model_instance) is not None:
             endpoints = model_instance_endpoints(model_instance)
-            instance_registries = [
-                model_instance_registry(
-                    model_instance,
-                    worker=(workers or {}).get(endpoint.worker_id),
-                    endpoint=endpoint,
+            instance_registries = []
+            for endpoint in endpoints:
+                worker = (workers or {}).get(endpoint.worker_id)
+                if _owns_endpoint(
+                    worker, model_instance, endpoint
+                ) and maintenance_inference_path_unavailable(worker):
+                    continue
+                instance_registries.append(
+                    model_instance_registry(
+                        model_instance, worker=worker, endpoint=endpoint
+                    )
                 )
-                for endpoint in endpoints
-            ]
-            # A missing owner or tunnel address withdraws the whole instance.
+            # Maintenance withdraws only its API; invalid ownership or runtime
+            # facts still withdraw the complete generation.
             if any(registry is None for registry in instance_registries):
                 continue
         else:
@@ -2208,6 +2216,7 @@ async def resolve_instance_address_from_model_header(
                 and worker.cluster_id != instance.cluster_id
             )
             or not worker.ip
+            or maintenance_inference_path_unavailable(worker)
         ):
             raise HTTPException(
                 status_code=404, detail="Destination Worker is unavailable"

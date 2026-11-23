@@ -2553,9 +2553,15 @@ class ServeManager(ContainerLogPersister):
                                 recovery_worker = self._clientset.workers.get(
                                     self._worker_id, use_cache=False
                                 )
+                            # This follower has no public inference endpoint.
+                            # During maintenance its local runtime observation
+                            # can unblock the leader's own readiness check.
                             if (
-                                recovery_worker.state != WorkerStateEnum.READY
-                                or recovery_worker.unreachable
+                                recovery_worker.state != WorkerStateEnum.MAINTENANCE
+                                and (
+                                    recovery_worker.state != WorkerStateEnum.READY
+                                    or recovery_worker.unreachable
+                                )
                             ):
                                 continue
                         # Do not mutate the watch cache before the update succeeds:

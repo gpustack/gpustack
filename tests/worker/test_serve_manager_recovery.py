@@ -221,7 +221,9 @@ def test_legacy_group_failure_waits_for_real_stops_then_starts_one_round(
 
         def report(*, id, report, ctx=ctx):
             source = asyncio.run(
-                _legacy_runtime_fields(session, s.instance, ctx, report)
+                _legacy_runtime_fields(
+                    session, s.instance, ctx, report, ctx.user.worker
+                )
             )
             asyncio.run(persist(s.instance, source))
             return s.instance.model_copy(deep=True)
@@ -387,7 +389,6 @@ def test_recovery_shares_worker_read_only_within_one_sync(recovery, initially_re
     [
         (WorkerStateEnum.UNREACHABLE, True),
         (WorkerStateEnum.NOT_READY, False),
-        (WorkerStateEnum.MAINTENANCE, False),
         (WorkerStateEnum.READY, True),
     ],
 )
@@ -409,6 +410,19 @@ def test_subordinate_waits_for_server_confirmed_recovery(
         recovery.instance.distributed_servers.subordinate_workers[0].state
         == ModelInstanceStateEnum.RUNNING
     )
+
+
+@pytest.mark.parametrize("unreachable", [False, True])
+def test_maintenance_follower_can_report_local_runtime_recovery(recovery, unreachable):
+    recovery.worker.state = WorkerStateEnum.MAINTENANCE
+    recovery.worker.unreachable = unreachable
+    member = recovery.instance.distributed_servers.subordinate_workers[0]
+    member.state = ModelInstanceStateEnum.UNREACHABLE
+    recovery.managers[1].sync_model_instances_state()
+    assert recovery.instance.distributed_servers.subordinate_workers[0].state == (
+        ModelInstanceStateEnum.RUNNING
+    )
+    assert recovery.instance.state == ModelInstanceStateEnum.UNREACHABLE
 
 
 @pytest.mark.parametrize(

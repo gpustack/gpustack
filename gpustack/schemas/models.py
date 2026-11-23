@@ -2133,6 +2133,11 @@ class DistributedServers(BaseModel):
     workloads: Optional[List[ModelInstanceWorkload]] = PydanticField(
         default=None, json_schema_extra={"readOnly": True}
     )
+    # After losing their serving paths during maintenance, these API owners
+    # must confirm their local readiness before their endpoints rejoin routing.
+    maintenance_pending_worker_ids: List[int] = PydanticField(
+        default_factory=list, json_schema_extra={"readOnly": True}
+    )
     # Server releases physical teardown after any traffic drain window.
     stop_requested: bool = PydanticField(
         default=False, json_schema_extra={"readOnly": True}
@@ -2162,6 +2167,8 @@ class DistributedServers(BaseModel):
     def validate_legacy_stop(self):
         if (self.orchestration_mode == "managed") != (self.workloads is not None):
             raise ValueError("Orchestration mode must match the workload manifest")
+        if self.workloads is None:
+            self.maintenance_pending_worker_ids = []
         if self.legacy_stop is not None and self.workloads is not None:
             raise ValueError("A legacy stop guard cannot replace a managed manifest")
         return self
