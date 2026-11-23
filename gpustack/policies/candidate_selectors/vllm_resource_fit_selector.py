@@ -49,6 +49,7 @@ from gpustack.utils.command import (
 from gpustack.utils.unit import byte_to_gib
 from gpustack.validation.pd.roles import validate_managed_pd_topology
 from gpustack.utils.vllm_topology import (
+    MultinodeUserParallelism,
     auto_shard_override,
     parse_user_parallelism,
     validate_multinode_topology,
@@ -414,24 +415,15 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
 
         kept: List[ModelInstanceScheduleCandidate] = []
         for candidate in candidates:
-            if not candidate.subordinate_workers:
-                kept.append(candidate)
-                continue
-            gpu_per_node, budgets = self._placement_vram_budgets(candidate)
-            try:
-                override = auto_shard_override(
-                    gpu_per_node,
-                    budgets,
-                    self._vram_claim or 0,
-                    parse_user_parallelism(self._model.backend_parameters),
-                    tp_divisible=self._is_tp_size_divisible,
+            rejection, override = self._plan_auto_shard(candidate)
+            if rejection is not None:
+                logger.info(
+                    "Skipping placement for %s: %s", self._model.name, rejection
                 )
-            except ValueError as error:
-                logger.info("Skipping placement for %s: %s", self._model.name, error)
                 self._event_collector.add(
                     EventLevelEnum.INFO,
                     EVENT_ACTION_AUTO_MULTI_WORKER_MULTI_GPU,
-                    str(error),
+                    rejection,
                 )
                 continue
             if override is not None:
@@ -439,15 +431,115 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                     tp=override.tp, pp=override.pp
                 )
                 pp = f", pipeline-parallel-size={override.pp}" if override.pp else ""
+                workers = 1 + len(candidate.subordinate_workers or [])
                 self._event_collector.add(
                     EventLevelEnum.INFO,
                     EVENT_ACTION_AUTO_MULTI_WORKER_MULTI_GPU,
                     "A data-parallel replica does not fit on one worker. "
-                    f"Sharding one replica across {len(gpu_per_node)} workers "
+                    f"Sharding one replica across {workers} workers "
                     f"with tensor-parallel-size={override.tp}{pp}.",
                 )
             kept.append(candidate)
         return kept
+
+    def _plan_auto_shard(
+        self, candidate: ModelInstanceScheduleCandidate
+    ) -> Tuple[Optional[str], Optional[MultinodeUserParallelism]]:
+        """Decide whether this placement keeps DP, stores a shard, or is dropped.
+
+        The first value is the reason a placement cannot run. The second is
+        the TP/PP to inject. Both are ``None`` when the count-derived DP
+        layout stays.
+        """
+        if (
+            not candidate.subordinate_workers
+            or manual_dp_enabled(self._model.env)
+            or vllm_lb_mode(self._model.backend_parameters) != "internal"
+            or resolve_executor_backend(
+                self._model.backend_parameters,
+                self._model.backend_version,
+                self._model.image_name,
+            )
+            != "mp"
+        ):
+            return None, None
+        gpu_per_node, budgets = self._placement_vram_budgets(candidate)
+        try:
+            override = auto_shard_override(
+                gpu_per_node,
+                budgets,
+                self._vram_claim or 0,
+                parse_user_parallelism(self._model.backend_parameters),
+                tp_divisible=self._is_tp_size_divisible,
+            )
+        except ValueError as error:
+            return str(error), None
+        return None, override
+
+    def _candidate_that_can_shard(
+        self,
+        selected_workers: List[Worker],
+        gpus_per_worker: int,
+        seen_skip_reasons: set,
+        event_message: ListMessageBuilder,
+    ) -> Optional[ModelInstanceScheduleCandidate]:
+        """Return a prefix that can run, dropping a GPU that misses its share.
+
+        Extending the prefix keeps that GPU in every later candidate. Drop it
+        and let the scan append workers that follow it.
+        """
+        while len(selected_workers) >= 2:
+            total_gpus = gpus_per_worker * len(selected_workers)
+            if self._gpu_count and total_gpus != self._gpu_count:
+                return None
+            if self._admission_vram(selected_workers) < (self._vram_claim or 0):
+                return None
+            candidate, skip_reason = _create_candidate(
+                self._model,
+                selected_workers,
+                self._gpu_memory_utilization,
+            )
+            if candidate is None:
+                if skip_reason and skip_reason not in seen_skip_reasons:
+                    seen_skip_reasons.add(skip_reason)
+                    event_message.append(skip_reason)
+                return None
+            rejection, _override = self._plan_auto_shard(candidate)
+            if rejection is None:
+                return candidate
+            logger.info("Skipping placement for %s: %s", self._model.name, rejection)
+            self._event_collector.add(
+                EventLevelEnum.INFO,
+                EVENT_ACTION_AUTO_MULTI_WORKER_MULTI_GPU,
+                rejection,
+            )
+            self._drop_smallest_share(selected_workers, candidate)
+        return None
+
+    def _admission_vram(self, workers: List[Worker]) -> int:
+        """VRAM the multi-worker scan counts. Zero utilization counts the card."""
+        utilization = self._gpu_memory_utilization or 1
+        return sum(
+            int(gpu.memory.total * utilization)
+            for worker in workers
+            for gpu in worker.status.gpu_devices
+        )
+
+    def _drop_smallest_share(
+        self,
+        selected_workers: List[Worker],
+        candidate: ModelInstanceScheduleCandidate,
+    ) -> None:
+        """Remove the worker with the smallest per-GPU budget."""
+        counts, budgets = self._placement_vram_budgets(candidate)
+        if len(counts) != len(selected_workers):
+            selected_workers.pop(0)
+            return
+        per_gpu = [
+            budget // count if count else 0 for budget, count in zip(budgets, counts)
+        ]
+        drop_at = min(range(len(per_gpu)), key=lambda index: (per_gpu[index], index))
+        selected_workers.pop(drop_at)
 
     def _placement_vram_budgets(
         self, candidate: ModelInstanceScheduleCandidate
@@ -1166,17 +1258,23 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                         break
 
                 if vram_sum >= self._vram_claim:
-                    candidate, skip_reason = _create_candidate(
-                        self._model,
+                    # A rejected shard drops workers. Remember the set that
+                    # was assembled before that, for the scheduling message.
+                    if vram_sum > largest_vram:
+                        workers_combination = list(selected_workers)
+                        largest_vram = vram_sum
+                        worker_count = len(worker_group)
+                        device_count_per_worker = gpu_count
+                    candidate = self._candidate_that_can_shard(
                         selected_workers,
-                        self._gpu_memory_utilization,
+                        gpu_count,
+                        seen_skip_reasons,
+                        event_message,
                     )
-                    if candidate is None:
-                        if skip_reason and skip_reason not in seen_skip_reasons:
-                            seen_skip_reasons.add(skip_reason)
-                            event_message.append(skip_reason)
-                        continue
-                    return [candidate]
+                    if candidate is not None:
+                        return [candidate]
+                    gpu_sum = gpu_count * len(selected_workers)
+                    vram_sum = self._admission_vram(selected_workers)
             if vram_sum > largest_vram:
                 workers_combination = selected_workers
                 largest_vram = vram_sum

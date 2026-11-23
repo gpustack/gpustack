@@ -657,13 +657,27 @@ def auto_shard_override(
 ) -> Optional[MultinodeUserParallelism]:
     """TP/PP to use when the default DP replica does not fit on a node.
 
-    ``None`` keeps the count-derived default (DP across nodes, TP inside a
-    node). A returned value is one replica sharded across the allocation.
-    Raises ``ValueError`` when that replica does not fit and the workers
-    cannot share one.
+    Args:
+        gpu_per_node: GPU count of each selected worker, leader first.
+        node_budgets: VRAM bytes each worker can spend, same order as
+            ``gpu_per_node``.
+        model_vram: Full-model VRAM estimate in bytes.
+        user: Parallelism the user already set. Any set field keeps the
+            count-derived layout.
+        tp_divisible: ``tp_divisible(size)`` is true when ``size`` is a legal
+            tensor-parallel width for this model. The default accepts every
+            positive size. Callers pass the scheduler's head and vocab check.
+            It is called with the full allocation width.
 
-    ``node_budgets`` are the VRAM bytes reserved on each worker, in the same
-    order as ``gpu_per_node``. ``model_vram`` is the full-model estimate.
+    Returns:
+        ``None`` to keep the count-derived layout: the user pinned one, every
+        node can hold a DP replica, or the budgets do not cover the model.
+        Otherwise one replica sharded across every selected GPU with full-width
+        tensor parallelism.
+
+    Raises:
+        ValueError: The replica does not fit an even per-GPU share, or the
+        full tensor-parallel width is illegal.
     """
     user = user or MultinodeUserParallelism()
     if len(gpu_per_node) < 2 or _user_pinned_parallelism(user):
