@@ -6,6 +6,7 @@ from gpustack.schemas.models import (
     ComputedResourceClaim,
     ModelInstance,
     ModelInstanceSubordinateWorker,
+    VLLMAutoParallelism,
 )
 from gpustack.schemas.workers import Worker
 
@@ -30,6 +31,8 @@ class ModelInstanceScheduleCandidate:
 
     # for multi-worker distributed scheduling
     subordinate_workers: Optional[List[ModelInstanceSubordinateWorker]] = None
+    # vLLM MP only: shard across nodes when a DP replica does not fit one node.
+    auto_parallelism: Optional[VLLMAutoParallelism] = None
 
     def to_log_string(self) -> str:
         log_entries = [

@@ -60,6 +60,7 @@ def _candidate():
         gpu_type="cuda",
         computed_resource_claim=ComputedResourceClaim(vram={0: 1024}, ram=0),
         subordinate_workers=None,
+        auto_parallelism=None,
     )
 
 

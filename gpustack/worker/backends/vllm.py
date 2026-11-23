@@ -30,6 +30,7 @@ from gpustack.schemas.models import (
     is_omni_model,
     DPRankPlacement,
     ModelInstanceWorkload,
+    VLLMAutoParallelism,
     ModelInstanceComponent,
     ModelInstanceWorkloadStateEnum,
 )
@@ -50,6 +51,7 @@ from gpustack.utils.vllm_kv_cache import ascend_local_kv_cache_unsupported_reaso
 from gpustack.utils.vllm_topology import (
     MultinodeShape,
     MultinodeUserParallelism,
+    _user_pinned_parallelism,
     parse_user_parallelism,
     validate_multinode_topology,
     external_lb_parallelism,
@@ -1363,7 +1365,10 @@ class VLLMServer(InferenceServer):
             return cal_multinode_topology(
                 self._model_instance,
                 deployment_metadata,
-                parse_user_parallelism(self._model.backend_parameters),
+                _with_auto_parallelism(
+                    parse_user_parallelism(self._model.backend_parameters),
+                    self._model_instance,
+                ),
             ).shape
         except ValueError:
             return None
@@ -1622,7 +1627,10 @@ class VLLMServer(InferenceServer):
             topology = cal_multinode_topology(
                 self._model_instance,
                 deployment_metadata,
-                parse_user_parallelism(self._model.backend_parameters),
+                _with_auto_parallelism(
+                    parse_user_parallelism(self._model.backend_parameters),
+                    self._model_instance,
+                ),
             )
         return _VLLMArgsContext(
             port=port,
@@ -2087,6 +2095,28 @@ def cal_multinode_topology(
     )
 
 
+def _with_auto_parallelism(
+    user: MultinodeUserParallelism, model_instance: ModelInstance
+) -> MultinodeUserParallelism:
+    """Apply a scheduler shard override without hiding an explicit user value.
+
+    The override is not part of backend_parameters, so callers still inject it.
+    """
+    if _user_pinned_parallelism(user):
+        return user
+    servers = getattr(model_instance, "distributed_servers", None)
+    override = getattr(servers, "auto_parallelism", None)
+    if not isinstance(override, VLLMAutoParallelism):
+        return user
+    return MultinodeUserParallelism(
+        tp=override.tp,
+        pp=override.pp,
+        dp=user.dp,
+        dpl=user.dpl,
+        pcp=user.pcp,
+    )
+
+
 def get_auto_parallelism_arguments(
     backend_parameters: List[str],
     model_instance: ModelInstance,
@@ -2110,7 +2140,11 @@ def get_auto_parallelism_arguments(
         # the same backend_parameters, so any non-None field acts as a hard
         # cluster-wide constraint.
         user = parse_user_parallelism(backend_parameters)
-        topology = cal_multinode_topology(model_instance, deployment_metadata, user)
+        topology = cal_multinode_topology(
+            model_instance,
+            deployment_metadata,
+            _with_auto_parallelism(user, model_instance),
+        )
         derived: List[str] = []
         if user.tp is None:
             derived.extend(["--tensor-parallel-size", str(topology.tp)])

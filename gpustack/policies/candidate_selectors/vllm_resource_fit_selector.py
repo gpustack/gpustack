@@ -36,6 +36,7 @@ from gpustack.schemas.models import (
     ComputedResourceClaim,
     Model,
     ModelInstanceSubordinateWorker,
+    VLLMAutoParallelism,
 )
 from gpustack.schemas.workers import GPUDevicesStatus, Worker
 from gpustack.config import Config
@@ -48,6 +49,7 @@ from gpustack.utils.command import (
 from gpustack.utils.unit import byte_to_gib
 from gpustack.validation.pd.roles import validate_managed_pd_topology
 from gpustack.utils.vllm_topology import (
+    auto_shard_override,
     parse_user_parallelism,
     validate_multinode_topology,
     vllm_lb_mode,
@@ -308,6 +310,10 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         Get schedule candidates that fit the GPU resources requirement.
         """
 
+        # Subordinate workers on a candidate only keep an id. Shard budgeting
+        # looks the worker back up when a zero reservation is not a capacity.
+        self._workers_by_id = {worker.id: worker for worker in workers}
+
         # Initialize model parameters.
         await self._init_model_parameters(workers)
 
@@ -369,6 +375,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 "hybrid",
             ):
                 candidates = self._validate_managed_candidates(candidates)
+            candidates = self._shard_when_dp_replica_does_not_fit(candidates)
             for candidate in candidates:
                 self._finalize_candidate_ram(candidate)
 
@@ -382,6 +389,118 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
 
         self._set_messages()
         return []
+
+    def _shard_when_dp_replica_does_not_fit(
+        self, candidates: List[ModelInstanceScheduleCandidate]
+    ) -> List[ModelInstanceScheduleCandidate]:
+        """Shard one replica across nodes when the default DP copy does not fit.
+
+        The count-derived MP default is data parallel across workers. That
+        replicates the whole model on every node, while admission only checks
+        the sum of their VRAM. When no node can hold one copy, record a TP/PP
+        override the worker injects at launch.
+        """
+        if (
+            manual_dp_enabled(self._model.env)
+            or vllm_lb_mode(self._model.backend_parameters) != "internal"
+            or resolve_executor_backend(
+                self._model.backend_parameters,
+                self._model.backend_version,
+                self._model.image_name,
+            )
+            != "mp"
+        ):
+            return candidates
+
+        kept: List[ModelInstanceScheduleCandidate] = []
+        for candidate in candidates:
+            if not candidate.subordinate_workers:
+                kept.append(candidate)
+                continue
+            gpu_per_node, budgets = self._placement_vram_budgets(candidate)
+            try:
+                override = auto_shard_override(
+                    gpu_per_node,
+                    budgets,
+                    self._vram_claim or 0,
+                    parse_user_parallelism(self._model.backend_parameters),
+                    tp_divisible=self._is_tp_size_divisible,
+                )
+            except ValueError as error:
+                logger.info("Skipping placement for %s: %s", self._model.name, error)
+                self._event_collector.add(
+                    EventLevelEnum.INFO,
+                    EVENT_ACTION_AUTO_MULTI_WORKER_MULTI_GPU,
+                    str(error),
+                )
+                continue
+            if override is not None:
+                candidate.auto_parallelism = VLLMAutoParallelism(
+                    tp=override.tp, pp=override.pp
+                )
+                pp = f", pipeline-parallel-size={override.pp}" if override.pp else ""
+                self._event_collector.add(
+                    EventLevelEnum.INFO,
+                    EVENT_ACTION_AUTO_MULTI_WORKER_MULTI_GPU,
+                    "A data-parallel replica does not fit on one worker. "
+                    f"Sharding one replica across {len(gpu_per_node)} workers "
+                    f"with tensor-parallel-size={override.tp}{pp}.",
+                )
+            kept.append(candidate)
+        return kept
+
+    def _placement_vram_budgets(
+        self, candidate: ModelInstanceScheduleCandidate
+    ) -> Tuple[List[int], List[int]]:
+        """GPU counts and the VRAM each selected node can spend on one shard."""
+        gpu_per_node = [len(candidate.gpu_indexes or [])]
+        budgets = [
+            self._usable_vram_budget(
+                candidate.worker,
+                candidate.gpu_indexes,
+                sum((candidate.computed_resource_claim.vram or {}).values()),
+                candidate.gpu_type,
+            )
+        ]
+        workers_by_id = getattr(self, "_workers_by_id", {})
+        for subordinate in candidate.subordinate_workers:
+            gpu_per_node.append(len(subordinate.gpu_indexes or []))
+            claim = subordinate.computed_resource_claim
+            reserved = sum((claim.vram or {}).values()) if claim else 0
+            budgets.append(
+                self._usable_vram_budget(
+                    workers_by_id.get(subordinate.worker_id),
+                    subordinate.gpu_indexes,
+                    reserved,
+                    subordinate.gpu_type,
+                )
+            )
+        return gpu_per_node, budgets
+
+    def _usable_vram_budget(
+        self,
+        worker: Optional[Worker],
+        gpu_indexes: Optional[List[int]],
+        reserved: int,
+        gpu_type: Optional[str],
+    ) -> int:
+        """VRAM this node can put toward a shard.
+
+        A positive ``gpu_memory_utilization`` reserves that fraction of each
+        card, and the reservation is the budget. Non-LLM models leave the
+        reservation at zero because vLLM ignores the flag, while admission
+        counted each card's allocatable memory. Treating that zero as the
+        budget skips the shard and copies the whole model onto every node.
+        """
+        if getattr(self, "_gpu_memory_utilization", 0.9) > 0 or worker is None:
+            return reserved
+        indexes = list(gpu_indexes or [])
+        allocatable = self.get_worker_allocatable_resource(worker, gpu_type).vram
+        if indexes and all(index in allocatable for index in indexes):
+            return sum(int(allocatable[index]) for index in indexes)
+        totals = self._get_worker_vram(worker)
+        from_totals = sum(int(totals.get(index, 0)) for index in indexes)
+        return from_totals or reserved
 
     def _validate_managed_candidates(
         self, candidates: List[ModelInstanceScheduleCandidate]

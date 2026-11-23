@@ -22,6 +22,7 @@ from gpustack.policies.candidate_selectors.vllm_resource_fit_selector import (
 from gpustack.utils.vllm_topology import (
     MultinodeUserParallelism,
     ValidatedTopology,
+    auto_shard_override,
     validate_multinode_topology,
 )
 from gpustack.worker.backends.vllm import (
@@ -1475,3 +1476,258 @@ def test_managed_http_validation_recognizes_native_tls_aliases(option):
         validate_managed_lb_parameters(
             ['--data_parallel_external_lb', f'--{option}=/tmp/model_key']
         )
+
+
+_GIB = 1024**3
+
+
+def test_auto_shard_uses_tp_when_a_dp_replica_does_not_fit():
+    """Two 1-GPU nodes whose sum covers the model, but neither node does."""
+    override = auto_shard_override(
+        [1, 1],
+        [10 * _GIB, 10 * _GIB],
+        16 * _GIB,
+        tp_divisible=lambda size: size in (1, 2),
+    )
+    assert override == MultinodeUserParallelism(tp=2)
+
+
+def test_auto_shard_keeps_dp_when_each_node_can_hold_a_replica():
+    assert (
+        auto_shard_override(
+            [8, 8],
+            [40 * _GIB, 40 * _GIB],
+            20 * _GIB,
+        )
+        is None
+    )
+
+
+def test_auto_shard_requires_explicit_pipeline_when_full_tp_is_illegal():
+    with pytest.raises(ValueError, match="pipeline-parallel layout explicitly"):
+        auto_shard_override(
+            [8, 8],
+            [40 * _GIB, 40 * _GIB],
+            70 * _GIB,
+            tp_divisible=lambda size: size == 8,
+        )
+
+
+def test_auto_shard_ignores_an_explicit_user_layout():
+    assert (
+        auto_shard_override(
+            [1, 1],
+            [10 * _GIB, 10 * _GIB],
+            16 * _GIB,
+            MultinodeUserParallelism(tp=1, dp=2),
+        )
+        is None
+    )
+
+
+def test_auto_shard_rejects_uneven_gpu_counts_that_cannot_share_a_replica():
+    with pytest.raises(ValueError, match="not equal"):
+        auto_shard_override([2, 1], [40 * _GIB, 20 * _GIB], 30 * _GIB)
+
+
+def test_auto_shard_rejects_a_node_that_cannot_hold_its_share():
+    """Equal GPU counts, but the small node's reservation is under an even split."""
+    with pytest.raises(ValueError, match="smallest reservation"):
+        auto_shard_override(
+            [1, 1],
+            [80 * _GIB, 10 * _GIB],
+            30 * _GIB,
+            tp_divisible=lambda size: size in (1, 2),
+        )
+
+
+def test_auto_shard_keeps_tp_when_the_smaller_gpu_can_hold_its_share():
+    """The reported T4 + 3060 reservations still cover an even split of the claim."""
+    override = auto_shard_override(
+        [1, 1],
+        [14495514624, 11596411699],
+        23188691062,
+        tp_divisible=lambda size: size in (1, 2),
+    )
+    assert override == MultinodeUserParallelism(tp=2)
+
+
+def test_scheduled_shard_drives_shape_env_and_follower_args():
+    """The stored override is one topology for args, env, and the follower."""
+    from types import SimpleNamespace
+
+    from gpustack.schemas.models import (
+        DistributedServers,
+        ModelInstanceSubordinateWorker,
+        VLLMAutoParallelism,
+    )
+    from tests.utils.model import new_model_instance
+
+    instance = new_model_instance(1, "qwen3-vl", 1, gpu_indexes=[0])
+    instance.worker_ip = "10.0.0.1"
+    instance.ports = [40000, 40001, 40002, 40042, 40063]
+    instance.distributed_servers = DistributedServers(
+        subordinate_workers=[ModelInstanceSubordinateWorker(gpu_indexes=[0])],
+        auto_parallelism=VLLMAutoParallelism(tp=2),
+    )
+    server = object.__new__(VLLMServer)
+    server._model = SimpleNamespace(
+        backend_parameters=[],
+        backend_version=None,
+        image_name="example/runner:cuda",
+        backend="vLLM",
+        categories=[],
+    )
+    server._model_instance = instance
+    server._worker = SimpleNamespace(ip="10.0.0.2", ifname="eth0")
+    server._get_selected_gpu_devices = lambda: []
+
+    meta = _meta("follower", follower_index=0)
+    assert server._resolve_multinode_shape(meta) == "mp_only"
+    env = {}
+    server._set_distributed_env(env, meta)
+    assert "VLLM_DP_MASTER_PORT" not in env
+    assert "VLLM_PORT" not in env
+
+    ctx = server._make_args_context(40000, True, None, meta)
+    arguments = server._build_mp_multinode_arguments(ctx)
+    assert _argument_value(arguments, "--nnodes") == "2"
+    assert _argument_value(arguments, "--node-rank") == "1"
+    assert "--data-parallel-start-rank" not in arguments
+    assert "--headless" in arguments
+
+
+def test_mp_launch_injects_scheduled_shard_instead_of_dp():
+    from gpustack.schemas.models import (
+        ComputedResourceClaim,
+        DistributedServers,
+        ModelInstanceSubordinateWorker,
+        VLLMAutoParallelism,
+    )
+    from gpustack.worker.backends.vllm import get_auto_parallelism_arguments
+    from tests.utils.model import new_model_instance
+
+    instance = new_model_instance(1, "qwen3-vl", 1, gpu_indexes=[0])
+    instance.distributed_servers = DistributedServers(
+        subordinate_workers=[
+            ModelInstanceSubordinateWorker(
+                gpu_indexes=[0],
+                computed_resource_claim=ComputedResourceClaim(vram={0: 10 * _GIB}),
+            )
+        ],
+        auto_parallelism=VLLMAutoParallelism(tp=2),
+    )
+    arguments = get_auto_parallelism_arguments(
+        [],
+        instance,
+        True,
+        _meta("leader"),
+        image_name="example/runner:cuda",
+    )
+    assert arguments == ["--tensor-parallel-size", "2"]
+
+
+def test_mp_launch_without_override_stays_data_parallel():
+    from gpustack.schemas.models import (
+        DistributedServers,
+        ModelInstanceSubordinateWorker,
+    )
+    from gpustack.worker.backends.vllm import get_auto_parallelism_arguments
+    from tests.utils.model import new_model_instance
+
+    instance = new_model_instance(1, "qwen3-vl", 1, gpu_indexes=[0])
+    instance.distributed_servers = DistributedServers(
+        subordinate_workers=[ModelInstanceSubordinateWorker(gpu_indexes=[0])]
+    )
+    arguments = get_auto_parallelism_arguments(
+        [],
+        instance,
+        True,
+        _meta("leader"),
+        image_name="example/runner:cuda",
+    )
+    assert _argument_value(arguments, "--tensor-parallel-size") == "1"
+    assert _argument_value(arguments, "--data-parallel-size") == "2"
+    assert "--pipeline-parallel-size" not in arguments
+
+
+def test_selector_records_shard_on_the_candidate():
+    from types import SimpleNamespace
+
+    from gpustack.policies.base import ModelInstanceScheduleCandidate
+    from gpustack.schemas.models import (
+        ComputedResourceClaim,
+        ModelInstanceSubordinateWorker,
+    )
+
+    selector = VLLMResourceFitSelector.__new__(VLLMResourceFitSelector)
+    selector._model = SimpleNamespace(
+        name="qwen3-vl-8b-instruct",
+        backend_parameters=[],
+        backend_version=None,
+        image_name="example/runner:cuda",
+        env=None,
+    )
+    selector._vram_claim = 16 * _GIB
+    selector._event_collector = MagicMock()
+    selector._is_tp_size_divisible = lambda size: size in (1, 2)
+    candidate = ModelInstanceScheduleCandidate(
+        worker=MagicMock(),
+        gpu_indexes=[0],
+        computed_resource_claim=ComputedResourceClaim(vram={0: 10 * _GIB}),
+        subordinate_workers=[
+            ModelInstanceSubordinateWorker(
+                gpu_indexes=[0],
+                computed_resource_claim=ComputedResourceClaim(vram={0: 10 * _GIB}),
+            )
+        ],
+    )
+    kept = selector._shard_when_dp_replica_does_not_fit([candidate])
+    assert kept == [candidate]
+    assert candidate.auto_parallelism.tp == 2
+    assert candidate.auto_parallelism.pp is None
+
+
+def test_selector_shards_when_non_llm_reservation_is_zero():
+    """A zero reservation is not a capacity. Non-LLM admission uses the card."""
+    from types import SimpleNamespace
+
+    from gpustack.policies.base import Allocatable, ModelInstanceScheduleCandidate
+    from gpustack.schemas.models import (
+        ComputedResourceClaim,
+        ModelInstanceSubordinateWorker,
+    )
+
+    selector = VLLMResourceFitSelector.__new__(VLLMResourceFitSelector)
+    selector._model = SimpleNamespace(
+        name="embedding",
+        backend_parameters=[],
+        backend_version=None,
+        image_name="example/runner:cuda",
+        env=None,
+    )
+    selector._vram_claim = 16 * _GIB
+    selector._gpu_memory_utilization = 0
+    selector._event_collector = MagicMock()
+    selector._is_tp_size_divisible = lambda size: size in (1, 2)
+    selector._workers_by_id = {2: SimpleNamespace(id=2)}
+    selector.get_worker_allocatable_resource = lambda worker, gpu_type=None: (
+        Allocatable(ram=0, vram={0: 12 * _GIB})
+    )
+    candidate = ModelInstanceScheduleCandidate(
+        worker=SimpleNamespace(id=1),
+        gpu_indexes=[0],
+        gpu_type="cuda",
+        computed_resource_claim=ComputedResourceClaim(vram={0: 0}),
+        subordinate_workers=[
+            ModelInstanceSubordinateWorker(
+                worker_id=2,
+                gpu_indexes=[0],
+                gpu_type="cuda",
+                computed_resource_claim=ComputedResourceClaim(vram={0: 0}),
+            )
+        ],
+    )
+    kept = selector._shard_when_dp_replica_does_not_fit([candidate])
+    assert kept == [candidate]
+    assert candidate.auto_parallelism.tp == 2

@@ -10,7 +10,7 @@ side — see ``gpustack.worker.backends.vllm.cal_multinode_topology``.
 from dataclasses import dataclass
 from functools import reduce
 from math import gcd
-from typing import Dict, List, Literal, Optional, Tuple, Union
+from typing import Callable, Dict, List, Literal, Optional, Tuple, Union
 
 from gpustack.utils.command import (
     find_int_parameter,
@@ -19,6 +19,7 @@ from gpustack.utils.command import (
     find_bool_parameter,
     flatten_to_argv,
 )
+from gpustack.utils.unit import byte_to_gib
 
 # vLLM excludes this window from automatic ports when VLLM_DP_MASTER_PORT
 # is set. Both placement budgeting and Worker reservations protect it.
@@ -545,6 +546,141 @@ def validate_multinode_topology(  # noqa: C901
         dp=inferred_dp,
         dpl_per_node=[1] * nnodes,
         nnodes_within_dp=nnodes_within_dp,
+    )
+
+
+def _user_pinned_parallelism(user: MultinodeUserParallelism) -> bool:
+    return any(
+        value is not None for value in (user.tp, user.pp, user.dp, user.dpl, user.pcp)
+    )
+
+
+def _dp_replicas_fit(
+    topology: ValidatedTopology, node_budgets: List[int], model_vram: int
+) -> bool:
+    """Whether every DP replica's GPUs can hold one full copy of the model."""
+    if topology.shape != "dp_only" or model_vram <= 0:
+        return True
+    if len(node_budgets) != len(topology.dpl_per_node):
+        return False
+    return all(
+        dpl > 0 and budget >= model_vram * dpl
+        for budget, dpl in zip(node_budgets, topology.dpl_per_node)
+    )
+
+
+def _shard_one_replica(
+    gpu_per_node: List[int],
+    node_budgets: List[int],
+    model_vram: int,
+    tp_divisible: Callable[[int], bool],
+) -> MultinodeUserParallelism:
+    """One replica across every selected GPU.
+
+    Automatic placement uses full-width tensor parallelism. Pipeline support
+    varies by model and runtime, so only an explicit user layout may select it.
+    """
+    budgets = [round(byte_to_gib(budget), 2) for budget in node_budgets]
+    need = f"{byte_to_gib(model_vram):.2f} GiB"
+    if len(set(gpu_per_node)) != 1:
+        raise ValueError(
+            "vLLM multi-node: a data-parallel replica needs "
+            f"{need}, node budgets are {budgets} GiB, and GPU counts "
+            f"{gpu_per_node} are not equal, so it cannot be sharded across nodes."
+        )
+    per_node = gpu_per_node[0]
+    nnodes = len(gpu_per_node)
+    proposals = []
+    if tp_divisible(per_node * nnodes):
+        proposals.append(MultinodeUserParallelism(tp=per_node * nnodes))
+    saw_legal_shard = False
+    for proposal in proposals:
+        try:
+            topology = validate_multinode_topology(gpu_per_node, proposal)
+        except ValueError:
+            continue
+        if topology.shape != "mp_only":
+            continue
+        # Full-width TP spreads one replica over every selected GPU. Summing
+        # node budgets is not enough: a small node can miss its own share.
+        if _even_share_fits(gpu_per_node, node_budgets, model_vram):
+            return proposal
+        saw_legal_shard = True
+    if saw_legal_shard:
+        per_gpu_need = -(-model_vram // sum(gpu_per_node))
+        smallest = min(
+            budget // count
+            for count, budget in zip(gpu_per_node, node_budgets)
+            if count > 0
+        )
+        raise ValueError(
+            "vLLM multi-node: a data-parallel replica needs "
+            f"{need}, node budgets are {budgets} GiB, and an even shard needs "
+            f"{byte_to_gib(per_gpu_need):.2f} GiB on every GPU but the smallest "
+            f"reservation is {byte_to_gib(smallest):.2f} GiB."
+        )
+    raise ValueError(
+        "vLLM multi-node: a data-parallel replica needs "
+        f"{need}, node budgets are {budgets} GiB, and tensor parallel size "
+        f"{per_node * nnodes} is incompatible with this model's divisibility "
+        "rules. Set a supported pipeline-parallel layout explicitly if needed."
+    )
+
+
+def _even_share_fits(
+    gpu_per_node: List[int], node_budgets: List[int], model_vram: int
+) -> bool:
+    """Whether ``model_vram`` split evenly across the GPUs fits each node.
+
+    The node's reserved bytes divided by its GPU count is what one GPU in
+    that share can use. Pipeline stages are not perfectly even, so this is
+    the minimum check before a shard is scheduled.
+    """
+    if len(gpu_per_node) != len(node_budgets):
+        return False
+    total_gpus = sum(gpu_per_node)
+    if total_gpus <= 0 or model_vram <= 0:
+        return False
+    per_gpu_need = -(-model_vram // total_gpus)
+    return all(
+        count > 0 and budget // count >= per_gpu_need
+        for count, budget in zip(gpu_per_node, node_budgets)
+    )
+
+
+def auto_shard_override(
+    gpu_per_node: List[int],
+    node_budgets: List[int],
+    model_vram: int,
+    user: Optional[MultinodeUserParallelism] = None,
+    tp_divisible: Optional[Callable[[int], bool]] = None,
+) -> Optional[MultinodeUserParallelism]:
+    """TP/PP to use when the default DP replica does not fit on a node.
+
+    ``None`` keeps the count-derived default (DP across nodes, TP inside a
+    node). A returned value is one replica sharded across the allocation.
+    Raises ``ValueError`` when that replica does not fit and the workers
+    cannot share one.
+
+    ``node_budgets`` are the VRAM bytes reserved on each worker, in the same
+    order as ``gpu_per_node``. ``model_vram`` is the full-model estimate.
+    """
+    user = user or MultinodeUserParallelism()
+    if len(gpu_per_node) < 2 or _user_pinned_parallelism(user):
+        return None
+    if model_vram <= 0 or sum(node_budgets) < model_vram:
+        return None
+    try:
+        topology = validate_multinode_topology(gpu_per_node, user)
+    except ValueError:
+        return None
+    if _dp_replicas_fit(topology, node_budgets, model_vram):
+        return None
+    return _shard_one_replica(
+        gpu_per_node,
+        node_budgets,
+        model_vram,
+        tp_divisible or (lambda size: size > 0),
     )
 
 
