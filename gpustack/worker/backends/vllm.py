@@ -51,7 +51,7 @@ from gpustack.utils.vllm_kv_cache import ascend_local_kv_cache_unsupported_reaso
 from gpustack.utils.vllm_topology import (
     MultinodeShape,
     MultinodeUserParallelism,
-    _user_pinned_parallelism,
+    merge_auto_parallelism,
     parse_user_parallelism,
     validate_multinode_topology,
     external_lb_parallelism,
@@ -2102,18 +2102,14 @@ def _with_auto_parallelism(
 
     The override is not part of backend_parameters, so callers still inject it.
     """
-    if _user_pinned_parallelism(user):
-        return user
     servers = getattr(model_instance, "distributed_servers", None)
     override = getattr(servers, "auto_parallelism", None)
     if not isinstance(override, VLLMAutoParallelism):
         return user
-    return MultinodeUserParallelism(
+    return merge_auto_parallelism(
+        user,
         tp=override.tp,
         pp=override.pp,
-        dp=user.dp,
-        dpl=user.dpl,
-        pcp=user.pcp,
     )
 
 

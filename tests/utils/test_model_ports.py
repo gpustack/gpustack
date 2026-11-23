@@ -2,7 +2,11 @@ from unittest.mock import patch
 
 import pytest
 
-from gpustack.schemas.models import DisaggregationSpec
+from gpustack.schemas.models import (
+    BackendEnum,
+    DisaggregationSpec,
+    VLLMAutoParallelism,
+)
 from gpustack.utils.model_ports import model_port_requests
 from gpustack.utils.sglang_port_layout import sglang_port_layout
 from tests.utils.model import new_model
@@ -59,3 +63,43 @@ def test_catalog_band_sorting_is_owned_by_common_composition():
             ('small', 1, None),
             ('_api', 1, None),
         ]
+
+
+def test_scheduled_mp_shard_does_not_reserve_the_dp_connecting_band():
+    model = new_model(
+        1,
+        'vllm',
+        huggingface_repo_id='org/model',
+        backend=BackendEnum.VLLM,
+        image_name='example/runner:cuda',
+    )
+
+    requests = model_port_requests(
+        model,
+        None,
+        [1, 1],
+        auto_parallelism=VLLMAutoParallelism(tp=2),
+    )
+
+    assert ('_connecting', 1, None) in requests
+    assert all(name != '_vllm_mp_connecting' for name, _, _ in requests)
+
+
+def test_scheduled_mp_shard_does_not_override_user_port_topology():
+    model = new_model(
+        1,
+        'vllm',
+        huggingface_repo_id='org/model',
+        backend=BackendEnum.VLLM,
+        image_name='example/runner:cuda',
+        backend_parameters=['--data-parallel-size=2'],
+    )
+
+    requests = model_port_requests(
+        model,
+        None,
+        [1, 1],
+        auto_parallelism=VLLMAutoParallelism(tp=2),
+    )
+
+    assert ('_connecting', 10, None) in requests

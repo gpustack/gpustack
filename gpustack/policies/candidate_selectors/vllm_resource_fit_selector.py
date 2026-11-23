@@ -430,6 +430,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 candidate.auto_parallelism = VLLMAutoParallelism(
                     tp=override.tp, pp=override.pp
                 )
+                self._reserve_auto_shard_vram(candidate)
                 pp = f", pipeline-parallel-size={override.pp}" if override.pp else ""
                 workers = 1 + len(candidate.subordinate_workers or [])
                 self._event_collector.add(
@@ -483,20 +484,24 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         seen_skip_reasons: set,
         event_message: ListMessageBuilder,
     ) -> Optional[ModelInstanceScheduleCandidate]:
-        """Return a prefix that can run, dropping a GPU that misses its share.
-
-        Extending the prefix keeps that GPU in every later candidate. Drop it
-        and let the scan append workers that follow it.
-        """
-        while len(selected_workers) >= 2:
-            total_gpus = gpus_per_worker * len(selected_workers)
-            if self._gpu_count and total_gpus != self._gpu_count:
-                return None
-            if self._admission_vram(selected_workers) < (self._vram_claim or 0):
-                return None
+        """Return the strongest feasible subset, trying every allowed width."""
+        strongest = sorted(
+            selected_workers,
+            key=lambda worker: self._worker_shard_budget(worker),
+            reverse=True,
+        )
+        if self._gpu_count:
+            worker_count = self._gpu_count // gpus_per_worker
+            widths = [worker_count] if worker_count <= len(strongest) else []
+        else:
+            widths = range(2, len(strongest) + 1)
+        for width in widths:
+            workers = strongest[:width]
+            if self._admission_vram(workers) < (self._vram_claim or 0):
+                continue
             candidate, skip_reason = _create_candidate(
                 self._model,
-                selected_workers,
+                workers,
                 self._gpu_memory_utilization,
             )
             if candidate is None:
@@ -513,7 +518,6 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 EVENT_ACTION_AUTO_MULTI_WORKER_MULTI_GPU,
                 rejection,
             )
-            self._drop_smallest_share(selected_workers, candidate)
         return None
 
     def _admission_vram(self, workers: List[Worker]) -> int:
@@ -525,21 +529,34 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
             for gpu in worker.status.gpu_devices
         )
 
-    def _drop_smallest_share(
-        self,
-        selected_workers: List[Worker],
-        candidate: ModelInstanceScheduleCandidate,
+    def _worker_shard_budget(self, worker: Worker) -> int:
+        indexes = [gpu.index for gpu in worker.status.gpu_devices]
+        reserved = sum(
+            int(gpu.memory.total * self._gpu_memory_utilization)
+            for gpu in worker.status.gpu_devices
+        )
+        return self._usable_vram_budget(
+            worker,
+            indexes,
+            reserved,
+            worker.status.gpu_devices[0].type,
+        )
+
+    def _reserve_auto_shard_vram(
+        self, candidate: ModelInstanceScheduleCandidate
     ) -> None:
-        """Remove the worker with the smallest per-GPU budget."""
-        counts, budgets = self._placement_vram_budgets(candidate)
-        if len(counts) != len(selected_workers):
-            selected_workers.pop(0)
+        """Reserve the estimated share when non-LLM utilization is disabled."""
+        if self._gpu_memory_utilization > 0:
             return
-        per_gpu = [
-            budget // count if count else 0 for budget, count in zip(budgets, counts)
-        ]
-        drop_at = min(range(len(per_gpu)), key=lambda index: (per_gpu[index], index))
-        selected_workers.pop(drop_at)
+        members = [candidate, *(candidate.subordinate_workers or [])]
+        total_gpus = sum(len(member.gpu_indexes or []) for member in members)
+        if total_gpus <= 0:
+            return
+        per_gpu = -(-(self._vram_claim or 0) // total_gpus)
+        for member in members:
+            claim = member.computed_resource_claim
+            if claim is not None:
+                claim.vram = {index: per_gpu for index in member.gpu_indexes or []}
 
     def _placement_vram_budgets(
         self, candidate: ModelInstanceScheduleCandidate

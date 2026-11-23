@@ -4923,7 +4923,17 @@ class ServeManager(ContainerLogPersister):
             if mi.distributed_servers
             else [len(mi.gpu_indexes or [])]
         )
-        requests = model_port_requests(model, mi.role, counts, managed=False)
+        requests = model_port_requests(
+            model,
+            mi.role,
+            counts,
+            managed=False,
+            auto_parallelism=(
+                mi.distributed_servers.auto_parallelism
+                if mi.distributed_servers is not None
+                else None
+            ),
+        )
         bands = self._allocate_port_plan(mi, requests, unavailable_ports, port_range)
         connector_names = [spec.name for spec in band_specs_for(model, mi.role)]
         named = dict(mi.named_ports or {})

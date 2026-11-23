@@ -34,7 +34,11 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.utils.network import parse_port_range
 
-from gpustack.schemas.models import Model, member_worker_ids
+from gpustack.schemas.models import (
+    Model,
+    VLLMAutoParallelism,
+    member_worker_ids,
+)
 from gpustack.schemas.workers import Worker
 from gpustack.schemas.cache_services import CacheServiceInstance
 from gpustack.policies.base import ModelInstanceScheduleCandidate
@@ -69,12 +73,17 @@ def member_port_demand(
 
 
 def member_port_requests(
-    model: Model, role: Optional[str], allocation: List[int]
+    model: Model,
+    role: Optional[str],
+    allocation: List[int],
+    auto_parallelism: Optional[VLLMAutoParallelism] = None,
 ) -> List[Tuple[int, Optional[int]]]:
     """Ordered bands, including fixed listeners, as the Worker allocates them."""
     return [
         (count, fixed)
-        for _, count, fixed in model_port_requests(model, role, allocation)
+        for _, count, fixed in model_port_requests(
+            model, role, allocation, auto_parallelism=auto_parallelism
+        )
     ]
 
 
@@ -182,7 +191,9 @@ async def filter_candidates(
             len(w.gpu_indexes or []) for w in candidate.subordinate_workers or []
         ]
         try:
-            requests = member_port_requests(model, role, counts)
+            requests = member_port_requests(
+                model, role, counts, candidate.auto_parallelism
+            )
         except (ValueError, PDPortScopeUnsupportedError) as error:
             messages.append(str(error))
             continue

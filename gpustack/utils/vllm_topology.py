@@ -555,6 +555,33 @@ def _user_pinned_parallelism(user: MultinodeUserParallelism) -> bool:
     )
 
 
+def merge_auto_parallelism(
+    user: MultinodeUserParallelism,
+    *,
+    tp: Optional[int],
+    pp: Optional[int],
+) -> MultinodeUserParallelism:
+    """Apply a scheduler TP/PP override unless the user pinned a layout.
+
+    Args:
+        user: Parallelism parsed from user-provided backend parameters.
+        tp: Scheduler-selected tensor-parallel width.
+        pp: Scheduler-selected pipeline-parallel width.
+
+    Returns:
+        The explicit user layout when pinned; otherwise the scheduler layout.
+    """
+    if _user_pinned_parallelism(user):
+        return user
+    return MultinodeUserParallelism(
+        tp=tp,
+        pp=pp,
+        dp=user.dp,
+        dpl=user.dpl,
+        pcp=user.pcp,
+    )
+
+
 def _dp_replicas_fit(
     topology: ValidatedTopology, node_budgets: List[int], model_vram: int
 ) -> bool:
