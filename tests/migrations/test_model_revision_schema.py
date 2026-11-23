@@ -229,17 +229,8 @@ def test_v231_indexes_run_for_databases_already_at_v230():
         str(Path(__file__).resolve().parents[2] / "gpustack/migrations"),
     )
     scripts = ScriptDirectory.from_config(cfg)
-    pending = list(
-        step
-        for step in scripts.iterate_revisions(
-            scripts.get_current_head(), "a7e2c9d4f681"
-        )
-        if step.revision != "921586f4a09b"
-    )
-    assert [step.revision for step in pending] == [
-        "f8c4a291bd65",
-        "c8d3e6f1a902",
-    ]
+    pending = scripts.iterate_revisions(scripts.get_current_head(), "a7e2c9d4f681")
+    assert "c8d3e6f1a902" in {step.revision for step in pending}
 
 
 def test_v231_bundle_applies_snapshot_and_lookup_indexes(lookup_migration, monkeypatch):

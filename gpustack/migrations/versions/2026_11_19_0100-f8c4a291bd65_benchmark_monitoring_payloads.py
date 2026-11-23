@@ -1,7 +1,7 @@
 """Store Benchmark execution identities, monitoring bundles and their capacity policy.
 
 Revision ID: f8c4a291bd65
-Revises: c8d3e6f1a902
+Revises: 921586f4a09b
 Create Date: 2026-11-19 01:00:00.000000
 """
 
@@ -14,7 +14,7 @@ from sqlalchemy.dialects.mysql import LONGBLOB
 from gpustack.migrations.utils import column_exists, table_exists
 
 revision: str = 'f8c4a291bd65'
-down_revision: Union[str, None] = 'c8d3e6f1a902'
+down_revision: Union[str, None] = '921586f4a09b'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
