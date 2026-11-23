@@ -39,18 +39,26 @@ def histogram_lower_bounds(
 
 
 def first_bucket_ceiling(
-    profiles: Mapping[object, Mapping[float, float]]
+    profiles: Mapping[object, Mapping[float, float]],
 ) -> Optional[float]:
-    bound = min(next(iter(profiles.values()), {}), default=math.inf)
+    """Find the first positive ceiling of a nonnegative histogram."""
+    bounds = next(iter(profiles.values()), {})
+    bound = min((bound for bound in bounds if bound != 0), default=math.inf)
     return bound if 0 < bound < math.inf else None
 
 
 def all_in_first_bucket(
     profiles: Mapping[object, Mapping[float, float]], count: float
 ) -> bool:
+    if count <= 0:
+        return False
     bound = first_bucket_ceiling(profiles)
-    return bound is not None and math.isclose(
-        sum(profile[bound] for profile in profiles.values()), count, rel_tol=1e-9
+    return (
+        bound is not None
+        and all(profile.get(0, 0) == 0 for profile in profiles.values())
+        and math.isclose(
+            sum(profile[bound] for profile in profiles.values()), count, rel_tol=1e-9
+        )
     )
 
 
@@ -220,21 +228,21 @@ def censor_first_bucket_estimates(
     rows: Sequence[dict],
     *,
     view: str,
-) -> bool:
+) -> Tuple[bool, bool]:
     fractions = _cdf_fractions(rows, ceilings, view)
-    censored = False
+    censored, incomplete = False, False
     for line in series:
         quantile, key = QUANTILES.get(line.statistic), group_key(line.dimensions, view)
         bound = ceilings.get(key)
         if quantile is None or bound is None:
             continue
         for index, (timestamp, value) in enumerate(line.points):
+            if not _is_first_bucket_estimate(value, bound, quantile):
+                continue
             fraction = fractions.get((key, timestamp))
-            if (
-                _is_first_bucket_estimate(value, bound, quantile)
-                and fraction is not None
-                and math.isclose(fraction, 1.0, rel_tol=1e-9)
-            ):
+            if fraction is None:
+                incomplete = True
+            elif math.isclose(fraction, 1.0, rel_tol=1e-9):
                 line.points[index] = timestamp, None
                 censored = True
-    return censored
+    return censored, incomplete

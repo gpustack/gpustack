@@ -843,9 +843,11 @@ class _Collection:
                     metric.series, ceilings, rows, view=self.view
                 )
             if check_first:
-                censored |= censor_first_bucket_estimates(
+                first_censored, first_incomplete = censor_first_bucket_estimates(
                     metric.series, first_buckets, rows, view=self.view
                 )
+                censored |= first_censored
+                incomplete |= first_incomplete
             if incomplete:
                 if failed:
                     metric.reason = 'query_failed'

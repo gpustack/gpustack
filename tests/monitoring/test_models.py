@@ -465,19 +465,26 @@ def _histogram_data(query, counts=10, other_bucket=None):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('view', ['aggregate', 'instances'])
+@pytest.mark.parametrize('zero_bucket', [None, 0, 10], ids=['absent', 'empty', 'full'])
 async def test_first_bucket_tpot_keeps_average_without_fabricated_percentiles(
-    monkeypatch,
+    monkeypatch, view, zero_bucket
 ):
     module = _collector()
     prefix = 'gpustack:time_per_output_token_seconds'
+    all_zero = zero_bucket == 10
+    average = 0.0 if all_zero else 0.0032
 
     def instant(query):
         if prefix + '_count{' in query:
             return [_entry(10)]
         if prefix + '_sum{' in query:
-            return [_entry(0.032)]
+            return [_entry(average * 10)]
         if prefix + '_bucket{' in query:
-            return [_entry(10, le=bound) for bound in ('0.01', '0.02', '+Inf')]
+            buckets = [_entry(10, le=bound) for bound in ('0.01', '0.02', '+Inf')]
+            if zero_bucket is not None:
+                buckets.insert(0, _entry(zero_bucket, le='0'))
+            return buckets
         return []
 
     def ranges(query):
@@ -497,40 +504,115 @@ async def test_first_bucket_tpot_keeps_average_without_fabricated_percentiles(
             ('0.99', 0.0099, 0.0198),
         ):
             if f'histogram_quantile({quantile},' in query:
+                if all_zero:
+                    interpolated = resolved = 0
                 return [
                     {
                         'metric': labels,
                         'values': [[4910, str(interpolated)], [5000, str(resolved)]],
                     }
                 ]
-        return [{'metric': labels, 'values': [[4910, '0.0032'], [5000, '0.008']]}]
+        later_average = 0.0 if all_zero else 0.008
+        return [{'metric': labels, 'values': [[4910, average], [5000, later_average]]}]
 
-    _prometheus(monkeypatch, module, instant, ranges)
+    requests = _prometheus(monkeypatch, module, instant, ranges)
     result = await module.collect_model_metrics(
         _model(),
         [_instance()],
         start=1400,
         end=5000,
         window_seconds=3600,
+        view=view,
         statistics=('avg', 'p50', 'p95', 'p99'),
         section='llm',
         client=object(),
     )
 
     metric = result.metrics['tpot']
+    summaries = {s.statistic: s.value for s in metric.summaries}
+    series = {line.statistic: line.points for line in metric.series}
+    cdf_queries = [query for _, query in requests if 'histogram_upper_bound' in query]
+    if all_zero:
+        assert metric.reason is None
+        assert summaries == dict.fromkeys(('avg', 'p50', 'p95', 'p99'), 0)
+        assert series == dict.fromkeys(summaries, [(4910, 0), (5000, 0)])
+        assert not cdf_queries
+        return
+
     assert metric.reason == 'histogram_quantile_out_of_range'
-    assert {s.statistic: s.value for s in metric.summaries} == {
+    assert summaries == {
         'avg': 0.0032,
         'p50': None,
         'p95': None,
         'p99': None,
     }
-    assert {line.statistic: line.points for line in metric.series} == {
+    assert series == {
         'avg': [(4910, 0.0032), (5000, 0.008)],
         'p50': [(4910, None), (5000, 0.01)],
         'p95': [(4910, None), (5000, 0.019)],
         'p99': [(4910, None), (5000, 0.0198)],
     }
+    assert len(cdf_queries) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('view', ['aggregate', 'instances'])
+@pytest.mark.parametrize(
+    ('cdf_state', 'reason'),
+    [('missing', 'histogram_bounds_unavailable'), ('failed', 'query_failed')],
+)
+async def test_first_bucket_trend_reports_incomplete_cdf(
+    monkeypatch, view, cdf_state, reason
+):
+    module = _collector()
+
+    def ranges(query):
+        if 'gpustack:time_to_first_token_seconds_' not in query:
+            return []
+        labels = _entry(0)['metric']
+        if 'histogram_upper_bound' in query:
+            if cdf_state == 'failed':
+                raise OSError('CDF source unavailable')
+            return [
+                {
+                    'metric': {**labels, 'histogram_upper_bound': '0.1'},
+                    'values': [[4910, '1'], [5000, '0.5']],
+                }
+            ]
+        if 'histogram_quantile(' in query:
+            return [
+                {
+                    'metric': labels,
+                    'values': [[4910, '0.095'], [4925, '0.095'], [5000, '0.19']],
+                }
+            ]
+        return [
+            {
+                'metric': labels,
+                'values': [[4910, '0.03'], [4925, '0.04'], [5000, '0.1']],
+            }
+        ]
+
+    _prometheus(monkeypatch, module, _histogram_data, ranges)
+    result = await module.collect_model_metrics(
+        _model(),
+        [_instance()],
+        start=1400,
+        end=5000,
+        window_seconds=3600,
+        view=view,
+        statistics=('avg', 'p95'),
+        section='llm',
+        client=object(),
+    )
+
+    metric = result.metrics['ttft']
+    assert metric.status == 'available'
+    assert metric.reason == reason
+    series = {line.statistic: line.points for line in metric.series}
+    assert series['avg'] == [(4910, 0.03), (4925, 0.04), (5000, 0.1)]
+    verified = None if cdf_state == 'missing' else 0.095
+    assert series['p95'] == [(4910, verified), (4925, 0.095), (5000, 0.19)]
 
 
 @pytest.mark.asyncio
