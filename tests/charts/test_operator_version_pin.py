@@ -73,8 +73,8 @@ def test_exported_images_include_operator_model_delivery_dependencies():
 
     assert {
         f"gpustack/gpustack-operator:{__operator_version__}",
-        "gpustack/model-transfer:v0.1.0-cuda12.9",
-        "gpustack/model-transfer:v0.1.0-rocm7.2",
-        "gpustack/model-transfer:v0.1.0-cann9.2-a5",
-        "gpustack/mirrored-modelexpress-server:v0.7.0",
+        "gpustack/model-transfer:v0.1.1-cuda12.9",
+        "gpustack/model-transfer:v0.1.1-rocm7.2",
+        "gpustack/model-transfer:v0.1.1-cann9.2-a5",
+        "gpustack/mirrored-modelexpress-server:v0.8.0",
     } <= exported
