@@ -1048,7 +1048,7 @@ requires-dist = [
     { name = "fastapi-cdn-host", specifier = ">=0.8.0" },
     { name = "filelock", specifier = ">=4.2.1" },
     { name = "gpustack-higress-plugins", specifier = "==0.5.5" },
-    { name = "gpustack-runner", specifier = "==0.1.32.post6" },
+    { name = "gpustack-runner", specifier = "==0.1.33" },
     { name = "gpustack-runtime", specifier = "==0.2.8" },
     { name = "hf-xet", specifier = ">=1.6.0,<2.0.0" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.27.0" },
@@ -1147,7 +1147,7 @@ wheels = [
 
 [[package]]
 name = "gpustack-runner"
-version = "0.1.32.post6"
+version = "0.1.33"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "argcomplete" },
@@ -1155,9 +1155,9 @@ dependencies = [
     { name = "packaging" },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/99/65/59bd0b4dffac3f903a61a160e1be4138c734140c272968b074879374e528/gpustack_runner-0.1.32.post6.tar.gz", hash = "sha256:e979ca1e88f24c4ebdca844162c757fffe180ef27353f449024759ef9c6d8d51", size = 13620010, upload-time = "2026-11-15T12:01:37.478Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/8d/ad/c94afedc72964a9a6a023b99828d3e14ef11731eb171c1941295a46fdda0/gpustack_runner-0.1.33.tar.gz", hash = "sha256:5f773725adb0b80b42c4f63022d9ce970f333ad37625d9eb322d46fe7ad6a54f", size = 13628591, upload-time = "2026-11-21T04:04:23.299Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/84/95/8a682b46904747b9bf18293655a1c093934d7e2a2e381f96c129778b5b38/gpustack_runner-0.1.32.post6-py3-none-any.whl", hash = "sha256:dd34bcb4282ee30fee934b30492f259964e31958c3d8324f303fd3bc08001729", size = 33438, upload-time = "2026-11-15T12:01:35.074Z" },
+    { url = "https://files.pythonhosted.org/packages/8b/df/9619e70a5d701501df6788d62fd41ae8ed4a5818deb9a0b3198ca9d8d4ec/gpustack_runner-0.1.33-py3-none-any.whl", hash = "sha256:092afb38ca5615db392496995277bf5ac917159a9f3d36fa6858e229cce5db4c", size = 33503, upload-time = "2026-11-21T04:04:21.755Z" },
 ]
 
 [[package]]
