@@ -7,7 +7,8 @@ import psutil
 
 from gpustack.config.config import Config
 from gpustack.schemas.pd_modes import PDNetDevicePlaneEnum
-from gpustack.schemas.workers import Worker
+from gpustack.schemas.workers import Worker, WorkerPublic
+from gpustack.worker.pd_injection import PDInjectionError
 
 logger = logging.getLogger(__name__)
 
@@ -131,10 +132,25 @@ def _multi_nic_refusal(worker_name: str, worker_ifname: str, candidates: List[st
     )
 
 
+def _kv_transfer_interface_error(
+    worker_name: str, candidates: List[str]
+) -> PDInjectionError:
+    interfaces = ", ".join(candidates) or "(none)"
+    return PDInjectionError(
+        f"Cannot select a KV transfer interface for worker {worker_name}. "
+        f"Candidate interfaces are {interfaces}. "
+        "Set KV Transfer Interface in Edit Worker, set kv_transfer_ifname in "
+        "the cluster's Worker Configuration, or use --kv-transfer-ifname or "
+        "GPUSTACK_KV_TRANSFER_IFNAME at Worker startup."
+    )
+
+
 def derive_net_device(
     worker: Worker,
     config: Config,
     plane: PDNetDevicePlaneEnum = PDNetDevicePlaneEnum.DATA,
+    *,
+    raise_on_failure: bool = False,
 ) -> Optional[str]:
     """The value of ``{{net_device}}``: the NIC this recipe's ``plane`` rides.
 
@@ -151,9 +167,8 @@ def derive_net_device(
     the platform already knows — or mistype it, which on Ascend puts
     ``HCCL_IF_IP`` on a NIC that does not hold it.
 
-    ``kv_transfer_ifname`` still wins on both planes. It is the per-worker escape hatch,
-    and a plane that could bypass it would make setting it a no-op exactly
-    where an operator went to the trouble of answering.
+    The explicit startup value also applies to control-plane recipes for
+    compatibility with existing deployments.
 
     Do NOT invent a value when this returns ``None``. The renderer leaves an
     unresolved placeholder as-is and logs a WARNING, which is diagnosable;
@@ -177,16 +192,9 @@ def derive_net_device(
     NIC that demonstrably carries worker->server traffic -- for an inference
     drawn from a hand-written pattern list, which is the same class of guess.
 
-    **Why ``None`` and not an exception.** The one caller
-    (``ModelInstanceBackend._pd_template_variables``) already funnels every
-    exception into a WARNING and drops the variable, so raising would not stop
-    a start -- it would only lose control of the log level. Returning ``None``
-    keeps the refusal at ERROR and leaves ``{{net_device}}`` unresolved, which
-    fails this instance's engine at launch with the placeholder still visible in
-    its command line. That blast radius is exactly right: ``derive_net_device``
-    is reached only from the PD/managed-router path (``_pd_injection`` returns
-    early unless ``model.disaggregation`` is set), so an ordinary model on the
-    same multi-NIC host is untouched.
+    With ``raise_on_failure``, the instance error includes the candidates and
+    the settings the operator can use. Other callers let the renderer report
+    the unresolved placeholder.
 
     Per-card interfaces are deliberately *not* consulted here, even though
     ``GPUDeviceStatus.network.iface`` exists:
@@ -241,6 +249,8 @@ def derive_net_device(
 
         if len(candidates) > 1:
             _multi_nic_refusal(worker_name, worker_ifname, candidates)
+            if raise_on_failure:
+                raise _kv_transfer_interface_error(worker_name, candidates)
             return None
 
     if worker_ifname:
@@ -261,6 +271,8 @@ def derive_net_device(
             )
         return worker_ifname
 
+    if raise_on_failure:
+        raise _kv_transfer_interface_error(worker_name, candidates)
     logger.warning(
         "Cannot derive the KV transfer network interface for worker %s: "
         "neither kv_transfer_ifname nor a detected worker ifname is available. "
@@ -268,3 +280,18 @@ def derive_net_device(
         worker_name,
     )
     return None
+
+
+def resolve_kv_transfer_ifname(
+    worker: WorkerPublic,
+    config: Config,
+) -> Optional[str]:
+    """Select an explicit UCX device in Worker, startup, cluster order."""
+    for value in (
+        getattr(worker, "kv_transfer_ifname", None),
+        config.kv_transfer_ifname,
+        getattr(worker, "cluster_kv_transfer_ifname", None),
+    ):
+        if value and value.strip():
+            return value
+    return derive_net_device(worker, config, raise_on_failure=True)

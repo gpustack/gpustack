@@ -304,6 +304,7 @@ image_name_override: "gpustack/gpustack:main"
 image_repo: "gpustack/gpustack"
 # ========= service & networking ===========
 worker_ifname: en0
+# kv_transfer_ifname: "ens5f0"
 worker_port: 10150
 worker_metrics_port: 10151
 disable_worker_metrics: false
@@ -320,6 +321,8 @@ enable_hf_transfer: false
 # ========= TLS ===========
 insecure_tls: false
 ```
+
+`kv_transfer_ifname` は、組み込みの vLLM NIXL と SGLang NIXL のデプロイが KV 転送に使用するクラスターの既定のデバイスを設定します。インターフェース名がノードごとに異なる場合は、**Workerを編集**で各ノードのローカルデバイスを指定してください。[KV 転送のインターフェース](pd-disaggregation.md#the-kv-transfer-interface)を参照してください。
 
 上記の YAML は、`Worker Configuration YAML` で現在サポートしているすべてのオプションを示しています。各オプションの意味は、GPUStack の[設定ファイルのドキュメント](../cli-reference/start.md#config-file)を参照してください。`proxy_mode` オプションは、サーバーからワーカーへの接続方法を制御します。[ワーカー接続モード](#worker-connection-modes)を参照してください。
 
