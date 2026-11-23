@@ -70,6 +70,36 @@ def test_auto_shard_rejects_a_node_that_cannot_hold_its_share():
         )
 
 
+def test_auto_shard_rejects_an_individual_gpu_below_its_share():
+    """A node average cannot hide one selected GPU below the rounded share."""
+    with pytest.raises(ValueError, match="smallest reservation"):
+        auto_shard_override(
+            [2, 2],
+            [16 * _GIB, 16 * _GIB],
+            24 * _GIB,
+            tp_divisible=lambda size: size == 4,
+            device_budgets=[
+                [15 * _GIB, 1 * _GIB],
+                [15 * _GIB, 1 * _GIB],
+            ],
+        )
+
+
+def test_auto_shard_does_not_keep_dp_when_one_replica_gpu_is_too_small():
+    """A node total cannot keep DP when one TP rank cannot hold its share."""
+    with pytest.raises(ValueError, match="smallest reservation"):
+        auto_shard_override(
+            [2, 2],
+            [16 * _GIB, 20 * _GIB],
+            16 * _GIB,
+            tp_divisible=lambda size: size == 4,
+            device_budgets=[
+                [15 * _GIB, 1 * _GIB],
+                [10 * _GIB, 10 * _GIB],
+            ],
+        )
+
+
 def test_auto_shard_keeps_tp_when_the_smaller_gpu_can_hold_its_share():
     """The smaller budget still covers an even share, so full-width TP is kept."""
     override = auto_shard_override(

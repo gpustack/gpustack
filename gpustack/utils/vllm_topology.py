@@ -583,16 +583,33 @@ def merge_auto_parallelism(
 
 
 def _dp_replicas_fit(
-    topology: ValidatedTopology, node_budgets: List[int], model_vram: int
+    topology: ValidatedTopology,
+    gpu_per_node: List[int],
+    node_budgets: List[int],
+    model_vram: int,
+    device_budgets: Optional[List[List[int]]] = None,
 ) -> bool:
     """Whether every DP replica's GPUs can hold one full copy of the model."""
     if topology.shape != "dp_only" or model_vram <= 0:
         return True
-    if len(node_budgets) != len(topology.dpl_per_node):
+    if not (len(gpu_per_node) == len(node_budgets) == len(topology.dpl_per_node)):
         return False
-    return all(
+    if not all(
         dpl > 0 and budget >= model_vram * dpl
         for budget, dpl in zip(node_budgets, topology.dpl_per_node)
+    ):
+        return False
+    if device_budgets is None:
+        return True
+    if len(device_budgets) != len(gpu_per_node):
+        return False
+    return all(
+        len(budgets) == count
+        and count > 0
+        and all(budget >= -(-(model_vram * dpl) // count) for budget in budgets)
+        for count, dpl, budgets in zip(
+            gpu_per_node, topology.dpl_per_node, device_budgets
+        )
     )
 
 
@@ -601,6 +618,7 @@ def _shard_one_replica(
     node_budgets: List[int],
     model_vram: int,
     tp_divisible: Callable[[int], bool],
+    device_budgets: Optional[List[List[int]]] = None,
 ) -> MultinodeUserParallelism:
     """One replica across every selected GPU.
 
@@ -630,15 +648,22 @@ def _shard_one_replica(
             continue
         # Full-width TP spreads one replica over every selected GPU. Summing
         # node budgets is not enough: a small node can miss its own share.
-        if _even_share_fits(gpu_per_node, node_budgets, model_vram):
+        if _even_share_fits(gpu_per_node, node_budgets, model_vram, device_budgets):
             return proposal
         saw_legal_shard = True
     if saw_legal_shard:
         per_gpu_need = -(-model_vram // sum(gpu_per_node))
-        smallest = min(
-            budget // count
-            for count, budget in zip(gpu_per_node, node_budgets)
-            if count > 0
+        individual = [
+            budget for budgets in (device_budgets or []) for budget in budgets
+        ]
+        smallest = (
+            min(individual)
+            if individual
+            else min(
+                budget // count
+                for count, budget in zip(gpu_per_node, node_budgets)
+                if count > 0
+            )
         )
         raise ValueError(
             "vLLM multi-node: a data-parallel replica needs "
@@ -655,7 +680,10 @@ def _shard_one_replica(
 
 
 def _even_share_fits(
-    gpu_per_node: List[int], node_budgets: List[int], model_vram: int
+    gpu_per_node: List[int],
+    node_budgets: List[int],
+    model_vram: int,
+    device_budgets: Optional[List[List[int]]] = None,
 ) -> bool:
     """Whether ``model_vram`` split evenly across the GPUs fits each node.
 
@@ -669,6 +697,13 @@ def _even_share_fits(
     if total_gpus <= 0 or model_vram <= 0:
         return False
     per_gpu_need = -(-model_vram // total_gpus)
+    if device_budgets is not None:
+        if len(device_budgets) != len(gpu_per_node):
+            return False
+        return all(
+            len(budgets) == count and all(budget >= per_gpu_need for budget in budgets)
+            for count, budgets in zip(gpu_per_node, device_budgets)
+        )
     return all(
         count > 0 and budget // count >= per_gpu_need
         for count, budget in zip(gpu_per_node, node_budgets)
@@ -681,6 +716,7 @@ def auto_shard_override(
     model_vram: int,
     user: Optional[MultinodeUserParallelism] = None,
     tp_divisible: Optional[Callable[[int], bool]] = None,
+    device_budgets: Optional[List[List[int]]] = None,
 ) -> Optional[MultinodeUserParallelism]:
     """TP/PP to use when the default DP replica does not fit on a node.
 
@@ -695,6 +731,9 @@ def auto_shard_override(
             tensor-parallel width for this model. The default accepts every
             positive size. Callers pass the scheduler's head and vocab check.
             It is called with the full allocation width.
+        device_budgets: Available VRAM bytes for each selected GPU, grouped
+            by worker. When provided, every GPU must hold its rounded shard
+            share; node averages cannot mask a smaller GPU.
 
     Returns:
         ``None`` to keep the count-derived layout: the user pinned one, every
@@ -715,13 +754,20 @@ def auto_shard_override(
         topology = validate_multinode_topology(gpu_per_node, user)
     except ValueError:
         return None
-    if _dp_replicas_fit(topology, node_budgets, model_vram):
+    if _dp_replicas_fit(
+        topology,
+        gpu_per_node,
+        node_budgets,
+        model_vram,
+        device_budgets,
+    ):
         return None
     return _shard_one_replica(
         gpu_per_node,
         node_budgets,
         model_vram,
         tp_divisible or (lambda size: size > 0),
+        device_budgets,
     )
 
 
