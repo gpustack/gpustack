@@ -309,6 +309,7 @@ image_name_override: "gpustack/gpustack:main"
 image_repo: "gpustack/gpustack"
 # ========= service & networking ===========
 worker_ifname: en0
+# kv_transfer_ifname: "ens5f0"
 worker_port: 10150
 worker_metrics_port: 10151
 disable_worker_metrics: false
@@ -325,6 +326,8 @@ enable_hf_transfer: false
 # ========= TLS ===========
 insecure_tls: false
 ```
+
+`kv_transfer_ifname`, yerleşik vLLM NIXL ve SGLang NIXL dağıtımlarında KV aktarımı için kümenin varsayılan cihazını belirler. Düğümlerdeki arayüz adları farklıysa **İşçi Düğümü Düzenle** penceresinden her düğümün yerel cihazını belirtin. Bkz. [KV Aktarım Arayüzü](pd-disaggregation.md#the-kv-transfer-interface).
 
 Yukarıdaki YAML, `Worker Configuration YAML` için şu anda desteklenen tüm seçenekleri listeler. Her seçeneğin anlamı için GPUStack [config dosyası belgelerinin](../cli-reference/start.md#config-file) tamamına bakın. `proxy_mode` seçeneği, sunucunun çalışana nasıl ulaştığını kontrol eder - bkz. [Çalışan Bağlantı Modları](#worker-connection-modes).
 

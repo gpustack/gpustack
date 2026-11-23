@@ -314,23 +314,35 @@ for what that means on a cluster you brought yourself, including what it does
 
 ### The KV transfer interface
 
-The KV cache crosses the network on every request, and the interface it crosses
-matters. Left to itself, the transport layer will happily pick up a container
-bridge (`docker0`, `br-*`, `flannel.1`) and advertise an address the peer cannot
-reach — which fails as a connector error at handshake time, not as a
-configuration error.
+In built-in vLLM NIXL and SGLang NIXL deployments, UCX can pick a container bridge
+such as `docker0`, `br-*`, or `flannel.1`. If it advertises an address the peer
+cannot reach, the handshake fails. GPUStack resolves each worker's KV interface
+in this order.
 
-GPUStack derives the interface per worker:
+1. **KV Transfer Interface** in **Edit Worker**.
+2. The worker startup setting (`--kv-transfer-ifname`,
+   `GPUSTACK_KV_TRANSFER_IFNAME`, or `kv_transfer_ifname` in its local YAML).
+3. `kv_transfer_ifname` in the cluster's **Worker Configuration** YAML.
+4. Automatic detection. If multiple candidate interfaces are found, the
+   instance error lists them so you can specify the transfer interface.
 
-- **One routable interface** — it is used. Nothing to configure.
-- **Several routable interfaces** — GPUStack refuses to guess. Set
-  `--kv-transfer-ifname` (or the `kv_transfer_ifname` worker config key, or
-  `GPUSTACK_KV_TRANSFER_IFNAME`) on that worker to the interface carrying KV traffic. The
-  worker log lists the candidates it found.
+GPUStack treats a value containing only whitespace as unset. At instance startup,
+it trims whitespace around each comma-separated entry and passes device names
+and ports in their specified order to UCX via `UCX_NET_DEVICES`. Examples include
+the Linux interface `ens5f0`, the local RDMA HCA port `mlx5_2:1`, and a
+comma-separated device list such as `ens5f0,ens6f0`.
 
-Set it explicitly on any machine with more than one fabric — a management NIC
-plus an RDMA NIC is the common case, and the management NIC is almost never the
-right answer.
+GPUStack reads the Worker override and cluster default each time a Prefill or
+Decode instance starts, including during scale-out or recovery. Running
+instances use the device they resolved at startup. Restart the PD deployment to
+apply an edit to all its instances.
+
+### Ascend Mooncake networking
+
+In `vllm-ascend-mooncake`, the host-side handshake uses the Worker's registered
+IP (`worker_ip`) and the host interface that holds it (`Worker.ifname`). KV data
+travels through the NPU-side RoCE ports. GPUStack mounts the local
+`/etc/hccn.conf` into both Prefill and Decode containers.
 
 ### Ports
 

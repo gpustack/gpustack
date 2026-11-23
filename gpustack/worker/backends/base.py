@@ -5,7 +5,7 @@ import sys
 import shlex
 import json
 import threading
-from functools import lru_cache
+from functools import cached_property, lru_cache
 from pathlib import Path
 from typing import Dict, Optional, List, Tuple, Union
 from abc import ABC, abstractmethod
@@ -61,6 +61,7 @@ from gpustack.schemas.models import (
     ModelInstanceStateEnum,
     ModelUpdate,
     ModelInstanceDeploymentMetadata,
+    PDModeEnum,
     role_effective_model,
 )
 from gpustack.schemas.cache_providers import CACHE_ENV_RUNTIME_VARIABLES
@@ -88,7 +89,11 @@ from gpustack.utils.profiling import time_decorator
 from gpustack.utils import platform
 from gpustack.utils.version import pick_runtime_version
 from gpustack.utils.runtime import transform_workload_plan
-from gpustack.worker.pd_injection import PDInjection, render_pd_injection
+from gpustack.worker.pd_injection import (
+    PDInjection,
+    PDInjectionError,
+    render_pd_injection,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +111,13 @@ lock = threading.Lock()
 
 class ModelInstanceStateError(Exception):
     pass
+
+
+def _uses_builtin_nixl_device(model, instance) -> bool:
+    mode = getattr(getattr(model, "disaggregation", None), "mode", None)
+    return mode in (PDModeEnum.VLLM_NIXL, PDModeEnum.SGLANG_NIXL) and getattr(
+        instance, "role", None
+    ) in ("prefill", "decode")
 
 
 def _normalize_param_format(
@@ -683,14 +695,17 @@ class InferenceServer(ABC):
         failure. The injector re-derives the running role's own effective
         values itself.
         """
-        if dp_rank is None and self._pd_injection_resolved:
+        model = self._model_spec or getattr(self, "_model", None)
+        instance = getattr(self, "_model_instance", None)
+        uses_nixl_device = _uses_builtin_nixl_device(model, instance)
+        # A managed NIXL endpoint can reference its own port in the device template.
+        cacheable = dp_rank is None and (port is None or not uses_nixl_device)
+        if cacheable and self._pd_injection_resolved:
             return self._pd_injection_cache
 
-        model = self._model_spec or getattr(self, "_model", None)
         # Cheap pre-check on the same conditions the injector returns None
         # for, so a non-PD deploy does not pay for the PD context (an image
         # resolution among other things).
-        instance = getattr(self, "_model_instance", None)
         if getattr(model, "disaggregation", None) is None or not getattr(
             instance, "role", None
         ):
@@ -698,15 +713,22 @@ class InferenceServer(ABC):
             return None
 
         variables = self._template_variables(**self._pd_template_variables())
+        if dp_rank is not None:
+            variables.update(dp_rank=dp_rank, port=port)
+        elif uses_nixl_device and port is not None:
+            variables["port"] = port
+        if uses_nixl_device and "net_device" not in variables:
+            net_device = self._resolve_nixl_device(variables)
+            if net_device:
+                variables["net_device"] = net_device
+
         # Marked resolved only once it is: a refused injection raises, and
         # caching "nothing to inject" for the seams that come after would turn
         # that hard failure into the silent aggregated start it exists to stop.
-        if dp_rank is not None:
-            variables.update(dp_rank=dp_rank, port=port)
-            return render_pd_injection(model, instance, variables, dp_rank=dp_rank)
-        injection = render_pd_injection(model, instance, variables)
-        self._pd_injection_cache = injection
-        self._pd_injection_resolved = True
+        injection = render_pd_injection(model, instance, variables, dp_rank=dp_rank)
+        if cacheable:
+            self._pd_injection_cache = injection
+            self._pd_injection_resolved = True
         return injection
 
     def _apply_managed_router(self, model):
@@ -854,15 +876,38 @@ class InferenceServer(ABC):
             )
         return PDNetDevicePlaneEnum.DATA
 
-    def _pd_template_variables(self) -> Dict[str, object]:
-        """The two placeholders only this layer can resolve: the `{{net_device}}`
-        NIC and the runner image.
+    @cached_property
+    def _launch_kv_transfer_ifname(self) -> Optional[str]:
+        """Read the Worker settings when this backend first renders its launch."""
+        from gpustack.worker.net_device import resolve_kv_transfer_ifname
 
-        Both are read tolerantly. An unresolvable one is left out of the
-        context so its placeholder survives into the launch with a warning,
-        which is diagnosable; inventing a value is not. `UCX_NET_DEVICES=all`
-        in particular makes UCX advertise docker0 addresses the peer cannot
-        route, and the failure surfaces as `NIXL_ERR_BACKEND` on the far side.
+        worker_id = self._worker.id
+        error_message = f"Cannot read KV transfer settings for worker {worker_id}."
+        try:
+            worker = self._clientset.workers.get(worker_id, use_cache=False)
+        except Exception as e:
+            raise PDInjectionError(error_message) from e
+        if worker is None:
+            raise PDInjectionError(error_message)
+        return resolve_kv_transfer_ifname(worker, self._config)
+
+    def _resolve_nixl_device(self, variables: Dict[str, object]) -> Optional[str]:
+        """Resolve the effective role's device for a built-in NIXL launch."""
+        model_env = self._model.env or {}
+        configured = model_env.get("UCX_NET_DEVICES")
+        if configured is None or configured.strip() in ("", "{{net_device}}"):
+            device = self._launch_kv_transfer_ifname
+        else:
+            device = render(configured, variables, context="env UCX_NET_DEVICES")
+        return (
+            ",".join(entry.strip() for entry in device.split(",")) if device else None
+        )
+
+    def _pd_template_variables(self) -> Dict[str, object]:
+        """Collect the runner image and the interface for other PD recipes.
+
+        Built-in NIXL engine roles resolve their device in `_pd_injection`
+        using the complete launch context.
         """
         variables: Dict[str, object] = {}
 
@@ -873,9 +918,14 @@ class InferenceServer(ABC):
             # worker should be unaffected by whether this module resolves.
             from gpustack.worker.net_device import derive_net_device
 
-            net_device = derive_net_device(
-                self._worker, self._config, self._net_device_plane()
-            )
+            model = self._model_spec or getattr(self, "_model", None)
+            instance = getattr(self, "_model_instance", None)
+            if not _uses_builtin_nixl_device(model, instance):
+                net_device = derive_net_device(
+                    self._worker, self._config, self._net_device_plane()
+                )
+        except PDInjectionError:
+            raise
         except Exception as e:
             # Named for the placeholder rather than for what rides it. The
             # plane is the mode's to declare: on a `control` recipe the NIC
@@ -943,6 +993,21 @@ class InferenceServer(ABC):
             return None
         return getattr(self.inference_backend, "parameter_format", None)
 
+    def _model_env_for_launch(self, injection: Optional[PDInjection]) -> Dict[str, str]:
+        """Keep the built-in NIXL device already resolved through the PD recipe."""
+        env = self._model.env or {}
+        if (
+            injection
+            and "UCX_NET_DEVICES" in env
+            and "UCX_NET_DEVICES" in injection.env
+            and _uses_builtin_nixl_device(
+                self._model_spec or self._model, self._model_instance
+            )
+        ):
+            env = env.copy()
+            del env["UCX_NET_DEVICES"]
+        return env
+
     def _get_configured_env(self, **kwargs) -> Dict[str, str]:
         """
         Get the environment variables for the model instance.
@@ -958,12 +1023,13 @@ class InferenceServer(ABC):
             env = filter_env_vars(os.environ)
 
         pd_injection = self._pd_injection()
+        model_env = self._model_env_for_launch(pd_injection)
         if pd_injection and pd_injection.env:
             # Before the model's own env, so a deliberate per-model or
             # per-role override still wins — but never silently: a shadowed
             # side-channel host is a wrong address the group hands its peers,
             # not a setting that fails to apply.
-            shadowed = sorted(set(pd_injection.env) & set(self._model.env or {}))
+            shadowed = sorted(set(pd_injection.env) & set(model_env))
             if shadowed:
                 logger.warning(
                     "The model's env overrides PD connection variables: "
@@ -972,14 +1038,14 @@ class InferenceServer(ABC):
                 )
             env.update(pd_injection.env)
 
-        if self._model.env:
+        if model_env:
             # Render the *values*. This is the point of gpustack.utils.template
             # existing at all: `replace_command_param` is gated on a version
             # config that has a run_command and no built_in_frameworks, so no
             # built-in backend reaches it, and without this call a connector
             # variable would reach the engine verbatim (`ZMQError: No such
             # device (addr='tcp://{{worker_ip}}:5600')`).
-            env.update(render_values(self._model.env, self._template_variables()))
+            env.update(render_values(model_env, self._template_variables()))
 
         # Skip the container toolkit's NVIDIA_REQUIRE_CUDA check so a newer-minor
         # image starts on an older host driver. setdefault keeps user overrides.

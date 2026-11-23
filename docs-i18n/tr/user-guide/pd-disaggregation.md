@@ -198,14 +198,20 @@ Bir grubun üyelerinin ana bilgisayar ağı, ana bilgisayar bağlantı noktası,
 
 ### KV Aktarım Arayüzü { #the-kv-transfer-interface }
 
-KV önbelleği her istekte ağ üzerinden geçer ve geçtiği arayüz önemlidir. Kendi başına bırakıldığında, taşıma katmanı mutlu bir şekilde bir konteyner köprüsünü (`docker0`, `br-*`, `flannel.1`) alacak ve eşin ulaşamayacağı bir adresin reklamını yapacaktır; bu, bir yapılandırma hatası olarak değil, el sıkışma sırasında bir bağlayıcı hatası olarak başarısız olur.
+Yerleşik vLLM NIXL ve SGLang NIXL dağıtımlarında UCX, `docker0`, `br-*` veya `flannel.1` gibi bir konteyner köprüsü seçebilir. UCX karşı ucun erişemeyeceği bir adres duyurursa el sıkışması başarısız olur. GPUStack, her çalışanın KV aktarım arayüzünü aşağıdaki öncelik sırasına göre seçer.
 
-GPUStack, çalışan başına arayüzü türetir:
+1. **İşçi Düğümü Düzenle** penceresindeki **KV Aktarım Arayüzü**.
+2. Çalışanın başlangıç ayarı (`--kv-transfer-ifname`, `GPUSTACK_KV_TRANSFER_IFNAME` veya çalışanın yerel YAML dosyasındaki `kv_transfer_ifname`).
+3. Kümenin **Worker Configuration** YAML dosyasındaki `kv_transfer_ifname`.
+4. Otomatik algılama. Örnek başlatılırken birden fazla uygun arayüz bulunursa hata iletisi bu arayüzleri listeler. Bu durumda kullanılacak arayüzü açıkça belirtin.
 
-- **Tek yönlendirilebilir arayüz** — kullanılır. Yapılandırılacak bir şey yok.
-- **Birkaç yönlendirilebilir arayüz** — GPUStack tahmin etmeyi reddediyor. Söz konusu çalışandaki `--kv-transfer-ifname`'yi (veya `kv_transfer_ifname` çalışan yapılandırma anahtarını veya `GPUSTACK_KV_TRANSFER_IFNAME`) KV trafiğini taşıyan arayüze ayarlayın. Çalışan günlüğü bulduğu adayları listeler.
+GPUStack, yalnızca boşluk karakterlerinden oluşan değerleri ayarlanmamış kabul eder. Örnek başlatılırken GPUStack, virgülle ayrılmış her öğenin başındaki ve sonundaki boşluk karakterlerini kaldırır. Cihaz adlarını ve portları belirtilen sırayla `UCX_NET_DEVICES` üzerinden UCX'e iletir. Örnekler arasında Linux ağ arayüzü `ens5f0`, yerel RDMA HCA portu `mlx5_2:1` ve virgülle ayrılmış cihaz listesi `ens5f0,ens6f0` bulunur.
 
-Bunu birden fazla yapıya sahip herhangi bir makinede açıkça ayarlayın — bir yönetim NIC'si ve bir RDMA NIC'si yaygın bir durumdur ve yönetim NIC'si neredeyse hiçbir zaman doğru cevap değildir.
+Yatay ölçeklendirme ve hata sonrası kurtarma dahil olmak üzere, her Prefill veya Decode örneği başlatıldığında çalışana özel ayarın ve küme varsayılanının güncel değerleri okunur. Çalışan örnekler başlangıçta seçilen cihazları kullanmaya devam eder. Değişiklikleri tüm örneklere uygulamak için PD dağıtımını yeniden başlatın.
+
+### Ascend Mooncake ağ yapılandırması { #ascend-mooncake-networking }
+
+`vllm-ascend-mooncake` modunda, ana makine tarafındaki el sıkışması için çalışanın kayıtlı IP adresi (`worker_ip`) ve bu adresin atandığı ana makine arayüzü (`Worker.ifname`) kullanılır. KV verileri NPU tarafındaki RoCE portları üzerinden aktarılır. GPUStack, yerel `/etc/hccn.conf` dosyasını hem Prefill hem de Decode konteynerine bağlar.
 
 ### Bağlantı Noktaları { #ports }
 

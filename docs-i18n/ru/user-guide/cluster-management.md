@@ -309,6 +309,7 @@ image_name_override: "gpustack/gpustack:main"
 image_repo: "gpustack/gpustack"
 # ========= service & networking ===========
 worker_ifname: en0
+# kv_transfer_ifname: "ens5f0"
 worker_port: 10150
 worker_metrics_port: 10151
 disable_worker_metrics: false
@@ -325,6 +326,8 @@ enable_hf_transfer: false
 # ========= TLS ===========
 insecure_tls: false
 ```
+
+`kv_transfer_ifname` задаёт устройство по умолчанию для передачи KV-кэша в кластере во встроенных режимах vLLM NIXL и SGLang NIXL. Если имена интерфейсов на узлах различаются, укажите локальные устройства в окне **Редактировать Worker** для каждого узла. См. [Интерфейс передачи KV-кэша](pd-disaggregation.md#the-kv-transfer-interface).
 
 В приведенном выше YAML-файле перечислены все поддерживаемые в настоящее время параметры для `Worker Configuration YAML`. Значение каждой опции см. в полной документации по файлу конфигурации GPUStack [](../cli-reference/start.md#config-file). Опция `proxy_mode` управляет тем, как сервер достигает воркера — см. [Режимы подключения воркера](#worker-connection-modes).
 

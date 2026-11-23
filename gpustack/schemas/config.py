@@ -130,6 +130,8 @@ class PredefinedConfigNoDefaults(PredefinedConfig):
     benchmark_image_repo: Optional[str] = None
     gateway_mode: Optional[str] = None
     gateway_namespace: Optional[str] = None
+    # Cluster default read by each P/D instance at startup.
+    kv_transfer_ifname: Optional[str] = None
 
 
 class PredefinedConfigPublic(PredefinedConfigNoDefaults):

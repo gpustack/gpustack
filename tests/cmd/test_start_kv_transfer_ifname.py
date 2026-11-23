@@ -4,7 +4,7 @@ import pytest
 
 from gpustack.cmd.start import set_worker_options, setup_start_cmd
 from gpustack.config.config import Config
-from gpustack.schemas.config import PredefinedConfig
+from gpustack.schemas.config import PredefinedConfig, PredefinedConfigNoDefaults
 
 
 def _parse(argv):
@@ -22,6 +22,15 @@ def no_ambient_env(monkeypatch):
 
 def test_flag_is_accepted():
     assert _parse(["--kv-transfer-ifname", "ib0"]).kv_transfer_ifname == "ib0"
+
+
+def test_flag_help_describes_the_nixl_use_case(capsys):
+    with pytest.raises(SystemExit) as exit_info:
+        _parse(["--help"])
+    assert exit_info.value.code == 0
+    assert "KV transfer in built-in vLLM NIXL and SGLang NIXL" in " ".join(
+        capsys.readouterr().out.split()
+    )
 
 
 def test_flag_defaults_to_none():
@@ -59,10 +68,19 @@ def test_unset_flag_does_not_overwrite_the_config_file_value(tmp_path):
     assert Config(**config_data).kv_transfer_ifname == "from-yaml"
 
 
-def test_kv_transfer_ifname_stays_out_of_the_cluster_wide_channel():
-    """``PredefinedConfig`` is broadcast to every worker in the cluster (via
-    ``Cluster.worker_config`` -> the registration env). A NIC name belongs to
-    one machine, so promoting this field would hand ``ib0`` to hosts that have
-    no ``ib0``."""
+def test_kv_transfer_ifname_stays_out_of_shared_startup_schema():
     assert "kv_transfer_ifname" not in PredefinedConfig.model_fields
     assert "kv_transfer_ifname" in Config.model_fields
+
+
+def test_worker_reload_keeps_the_cluster_kv_default_out_of_startup_config(tmp_path):
+    worker_config = PredefinedConfigNoDefaults.model_validate(
+        {"kv_transfer_ifname": "mlx5_2:1", "worker_metrics_port": 10152}
+    )
+    assert worker_config.model_dump().get("kv_transfer_ifname") == "mlx5_2:1"
+
+    cfg = Config(data_dir=str(tmp_path / "data"))
+    cfg.reload_worker_config(worker_config)
+
+    assert cfg.kv_transfer_ifname is None
+    assert cfg.worker_metrics_port == 10152

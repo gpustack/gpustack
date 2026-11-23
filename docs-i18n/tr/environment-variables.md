@@ -187,6 +187,7 @@ Bu ağırlıklar ve pencereler, önceden doldurma-kod çözme ayrıştırılmı�
 |------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------|---------|----------------|
 | `GPUSTACK_WORKER_HEARTBEAT_INTERVAL`                             | Saniye cinsinden işçi kalp atışı aralığı. | `30`    | İşçi |
 | `GPUSTACK_WORKER_STATUS_SYNC_INTERVAL`                           | Saniye cinsinden çalışan durumu senkronizasyon aralığı. | `30`    | İşçi |
+| `GPUSTACK_KV_TRANSFER_IFNAME`                                    | Yerleşik vLLM NIXL ve SGLang NIXL dağıtımlarında KV aktarım arayüzünü belirleyen Worker başlangıç ayarı. Örnekler arasında Linux ağ arayüzü `ens5f0`, RDMA HCA portu `mlx5_2:1` ve virgülle ayrılmış cihaz listesi `ens5f0,ens6f0` bulunur. Bkz. [KV Aktarım Arayüzü](user-guide/pd-disaggregation.md#the-kv-transfer-interface). | (boş)   | İşçi |
 | `GPUSTACK_WORKER_UNREACHABLE_CHECK_MODE`                         | İşçiye ulaşılamıyor kontrol modu. Seçenekler: `auto`, `enabled`, `disabled`. `auto` işçi sayısı > 50 olduğunda kontrolü devre dışı bırakır. | `auto`  | Sunucu |
 | `GPUSTACK_WORKER_HEARTBEAT_GRACE_PERIOD`                         | Worker kalp atışı için saniye cinsinden tolerans süresi. | `150`   | Sunucu |
 | `GPUSTACK_MODEL_INSTANCE_RESCHEDULE_GRACE_PERIOD`                | Model örneğinin yeniden zamanlanması için saniye cinsinden tolerans süresi. | `300`   | Sunucu |

@@ -198,14 +198,20 @@ NVIDIA Mooncake 要求推理镜像中包含其 transfer-engine 运行时和 RDMA
 
 ### KV 传输接口 { #the-kv-transfer-interface }
 
-每个请求都要通过网络传输 KV 缓存，所用接口至关重要。未干预时，传输层可能选择容器网桥（`docker0`、`br-*`、`flannel.1`），并公布对端无法访问的地址，最终在握手时表现为连接器错误，而非配置错误。
+在内置的 vLLM NIXL 和 SGLang NIXL 部署中，UCX 可能选择容器网桥，例如 `docker0`、`br-*` 或 `flannel.1`。如果 UCX 公布了对端无法访问的地址，握手就会失败。GPUStack 按以下优先级为每个 Worker 选择 KV 传输接口。
 
-GPUStack 按 Worker 推导接口：
+1. **编辑节点**中的 **KV 传输网卡**。
+2. Worker 启动配置（`--kv-transfer-ifname`、`GPUSTACK_KV_TRANSFER_IFNAME` 或 Worker 本地 YAML 中的 `kv_transfer_ifname`）。
+3. 集群 **Worker Configuration** YAML 中的 `kv_transfer_ifname`。
+4. 自动检测。存在多个候选接口时，实例错误信息会列出这些接口，请据此指定传输设备。
 
-- **只有一个可路由接口**——直接使用，无需配置。
-- **有多个可路由接口**——GPUStack 不会猜测。请在该 Worker 上设置 `--kv-transfer-ifname`（或 Worker 配置键 `kv_transfer_ifname`，或 `GPUSTACK_KV_TRANSFER_IFNAME`），指定承载 KV 流量的接口。Worker 日志会列出发现的候选接口。
+仅包含空白字符的值视为未设置。实例启动时，GPUStack 去除每个逗号分隔条目首尾的空白字符，再通过 `UCX_NET_DEVICES` 按指定顺序将设备名和端口传给 UCX。示例包括 Linux 接口 `ens5f0`、本机 RDMA HCA 端口 `mlx5_2:1`，以及以逗号分隔的设备列表 `ens5f0,ens6f0`。
 
-对于具有多个网络互连的机器，请显式设置。常见情况是一块管理网卡加一块 RDMA 网卡，管理网卡几乎从来都不是正确选择。
+每次 Prefill 或 Decode 实例启动时，包括扩容和故障恢复时，都会读取最新的节点覆盖值和集群默认值。运行中的实例会继续使用启动时选定的设备。重启 PD 部署即可将更改应用到所有实例。
+
+### Ascend Mooncake 网络配置 { #ascend-mooncake-networking }
+
+在 `vllm-ascend-mooncake` 中，宿主机侧的握手使用 Worker 的注册 IP（`worker_ip`）和承载该地址的宿主机接口（`Worker.ifname`）。KV 数据通过 NPU 侧的 RoCE 端口传输。GPUStack 将本机的 `/etc/hccn.conf` 挂载到 Prefill 和 Decode 容器中。
 
 ### 端口 { #ports }
 
