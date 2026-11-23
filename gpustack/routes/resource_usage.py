@@ -35,7 +35,7 @@ from typing import (
 
 from fastapi import APIRouter
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import and_, case, desc, func, literal_column, or_
+from sqlalchemy import Select, and_, case, desc, func, literal_column, or_, tuple_
 from sqlmodel import select
 
 from gpustack import envs
@@ -94,12 +94,20 @@ from gpustack.utils.export_limits import (
     export_too_large,
     requested_platform_wide,
 )
+from gpustack.utils.resource_usage import (
+    SLICE_MODE_PROFILE,
+    SLICE_MODE_RATIO,
+    SLICE_MODE_WHOLE,
+    parse_accelerator_count,
+    slice_mode_of,
+)
 from gpustack.utils.tabular_export import ExportStageTimer
 from gpustack.utils.usage_export import (
     UNTRACKED_ORGANIZATION_NAME,
     build_resource_export_columns,
     resource_export_column_keys,
     resource_export_row,
+    supports_gpu_allocation,
 )
 from gpustack.utils.rollup_tz import (
     resolve_rollup_tz,
@@ -163,6 +171,7 @@ class ResourceBreakdownRequest(BaseModel):
     # series via ["date", "<dim>"]; a table uses a single ["<dim>"].
     group_by: List[str] = Field(default_factory=lambda: ["resource_type"])
     granularity: str = USAGE_GRANULARITY_DAY
+    include_gpu_allocation: bool = False
     order_by: Optional[str] = None  # a metric key; default = first metric
     descending: bool = True
     # Optional "filter by user" — restricts to these creator (principal) ids.
@@ -1133,6 +1142,62 @@ async def _attach_dimensions(  # noqa: C901
             }
 
 
+def _gpu_allocation_label(dimensions: dict) -> Optional[str]:
+    count = parse_accelerator_count(dimensions.get("gpu_count"))
+    percentage = parse_accelerator_count(dimensions.get("sliced_memory_percentage"))
+    profile = dimensions.get("partitioned_profile")
+    mode = dimensions.get("slice_mode") or slice_mode_of(percentage, profile)
+    if mode == SLICE_MODE_PROFILE and profile:
+        label = profile
+    elif mode == SLICE_MODE_RATIO and percentage:
+        label = f"{percentage}%"
+    elif mode == SLICE_MODE_WHOLE and (count or dimensions.get("slice_mode")):
+        label = "Full GPU"
+    else:
+        return None
+    return f"{label} × {count}" if count > 1 else label
+
+
+def _allocation_group_filter(columns, keys):
+    # A grouping key can contain a NULL sku or resource id on historical rows.
+    # SQL tuple membership only matches keys whose components are all non-NULL.
+    complete = [key for key in keys if None not in key]
+    nullable = [key for key in keys if None in key]
+    return or_(
+        tuple_(*columns).in_(complete),
+        *(
+            and_(*(col == value for col, value in zip(columns, key)))
+            for key in nullable
+        ),
+    )
+
+
+async def _attach_gpu_allocations(session, source: Select, rows, items: List[dict]):
+    """Read allocation facts for the returned groups inside the same scope."""
+    group_columns = tuple(source.selected_columns)[:-1]
+    row_keys = [
+        tuple(getattr(row, col.key, None) for col in group_columns) for row in rows
+    ]
+    labels = {key: set() for key in row_keys}
+    selected = list(labels)
+    # Bound the number of group keys sent to SQL even for unpaginated requests.
+    batch_size = 250
+    for start in range(0, len(selected), batch_size):
+        batch = selected[start : start + batch_size]
+        statement = source.where(_allocation_group_filter(group_columns, batch))
+        result = await session.stream(statement.execution_options(yield_per=batch_size))
+        try:
+            async for row in result:
+                label = _gpu_allocation_label(row[-1] or {})
+                if label:
+                    labels[row[:-1]].add(label)
+        finally:
+            await result.close()
+
+    for key, item in zip(row_keys, items):
+        item["gpu_allocation"] = " / ".join(sorted(labels[key])) or None
+
+
 @dataclass
 class ResourceBreakdownQuery:
     """The statements behind one resource-breakdown request.
@@ -1151,6 +1216,21 @@ class ResourceBreakdownQuery:
     carries_creator: bool
     carries_organization: bool
     effective_scope: str
+    gpu_allocation_source: Optional[Select]
+
+    @property
+    def includes_gpu_allocation(self) -> bool:
+        return self.gpu_allocation_source is not None
+
+
+def _resource_breakdown_sort_keys(request, metric_keys: List[str]) -> List[str]:
+    requested = request.order_by if request.order_by in metric_keys else None
+    # A valid metric takes precedence over the chart's default date order.
+    keys = ["group_date"] if "date" in request.group_by and requested is None else []
+    metric = requested or next(iter(metric_keys), None)
+    if metric is not None:
+        keys.append(metric)
+    return keys
 
 
 async def _build_resource_breakdown_statement(  # noqa: C901
@@ -1164,6 +1244,7 @@ async def _build_resource_breakdown_statement(  # noqa: C901
     join_instances: bool = True,
     join_volumes: bool = True,
     strict_scope: bool = False,
+    include_gpu_allocation: bool = False,
 ) -> ResourceBreakdownQuery:
     """Resolve scope, check permission and build the breakdown statements.
 
@@ -1204,6 +1285,7 @@ async def _build_resource_breakdown_statement(  # noqa: C901
         group_member_ids=group_member_ids,
     )
     base = _bucket_in_range(base, request.start_date, request.end_date)
+    scoped_usage = base
 
     # "resources" = Active Instances/Volumes, so it must EXCLUDE rows whose
     # resource was since deleted (metered_usage keeps deleted rows for the record,
@@ -1258,11 +1340,8 @@ async def _build_resource_breakdown_statement(  # noqa: C901
     # group_key/group_id) don't clash.
     select_cols: List[Any] = []
     group_cols: List[Any] = []
-    date_expr = None
     for gb in request.group_by:
         sc, gc = _group_columns(gb, session, request.granularity)
-        if gb == "date":
-            date_expr = gc[0]
         select_cols.extend(sc)
         group_cols.extend(gc)
     agg_cols = [metrics[k].label(k) for k in metric_keys]
@@ -1332,34 +1411,13 @@ async def _build_resource_breakdown_statement(  # noqa: C901
         ]
     grouped = base.with_only_columns(*select_cols, *agg_cols).group_by(*group_cols)
 
-    # An ``order_by`` this tab does not meter counts as no preference at all.
-    # The alternative is worse than a 400: it would suppress the date default
-    # (the caller "expressed a preference") and then find no column to sort by,
-    # leaving the statement with NO ordering — the shuffled Date column this
-    # ordering exists to prevent. Which keys are legal is per-endpoint
-    # (``gb_days`` on Storage, ``gpu_hours`` on GPU Instances), so the schema
-    # cannot check it and this is the only place that can.
-    requested_key = request.order_by if request.order_by in metric_keys else None
-
-    order_exprs: List[Any] = []
-    # A date-grouped result is a time series and has to come out in time
-    # order. Sorting by the metric alone leaves ties — and a flat metric (every
-    # bucket the same GB-Days, say) makes EVERY row a tie, so the database is
-    # free to return them shuffled. That shows up as a downloaded file whose
-    # Date column jumps around. The metric follows as the tie-break, so a
-    # ["date", "volume"] grouping has an order within a date too.
-    #
-    # Only applied when the caller expressed no preference, so an explicit
-    # ``order_by`` still wins — but ``descending`` is honoured either way,
-    # since one request cannot sensibly mean newest-first and smallest-first.
-    if date_expr is not None and requested_key is None:
-        order_exprs.append(desc(date_expr) if request.descending else date_expr)
-    order_key = requested_key or (metric_keys[0] if metric_keys else None)
-    if order_key:
-        order_expr = metrics[order_key]
-        order_exprs.append(desc(order_expr) if request.descending else order_expr)
-    if order_exprs:
-        grouped = grouped.order_by(*order_exprs)
+    sort_columns = [
+        grouped.selected_columns[key]
+        for key in _resource_breakdown_sort_keys(request, metric_keys)
+    ]
+    grouped = grouped.order_by(
+        *(desc(column) if request.descending else column for column in sort_columns)
+    )
 
     return ResourceBreakdownQuery(
         summary_statement=summary_statement,
@@ -1369,6 +1427,15 @@ async def _build_resource_breakdown_statement(  # noqa: C901
         carries_creator=carries_creator,
         carries_organization=carries_organization,
         effective_scope=effective_scope,
+        # A billed shape can contain distinct allocations with equal weights.
+        # Keep the snapshots of the selected groups, outside the metric/count SQL.
+        gpu_allocation_source=(
+            scoped_usage.with_only_columns(*select_cols, MeteredUsage.dimensions).where(
+                MeteredUsage.resource_type == RESOURCE_TYPE_GPU_INSTANCE
+            )
+            if include_gpu_allocation and supports_gpu_allocation(request.group_by)
+            else None
+        ),
     )
 
 
@@ -1501,6 +1568,7 @@ async def _run_breakdown(
     metric_keys: List[str],
     join_instances: bool = True,
     join_volumes: bool = True,
+    include_gpu_allocation: bool = False,
 ):
     query = await _build_resource_breakdown_statement(
         session,
@@ -1511,6 +1579,7 @@ async def _run_breakdown(
         metric_keys=metric_keys,
         join_instances=join_instances,
         join_volumes=join_volumes,
+        include_gpu_allocation=include_gpu_allocation,
     )
     metric_keys = query.metric_keys
     carries_creator = query.carries_creator
@@ -1572,6 +1641,8 @@ async def _run_breakdown(
             _rollup_day_window(request.start_date, request.end_date),
             bucketed="date" in request.group_by,
         )
+    if query.gpu_allocation_source is not None:
+        await _attach_gpu_allocations(session, query.gpu_allocation_source, rows, items)
 
     return {
         "summary": metrics_of(summary_row) if summary_row is not None else {},
@@ -1648,6 +1719,7 @@ async def gpu_instances_breakdown(
         ),
         metric_keys=_GPU_METRIC_KEYS,
         join_volumes=False,  # GPU rows never resolve against the PV table
+        include_gpu_allocation=request.include_gpu_allocation,
     )
 
 
@@ -1729,6 +1801,7 @@ async def _resolve_resource_export_sheets(
     join_volumes: bool,
     allowed: Set[str],
     tolerate_forbidden: bool,
+    include_gpu_allocation: bool = False,
 ) -> List[Tuple[UsageExportSheet, Optional[ResourceBreakdownQuery], Optional[str]]]:
     sheets = request.resolved_sheets()
     if len(sheets) > envs.USAGE_EXPORT_MAX_SHEETS:
@@ -1777,6 +1850,7 @@ async def _resolve_resource_export_sheets(
                 join_instances=join_instances,
                 join_volumes=join_volumes,
                 strict_scope=requested_platform_wide(request),
+                include_gpu_allocation=include_gpu_allocation,
             )
         except ForbiddenException as exc:
             if not tolerate_forbidden:
@@ -1785,6 +1859,75 @@ async def _resolve_resource_export_sheets(
             continue
         resolved.append((sheet, query, None))
     return resolved
+
+
+def _gpu_allocation_export_statement(query: ResourceBreakdownQuery, request):
+    """Read allocation snapshots with their report group in the same cursor."""
+    groups = query.items_statement.order_by(None).subquery("usage_groups")
+    allocations = query.gpu_allocation_source.subquery("usage_allocations")
+    keys = [key for key in allocations.c.keys() if key != "dimensions"]
+    nullable_key = "group_id" if "group_id" in keys else "group_key"
+    left, right = groups.c[nullable_key], allocations.c[nullable_key]
+    # Keep the NULL match an equality join, with a separate NULL check so a
+    # real key equal to the fallback still cannot match a missing key.
+    fallback = 0 if nullable_key == "group_id" else "<missing>"
+    match = and_(
+        *(groups.c[key] == allocations.c[key] for key in keys if key != nullable_key),
+        func.coalesce(left, fallback) == func.coalesce(right, fallback),
+        left.is_(None) == right.is_(None),
+    )
+    sort_columns = [
+        groups.c[key]
+        for key in _resource_breakdown_sort_keys(request, query.metric_keys)
+    ]
+    statement = (
+        select(*groups.c, allocations.c.dimensions.label("allocation_dimensions"))
+        .select_from(groups.outerjoin(allocations, match))
+        .order_by(
+            *(
+                desc(column) if request.descending else column
+                for column in sort_columns
+            ),
+            # Keep a group's records contiguous even when report metrics tie.
+            *(groups.c[key] for key in keys),
+        )
+    )
+    return statement, keys
+
+
+async def _resource_export_partitions(result, allocation_keys):
+    """Fold adjacent allocation records into one output row per report group."""
+    chunk_size = envs.USAGE_EXPORT_STREAM_CHUNK_ROWS
+    if not allocation_keys:
+        async for partition in result.partitions(chunk_size):
+            yield partition, []
+        return
+
+    rows, allocations = [], []
+    previous_row, previous_key = None, None
+    labels: Set[str] = set()
+    async for partition in result.partitions(chunk_size):
+        for row in partition:
+            key = tuple(getattr(row, name, None) for name in allocation_keys)
+            if key != previous_key:
+                if previous_row is not None:
+                    rows.append(previous_row)
+                    allocations.append(" / ".join(sorted(labels)) or None)
+                    if len(rows) == chunk_size:
+                        yield rows, allocations
+                        rows, allocations = [], []
+                previous_row, previous_key = row, key
+                labels.clear()
+            label = _gpu_allocation_label(
+                getattr(row, "allocation_dimensions", None) or {}
+            )
+            if label:
+                labels.add(label)
+
+    if previous_row is not None:
+        rows.append(previous_row)
+        allocations.append(" / ".join(sorted(labels)) or None)
+        yield rows, allocations
 
 
 async def _stream_resource_export_rows(
@@ -1820,10 +1963,13 @@ async def _stream_resource_export_rows(
     rows_out = 0
     batches = 0
 
+    statement, allocation_keys = query.items_statement, []
+    if query.includes_gpu_allocation:
+        statement, allocation_keys = _gpu_allocation_export_statement(query, request)
     async with _enricher() as enrich_session:
-        result = await session.stream(query.items_statement)
+        result = await session.stream(statement)
         try:
-            partitions = result.partitions(envs.USAGE_EXPORT_STREAM_CHUNK_ROWS)
+            partitions = _resource_export_partitions(result, allocation_keys)
             while True:
                 # Driven by hand rather than ``async for`` so the wait on the
                 # cursor can be charged separately — and the FIRST wait charged
@@ -1834,9 +1980,10 @@ async def _stream_resource_export_rows(
                 # numbers that behave completely differently, and summing them
                 # hides the only one worth optimizing.
                 with timer.stage("aggregate" if batches == 0 else "fetch"):
-                    partition = await anext(partitions, None)
-                if partition is None:
+                    batch = await anext(partitions, None)
+                if batch is None:
                     break
+                partition, allocations = batch
                 batches += 1
                 with timer.stage("build"):
                     items = _rows_to_items(
@@ -1847,6 +1994,8 @@ async def _stream_resource_export_rows(
                         aware_tz=aware_tz,
                         fixed_tz=fixed_tz,
                     )
+                    for item, allocation in zip(items, allocations):
+                        item["gpu_allocation"] = allocation
                 if enrich_session is not None:
                     with timer.stage("enrich"):
                         # Same window the rows were aggregated over. Without it
@@ -1869,6 +2018,7 @@ async def _stream_resource_export_rows(
                             query.metric_keys,
                             granularity=request.granularity,
                             carries_organization=query.carries_organization,
+                            include_gpu_allocation=query.includes_gpu_allocation,
                         )
                         for item in items
                     ]
@@ -1913,6 +2063,7 @@ async def _resource_export_response(
     join_volumes: bool,
     allowed: Set[str],
     prefix: str,
+    include_gpu_allocation: bool = False,
 ):
     sheets = await _resolve_resource_export_sheets(
         session,
@@ -1925,6 +2076,7 @@ async def _resource_export_response(
         join_volumes=join_volumes,
         allowed=allowed,
         tolerate_forbidden=False,
+        include_gpu_allocation=include_gpu_allocation,
     )
 
     # Size every sheet before a byte goes out: the status code is committed as
@@ -1959,7 +2111,10 @@ async def _resource_export_response(
                 key=sheet.key,
                 name=sheet.name,
                 columns=build_resource_export_columns(
-                    sheet.group_by, query.metric_keys, query.carries_organization
+                    sheet.group_by,
+                    query.metric_keys,
+                    query.carries_organization,
+                    include_gpu_allocation=query.includes_gpu_allocation,
                 ),
                 total=totals[sheet.key],
                 rows=partial(
@@ -2040,11 +2195,13 @@ async def _resource_export_estimate(
                         sheet.group_by,
                         query.metric_keys,
                         query.carries_organization,
+                        include_gpu_allocation=query.includes_gpu_allocation,
                     ),
                     build_resource_export_columns(
                         sheet.group_by,
                         query.metric_keys,
                         query.carries_organization,
+                        include_gpu_allocation=query.includes_gpu_allocation,
                     ),
                 ),
             )
@@ -2065,6 +2222,7 @@ _GPU_EXPORT_KWARGS = dict(
     join_instances=True,
     join_volumes=False,
     allowed={"instance_type", "instance", "user", "date", "organization"},
+    include_gpu_allocation=True,
 )
 
 _STORAGE_EXPORT_KWARGS = dict(

@@ -133,9 +133,19 @@ def test_entity_dimension_spells_out_its_name_in_columns():
 def test_bucket_dimension_has_no_id_or_deleted_columns():
     # instance_type is a bucket, not an entity — it has no id and cannot be
     # "deleted", so emitting those columns would be dead weight.
-    keys = resource_export_column_keys(["instance_type"], GPU_METRICS)
-    assert keys[0] == "instance_type_name"
+    keys = resource_export_column_keys(
+        ["instance_type"], GPU_METRICS, include_gpu_allocation=True
+    )
+    assert keys[:2] == ["instance_type_name", "gpu_allocation"]
     assert not [k for k in keys if k.endswith("_id") or k.endswith("_deleted")]
+
+
+@pytest.mark.parametrize("group_by", [["date"], ["user"], ["organization"], ["volume"]])
+def test_gpu_allocation_column_requires_an_instance_grouping(group_by):
+    keys = resource_export_column_keys(
+        group_by, GPU_METRICS, include_gpu_allocation=True
+    )
+    assert "gpu_allocation" not in keys
 
 
 def test_metrics_follow_the_endpoint_not_a_fixed_list():

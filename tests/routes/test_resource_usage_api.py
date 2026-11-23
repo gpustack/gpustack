@@ -13,8 +13,11 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.api.exceptions import ForbiddenException
 from gpustack.routes.resource_usage import (
     ResourceBreakdownRequest,
+    ResourceExportRequest,
     _phase_message_of,
     _run_breakdown,
+    estimate_gpu_instances_breakdown_export,
+    gpu_instances_breakdown,
     usage_summary,
 )
 from gpustack.schemas.metered_usage import (
@@ -930,10 +933,55 @@ async def test_gpu_instances_breakdown_by_instance_type(session):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("group_by", "nullable_key"), [("instance_type", "sku"), ("instance", "id")]
+)
+async def test_gpu_allocation_preview_with_null_group_key(
+    session, group_by, nullable_key
+):
+    session.add(
+        _mu(
+            meter_key=METER_INSTANCE_UPTIME,
+            resource_type=RESOURCE_TYPE_GPU_INSTANCE,
+            resource_id=None,
+            resource_name="legacy-slice",
+            sku=None,
+            sku_count=Decimal("0.25"),
+            quantity=3600,
+            unit="seconds",
+            dimensions={"slice_mode": "ratio", "sliced_memory_percentage": 25},
+        )
+    )
+    await session.commit()
+    params = dict(scope="self", start_date=D, end_date=D, group_by=["date", group_by])
+
+    ordinary = await gpu_instances_breakdown(
+        session, USER, CTX, ResourceBreakdownRequest(**params)
+    )
+    assert all("gpu_allocation" not in item for item in ordinary["items"])
+
+    preview = await gpu_instances_breakdown(
+        session,
+        USER,
+        CTX,
+        ResourceBreakdownRequest(**params, include_gpu_allocation=True),
+    )
+    (legacy_slice,) = [item for item in preview["items"] if item[nullable_key] is None]
+    assert legacy_slice["gpu_allocation"] == "25%"
+    assert legacy_slice["metrics"]["gpu_hours"] == pytest.approx(0.25)
+
+    estimate = await estimate_gpu_instances_breakdown_export(
+        session, USER, CTX, ResourceExportRequest(**params)
+    )
+    columns = {column.key: column.title for column in estimate.sheets[0].columns}
+    assert columns["gpu_allocation"] == "GPU Allocation"
+    assert estimate.total == preview["pagination"].total
+
+
+@pytest.mark.asyncio
 async def test_gpu_instances_breakdown_includes_cpu_instances(session):
     # CPU-only instances are metered as ``cpu_instance`` — the GPU Instances
     # tab must show them too (contributing instance_hours but 0 gpu_hours).
-    from gpustack.routes.resource_usage import gpu_instances_breakdown
     from gpustack.schemas.metered_usage import RESOURCE_TYPE_CPU_INSTANCE
 
     session.add(
