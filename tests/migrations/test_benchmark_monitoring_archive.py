@@ -1,6 +1,7 @@
 """Archive DDL is idempotent and uses types shared by both SQL dialect families."""
 
 import importlib
+import shutil
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -20,7 +21,7 @@ def test_archive_upgrade_before_benchmarks_table_is_created(tmp_path):
     try:
         config = migration_config(str(engine.url))
         command.stamp(config, 'c8d3e6f1a902')
-        command.upgrade(config, 'head')
+        command.upgrade(config, 'f8c4a291bd65')
         with engine.begin() as connection:
             assert not sa.inspect(connection).has_table('benchmarks')
             Benchmark.__table__.create(connection)
@@ -50,16 +51,23 @@ def migration_config(url=None):
 
 def test_archive_schema_upgrades_follow_the_existing_head():
     scripts = ScriptDirectory.from_config(migration_config())
-    assert scripts.get_heads() == ['f8c4a291bd65']
-    pending = list(scripts.iterate_revisions('head', 'c8d3e6f1a902'))
-    assert [step.revision for step in pending] == ['f8c4a291bd65']
-    assert pending[0].down_revision == 'c8d3e6f1a902'
+    kv_transfer = scripts.get_revision('921586f4a09b')
+    archive = scripts.get_revision('f8c4a291bd65')
+    assert kv_transfer.down_revision == 'c8d3e6f1a902'
+    assert archive.down_revision == kv_transfer.revision
+    pending = scripts.iterate_revisions(scripts.get_current_head(), 'c8d3e6f1a902')
+    assert {kv_transfer.revision, archive.revision} <= {
+        step.revision for step in pending
+    }
 
 
-def test_alembic_upgrade_from_existing_c8_creates_archive_schema_only(tmp_path):
+@pytest.mark.parametrize('backport_first', [False, True], ids=['v2.3.1', 'v2.3.x'])
+def test_alembic_upgrade_to_monitoring_preserves_kv_settings(tmp_path, backport_first):
     path = tmp_path / 'already_at_c8.db'
     engine = sa.create_engine(f'sqlite:///{path}')
     with engine.begin() as connection:
+        connection.execute(sa.text('CREATE TABLE workers (id INTEGER PRIMARY KEY)'))
+        connection.execute(sa.text('INSERT INTO workers (id) VALUES (1)'))
         connection.execute(
             sa.text(
                 'CREATE TABLE benchmarks (id INTEGER PRIMARY KEY, name VARCHAR(64))'
@@ -99,7 +107,30 @@ def test_alembic_upgrade_from_existing_c8_creates_archive_schema_only(tmp_path):
             column['name']
             for column in sa.inspect(connection).get_columns('benchmarks')
         }
-    command.upgrade(config, 'head')
+    if backport_first:
+        versions = tmp_path / 'v2.3-dev'
+        versions.mkdir()
+        scripts = ScriptDirectory.from_config(config)
+        for step in scripts.walk_revisions(head='c8d3e6f1a902'):
+            shutil.copyfile(step.path, versions / Path(step.path).name)
+        kv_transfer = scripts.get_revision('921586f4a09b')
+        shutil.copyfile(kv_transfer.path, versions / Path(kv_transfer.path).name)
+        backport = migration_config(str(engine.url))
+        backport.set_main_option('path_separator', 'os')
+        backport.set_main_option('version_locations', str(versions))
+        command.upgrade(backport, 'head')
+        with engine.begin() as connection:
+            assert (
+                connection.execute(
+                    sa.text('SELECT version_num FROM alembic_version')
+                ).scalar_one()
+                == kv_transfer.revision
+            )
+            assert not sa.inspect(connection).has_table('benchmark_monitoring_payloads')
+            connection.execute(
+                sa.text("UPDATE workers SET kv_transfer_ifname = 'ens5f0' WHERE id = 1")
+            )
+    command.upgrade(config, 'f8c4a291bd65')
     with engine.connect() as connection:
         inspector = sa.inspect(connection)
         assert (
@@ -113,7 +144,11 @@ def test_alembic_upgrade_from_existing_c8_creates_archive_schema_only(tmp_path):
             'alembic_version',
             'benchmarks',
             'model_instances',
+            'workers',
         }
+        assert connection.execute(
+            sa.text('SELECT id, kv_transfer_ifname FROM workers')
+        ).one() == (1, 'ens5f0' if backport_first else None)
         assert 'run_id' in {
             column['name'] for column in inspector.get_columns('benchmarks')
         }
@@ -132,24 +167,12 @@ def test_alembic_upgrade_from_existing_c8_creates_archive_schema_only(tmp_path):
             'ix_model_instances_cluster_id',
             'ix_model_instances_model_id',
         }
-        policy = connection.execute(
+        assert connection.execute(
             sa.text(
                 'SELECT id, max_bytes, used_bytes, initialized '
                 'FROM artifact_storage_capacity'
             )
-        ).one()
-        assert policy == (1, 0, 0, False)
-    command.upgrade(config, 'head')
-    with engine.connect() as connection:
-        assert (
-            connection.execute(
-                sa.text(
-                    'SELECT id, max_bytes, used_bytes, initialized '
-                    'FROM artifact_storage_capacity'
-                )
-            ).one()
-            == policy
-        )
+        ).one() == (1, 0, 0, False)
     command.downgrade(config, 'c8d3e6f1a902')
     with engine.connect() as connection:
         assert (
@@ -163,6 +186,9 @@ def test_alembic_upgrade_from_existing_c8_creates_archive_schema_only(tmp_path):
             column['name']
             for column in sa.inspect(connection).get_columns('benchmarks')
         ] == ['id', 'name']
+        assert [
+            column['name'] for column in sa.inspect(connection).get_columns('workers')
+        ] == ['id']
         assert (
             connection.execute(
                 sa.text('SELECT model_config_snapshot FROM model_instances')
