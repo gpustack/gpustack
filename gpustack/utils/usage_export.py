@@ -91,6 +91,7 @@ EXPORT_COLUMN_TITLES: Dict[str, str] = {
     "volume_name": "Volume",
     "volume_deleted": "Volume Deleted",
     "instance_type_name": "Instance Type",
+    "gpu_allocation": "GPU Allocation",
     "storage_type_name": "Storage Type",
     "resource_type_name": "Resource Type",
     "owner_id": "Owner ID",
@@ -347,10 +348,16 @@ def _resources_column_key(metric_keys: Sequence[str]) -> str:
     return "active_instances"
 
 
+def supports_gpu_allocation(group_by: Sequence[str]) -> bool:
+    return (set(group_by) - {USAGE_GROUP_BY_DATE}) in ({"instance"}, {"instance_type"})
+
+
 def resource_export_column_keys(
     group_by: Sequence[str],
     metric_keys: Sequence[str],
     carries_organization: bool = False,
+    *,
+    include_gpu_allocation: bool = False,
 ) -> List[str]:
     """Column keys for one resource sheet, in file order.
 
@@ -367,6 +374,8 @@ def resource_export_column_keys(
         if dimension == USAGE_GROUP_BY_DATE:
             continue
         keys.extend(_resource_dimension_keys(dimension))
+    if include_gpu_allocation and supports_gpu_allocation(group_by):
+        keys.append("gpu_allocation")
     # Per-resource rows carry their owner; coarser groupings omit it rather
     # than pair one user's id with another's name.
     if any(dimension in ("instance", "volume") for dimension in group_by):
@@ -403,6 +412,7 @@ def _resource_export_shape(
     group_by: Tuple[str, ...],
     metric_keys: Tuple[str, ...],
     carries_organization: bool = False,
+    include_gpu_allocation: bool = False,
 ) -> _ResourceExportShape:
     """Resolve a sheet's fixed layout once per (group_by, metric_keys).
 
@@ -418,7 +428,12 @@ def _resource_export_shape(
     """
     return _ResourceExportShape(
         column_keys=tuple(
-            resource_export_column_keys(group_by, metric_keys, carries_organization)
+            resource_export_column_keys(
+                group_by,
+                metric_keys,
+                carries_organization,
+                include_gpu_allocation=include_gpu_allocation,
+            )
         ),
         resources_key=_resources_column_key(metric_keys),
         carries_owner=any(
@@ -466,14 +481,21 @@ def resource_export_row(
     metric_keys: Sequence[str],
     granularity: str = USAGE_GRANULARITY_DAY,
     carries_organization: bool = False,
+    *,
+    include_gpu_allocation: bool = False,
 ) -> List[Any]:
     """Flatten one enriched resource breakdown item into an export row."""
     shape = _resource_export_shape(
-        tuple(group_by), tuple(metric_keys), carries_organization
+        tuple(group_by),
+        tuple(metric_keys),
+        carries_organization,
+        include_gpu_allocation,
     )
     values: Dict[str, Any] = {}
     if USAGE_GROUP_BY_DATE in group_by:
         values["date"] = _export_bucket(item.get("date"), granularity)
+    if "gpu_allocation" in shape.column_keys:
+        values["gpu_allocation"] = item.get("gpu_allocation")
 
     for dimension in group_by:
         if dimension == USAGE_GROUP_BY_DATE:
@@ -525,11 +547,16 @@ def build_resource_export_columns(
     group_by: Sequence[str],
     metric_keys: Sequence[str],
     carries_organization: bool = False,
+    *,
+    include_gpu_allocation: bool = False,
 ) -> List[str]:
     """The header row for one resource sheet, in file order."""
     return [
         export_column_title(key)
         for key in resource_export_column_keys(
-            group_by, metric_keys, carries_organization
+            group_by,
+            metric_keys,
+            carries_organization,
+            include_gpu_allocation=include_gpu_allocation,
         )
     ]
