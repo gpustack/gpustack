@@ -13,7 +13,12 @@ from gpustack.schemas.workers import (
     WorkerStatus,
 )
 from gpustack.worker import net_device
-from gpustack.worker.net_device import candidate_kv_interfaces, derive_net_device
+from gpustack.worker.net_device import (
+    candidate_kv_interfaces,
+    derive_net_device,
+    resolve_kv_transfer_ifname,
+)
+from gpustack.worker.pd_injection import PDInjectionError
 
 
 @pytest.fixture
@@ -168,6 +173,26 @@ def test_kv_transfer_ifname_defaults_to_none(config):
 #
 
 
+@pytest.mark.parametrize(
+    "candidates,ifname",
+    [(["eno1", "ib0"], "eno1"), (["ib0"], ""), ([], "")],
+)
+def test_nixl_resolution_error_lists_candidates_and_settings(
+    config, nics, candidates, ifname
+):
+    nics(candidates)
+
+    with pytest.raises(PDInjectionError, match="KV transfer interface") as error:
+        resolve_kv_transfer_ifname(_worker(ifname=ifname), config())
+
+    message = str(error.value)
+    assert f"Candidate interfaces are {', '.join(candidates) or '(none)'}" in message
+    assert "Edit Worker" in message
+    assert "Worker Configuration" in message
+    assert "--kv-transfer-ifname" in message
+    assert "GPUSTACK_KV_TRANSFER_IFNAME" in message
+
+
 def test_multi_nic_host_refuses_instead_of_using_the_management_nic(
     config, nics, caplog
 ):
@@ -285,9 +310,10 @@ def test_the_data_plane_is_what_an_undeclared_caller_gets(config, nics):
     assert derive_net_device(_worker(ifname="eno1"), config()) is None
 
 
-def test_kv_transfer_ifname_still_wins_on_the_control_plane(config, nics):
-    """The escape hatch is per-worker and no plane may bypass it: a machine
-    whose handshake really does belong on another NIC must stay expressible."""
+def test_legacy_startup_kv_transfer_ifname_overrides_the_control_interface(
+    config, nics
+):
+    """Keep the startup override for existing control-plane deployments."""
     nics(["bond1", "eno1"])
     assert (
         derive_net_device(

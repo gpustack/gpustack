@@ -18,7 +18,9 @@ and the recipe stops contributing its own.
 import json
 import logging
 import types
+from unittest.mock import Mock, call
 
+import httpx
 import pytest
 
 from gpustack.schemas.models import (
@@ -31,6 +33,7 @@ from gpustack.schemas.models import (
     PortBand,
     RoleSpec,
     SourceEnum,
+    role_effective_model,
 )
 from gpustack.utils.template import deployment_variables
 from gpustack.worker.pd_injection import (
@@ -101,6 +104,138 @@ def _connector(injection):
     """The rendered `--kv-transfer-config` document."""
     assert KV_TRANSFER_CONFIG_FLAG in injection.args
     return json.loads(injection.args[injection.args.index(KV_TRANSFER_CONFIG_FLAG) + 1])
+
+
+@pytest.fixture
+def render_worker_pd(monkeypatch):
+    from gpustack.worker import net_device
+    from gpustack.worker.backends.vllm import VLLMServer
+
+    monkeypatch.setattr(net_device, "candidate_kv_interfaces", lambda: ["eth0", "eth1"])
+
+    def render(
+        *,
+        worker_value=None,
+        local_value=None,
+        cluster_value=None,
+        model=None,
+        role="prefill",
+        workers=None,
+    ):
+        model = model or _model()
+        instance = _instance(role)
+
+        def variables(**overrides):
+            values = _variables(role=instance.role)
+            values.pop("net_device")
+            values.update(overrides)
+            return values
+
+        worker = types.SimpleNamespace(
+            id=2,
+            name="worker-b",
+            ifname="eth0",
+            kv_transfer_ifname=worker_value,
+            cluster_kv_transfer_ifname=cluster_value,
+        )
+        server = VLLMServer.__new__(VLLMServer)
+        server._worker = worker
+        server._clientset = types.SimpleNamespace(
+            workers=(
+                workers if workers is not None else Mock(get=Mock(return_value=worker))
+            )
+        )
+        server._config = types.SimpleNamespace(kv_transfer_ifname=local_value)
+        server._model_spec = model
+        server._model = role_effective_model(model, instance.role)
+        server._model_instance = instance
+        server._resolve_image = lambda **_kw: (None, None)
+        server._engine_inference_backend = lambda _spec: None
+        server._template_variables = variables
+        return server._pd_injection()
+
+    return render
+
+
+@pytest.mark.parametrize(
+    "node,local,cluster,expected",
+    [
+        ("eth0,eth1", "local-kv", "cluster-kv", "eth0,eth1"),
+        (None, " mlx5_0:1, mlx5_1:1 ", "cluster-kv", "mlx5_0:1,mlx5_1:1"),
+        (" ", "\t", "all", "all"),
+    ],
+)
+def test_worker_kv_interface_sources_reach_nixl(
+    render_worker_pd, node, local, cluster, expected
+):
+    launch = render_worker_pd(
+        worker_value=node, local_value=local, cluster_value=cluster
+    )
+    assert launch.env["UCX_NET_DEVICES"] == expected
+
+
+def test_nixl_reads_the_latest_worker_setting_on_each_launch(render_worker_pd):
+    model = _model(env={"UCX_NET_DEVICES": "{{net_device}}"})
+    workers = Mock()
+    workers.get.side_effect = [
+        types.SimpleNamespace(kv_transfer_ifname=name, name="worker-b")
+        for name in ("node-kv", "updated-kv")
+    ]
+    first = render_worker_pd(role="decode", model=model, workers=workers)
+    second = render_worker_pd(role="decode", model=model, workers=workers)
+    assert first.env["UCX_NET_DEVICES"] == "node-kv"
+    assert second.env["UCX_NET_DEVICES"] == "updated-kv"
+    assert workers.get.call_args_list == [call(2, use_cache=False)] * 2
+
+
+@pytest.mark.parametrize("mode", [PDModeEnum.VLLM_NIXL, PDModeEnum.SGLANG_NIXL])
+def test_nixl_reports_worker_settings_request_failure(render_worker_pd, mode):
+    error = httpx.ReadTimeout("Worker API timed out")
+    workers = Mock(get=Mock(side_effect=error))
+
+    with pytest.raises(
+        PDInjectionError, match="Cannot read KV transfer settings for worker 2"
+    ) as failure:
+        render_worker_pd(model=_model(mode=mode), role="decode", workers=workers)
+
+    assert failure.value.__cause__ is error
+    workers.get.assert_called_once_with(2, use_cache=False)
+
+
+def test_nixl_automatic_selection_refuses_multiple_candidate_interfaces(
+    render_worker_pd,
+):
+    with pytest.raises(PDInjectionError, match="KV transfer interface"):
+        render_worker_pd()
+
+
+@pytest.mark.parametrize("mode", [PDModeEnum.VLLM_NIXL, PDModeEnum.SGLANG_NIXL])
+def test_nixl_forwards_an_explicit_device_without_worker_inventory(
+    render_worker_pd, mode
+):
+    launch = render_worker_pd(
+        model=_model(mode=mode), role="decode", worker_value="not-on-worker"
+    )
+    assert launch.env["UCX_NET_DEVICES"] == "not-on-worker"
+
+
+def test_model_env_can_supply_the_nixl_device_on_a_multi_nic_worker(render_worker_pd):
+    launch = render_worker_pd(model=_model(env={"UCX_NET_DEVICES": "custom-kv"}))
+    assert launch.env["UCX_NET_DEVICES"] == "custom-kv"
+
+
+def test_role_env_still_owns_the_nixl_device_when_worker_settings_change(
+    render_worker_pd,
+):
+    model = _model(
+        roles=[
+            RoleSpec(name="prefill", replicas=1, env={"UCX_NET_DEVICES": "role-kv"}),
+            RoleSpec(name="decode", replicas=1),
+        ],
+        env={"UCX_NET_DEVICES": "model-kv"},
+    )
+    launch = render_worker_pd(model=model, worker_value="missing-kv")
+    assert launch.env["UCX_NET_DEVICES"] == "role-kv"
 
 
 def test_vllm_nixl_prefill_renders_the_whole_launch():
@@ -356,7 +491,7 @@ def test_nixl_lease_is_not_injected_as_an_env_var():
     assert "kv_lease_duration" not in injection.env
 
 
-def _backend(model, instance):
+def _backend(model, instance, *, server_class=None):
     """A worker-side server object with only what the injection seams read.
 
     `_model_spec` is the unprojected model and `_model` the projection, which
@@ -367,11 +502,15 @@ def _backend(model, instance):
     from gpustack.schemas.models import role_effective_model
     from gpustack.worker.backends.custom import CustomServer
 
-    backend = CustomServer.__new__(CustomServer)
+    server_class = server_class or CustomServer
+    backend = server_class.__new__(server_class)
     backend._model_spec = model
     backend._model = role_effective_model(model, instance.role)
     backend._model_instance = instance
     backend._worker = types.SimpleNamespace(id=1, ip="192.168.50.10", ifname="eth0")
+    backend._clientset = types.SimpleNamespace(
+        workers=Mock(get=Mock(return_value=backend._worker))
+    )
     # `kv_transfer_ifname` because this is the escape hatch a real multi-NIC host has
     # to use: the data plane refuses to derive a KV interface when several
     # are plausible, so a stub without it makes the outcome depend on how
@@ -387,6 +526,118 @@ def _backend(model, instance):
         None,
     )
     return backend
+
+
+@pytest.mark.parametrize(
+    "mode,role_name,rank",
+    [
+        (PDModeEnum.VLLM_NIXL, "prefill", None),
+        (PDModeEnum.VLLM_NIXL, "decode", None),
+        (PDModeEnum.VLLM_NIXL, "decode", 1),
+        (PDModeEnum.SGLANG_NIXL, "prefill", None),
+        (PDModeEnum.SGLANG_NIXL, "decode", None),
+    ],
+)
+@pytest.mark.parametrize("from_role", [False, True], ids=["model", "role"])
+@pytest.mark.parametrize(
+    "configured,expected,worker_settings",
+    [
+        (
+            "{{net_device}}",
+            "mlx5_2:1,ens5f0",
+            {
+                "kv_transfer_ifname": "mlx5_2:1 , ens5f0 ",
+                "cluster_kv_transfer_ifname": "cluster-kv",
+            },
+        ),
+        ("{{net_device}}", "ens6f0", {"cluster_kv_transfer_ifname": "ens6f0"}),
+        (
+            " \t",
+            "mlx5_2:1,ens5f0",
+            {"kv_transfer_ifname": "mlx5_2:1 , ens5f0 "},
+        ),
+        (" mlx5_A:1 , enP2s0 ", "mlx5_A:1,enP2s0", None),
+        (" mlx5_{{port}}:1 , enP2s0 ", "mlx5_{port}:1,enP2s0", None),
+    ],
+)
+def test_nixl_uses_the_resolved_device_in_the_launch_env(
+    mode, role_name, rank, from_role, configured, expected, worker_settings
+):
+    from gpustack.schemas.models import DistributedServers
+    from gpustack.worker.backends.sglang import SGLangServer
+    from gpustack.worker.backends.vllm import VLLMServer
+
+    env = {"UCX_NET_DEVICES": configured, "EXPLICIT_ENV": "{{model_name}}"}
+    roles = [
+        RoleSpec(
+            name=name, replicas=1, env=env if from_role and name == role_name else None
+        )
+        for name in ("prefill", "decode")
+    ]
+    model = _model(
+        mode,
+        roles=roles,
+        env={"UCX_NET_DEVICES": "model-device"} if from_role else env,
+        backend_parameters=(
+            ["--data-parallel-external-lb", "--dp=2"] if rank is not None else []
+        ),
+    )
+    instance = _instance(role_name)
+    if mode == PDModeEnum.SGLANG_NIXL and role_name == "prefill":
+        instance.named_ports = {"bootstrap": PortBand(base=8998, count=1)}
+    server_class = VLLMServer if mode == PDModeEnum.VLLM_NIXL else SGLangServer
+    backend = _backend(model, instance, server_class=server_class)
+    backend._config.cache_dir = None
+    backend._config.kv_transfer_ifname = None
+    if worker_settings is not None:
+        backend._clientset.workers.get.return_value = types.SimpleNamespace(
+            **worker_settings
+        )
+
+    if rank is None:
+        port = instance.port
+        launch_env = backend._get_configured_env(is_distributed=False)
+    else:
+        port = 42001
+        instance.gpu_indexes = [0, 1]
+        instance.distributed_servers = DistributedServers(workloads=[])
+        instance.named_ports = {"kv_side_channel": PortBand(base=5600, count=2)}
+        _, launch_env = backend._external_pd_rank(
+            [], rank, port, types.SimpleNamespace(files=None)
+        )
+
+    assert launch_env["UCX_NET_DEVICES"] == expected.format(port=port)
+    assert launch_env["EXPLICIT_ENV"] == instance.model_name
+    assert backend._model.env["UCX_NET_DEVICES"] == configured
+    assert backend._clientset.workers.get.call_args_list == (
+        [call(backend._worker.id, use_cache=False)]
+        if worker_settings is not None
+        else []
+    )
+
+
+def test_unresolved_model_nixl_device_template_stops_the_launch():
+    model = _model(env={"UCX_NET_DEVICES": "mlx5_{{unknown}}:1"})
+    backend = _backend(model, _instance())
+
+    with pytest.raises(PDInjectionError, match=r"UCX_NET_DEVICES=\{\{unknown\}\}"):
+        backend._get_configured_env()
+
+
+def test_managed_nixl_endpoint_renders_its_port_after_base_env():
+    from gpustack.worker.backends.vllm import VLLMServer
+
+    model = _model(env={"UCX_NET_DEVICES": "mlx5_{{port}}:1"})
+    backend = _backend(model, _instance(), server_class=VLLMServer)
+    backend._config.cache_dir = None
+
+    env = backend._get_configured_env(is_distributed=False)
+    _, managed_env = backend._managed_pd_endpoint(
+        [], 42001, types.SimpleNamespace(files=None)
+    )
+
+    assert env["UCX_NET_DEVICES"] == "mlx5_40000:1"
+    assert managed_env["UCX_NET_DEVICES"] == "mlx5_42001:1"
 
 
 def test_start_path_carries_env_args_and_attributes_them_to_gpustack():
@@ -527,15 +778,15 @@ def test_a_role_that_writes_its_own_connector_keeps_it(caplog):
 
 
 def test_model_env_overrides_the_injection_but_says_so(caplog):
-    model = _model(env={"UCX_NET_DEVICES": "mlx5_0:1"})
+    model = _model(env={"VLLM_NIXL_SIDE_CHANNEL_HOST": "192.168.50.20"})
     backend = _backend(model, _instance())
 
     with caplog.at_level(logging.WARNING):
         env = backend._get_configured_env()
 
-    assert env["UCX_NET_DEVICES"] == "mlx5_0:1"
-    assert env["VLLM_NIXL_SIDE_CHANNEL_HOST"] == "192.168.50.10"
-    assert "UCX_NET_DEVICES" in caplog.text
+    assert env["UCX_NET_DEVICES"] == "eth0"
+    assert env["VLLM_NIXL_SIDE_CHANNEL_HOST"] == "192.168.50.20"
+    assert "VLLM_NIXL_SIDE_CHANNEL_HOST" in caplog.text
 
 
 def test_injection_files_join_the_shared_cache_files(caplog):
