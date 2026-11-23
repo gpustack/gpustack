@@ -5675,7 +5675,9 @@ class WorkerController:
         # in either order. Consume the stored observation under the same locks.
         servers = instance.distributed_servers
         if (
-            worker.id in servers.maintenance_pending_worker_ids
+            servers is not None
+            and servers.workloads
+            and worker.id in servers.maintenance_pending_worker_ids
             and not inference_proxy_unavailable(worker)
             and managed_worker_observed_ready(servers.workloads, worker.id)
         ):
@@ -5690,12 +5692,13 @@ class WorkerController:
     @staticmethod
     async def _check_managed_maintenance_paths(session, instance, worker):
         service = ModelInstanceService(session)
+        servers = instance.distributed_servers
         owners = {endpoint.worker_id for endpoint in model_instance_endpoints(instance)}
-        if worker.id not in owners:
+        if servers is None or not servers.workloads or worker.id not in owners:
             await session.commit()
             return
 
-        servers = instance.distributed_servers.model_copy(deep=True)
+        servers = servers.model_copy(deep=True)
         patch = {"distributed_servers": servers}
         lost = {worker.id}
         if await service.managed_maintenance_paths_unavailable(instance, worker):

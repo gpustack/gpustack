@@ -1594,9 +1594,14 @@ class ModelInstanceService:
         self, instance: ModelInstance, workloads: List[ModelInstanceWorkload]
     ) -> bool:
         members = set(member_worker_ids(instance))
-        pending = set(instance.distributed_servers.maintenance_pending_worker_ids)
-        if not workloads or {item.worker_id for item in workloads} != members:
+        servers = instance.distributed_servers
+        if (
+            not workloads
+            or servers is None
+            or {item.worker_id for item in workloads} != members
+        ):
             return False
+        pending = set(servers.maintenance_pending_worker_ids)
         if any(
             item.component is not None and item.component.kind == "vllm_hybrid"
             for item in workloads
@@ -1722,14 +1727,13 @@ class ModelInstanceService:
     async def _managed_workers_ready(
         self, members: Set[int], *, instance: Optional[ModelInstance] = None
     ) -> bool:
+        servers = instance.distributed_servers if instance is not None else None
+        if instance is not None and (servers is None or not servers.workloads):
+            return False
         workers = await Worker.all_by_ids(self.session, members, refresh=True)
         if {worker.id for worker in workers} != members:
             return False
-        pending = (
-            set(instance.distributed_servers.maintenance_pending_worker_ids)
-            if instance is not None
-            else set()
-        )
+        pending = set(servers.maintenance_pending_worker_ids) if servers else set()
         retained_running = instance is not None and (
             instance.state == ModelInstanceStateEnum.UNREACHABLE or bool(pending)
         )

@@ -3217,6 +3217,39 @@ def test_only_current_serving_endpoint_observations_confirm_maintenance_recovery
 
 
 @pytest.mark.asyncio
+async def test_replayed_registration_cannot_confirm_reconnected_worker(report_api):
+    api = report_api
+    api.session.get.side_effect = None
+    api.session.get.return_value = SimpleNamespace(
+        id=1,
+        cluster_id=1,
+        system_principal_id=api.ctx.user.id,
+        deleted_at=None,
+        state="ready",
+        proxy_mode="tunnel",
+        proxy_address="http://proxy",
+        unreachable=False,
+    )
+    task = new_model_instance_workload(state="running")
+    assert (await put(api, [task])).status_code == 200
+    api.instance.distributed_servers.maintenance_pending_worker_ids = [1]
+
+    # An equal registration is idempotent. A registration carrying an older
+    # ready=True snapshot cannot undo the disconnect's ready=False.
+    response = await put(api, workloads=[task], observations=None)
+    assert response.status_code == 200, response.text
+    assert api.instance.distributed_servers.maintenance_pending_worker_ids == [1]
+    task["dp_rank_placements"][0]["ready"] = True
+    response = await put(api, workloads=[task], observations=None)
+    assert response.status_code == 409, response.text
+    assert api.instance.distributed_servers.maintenance_pending_worker_ids == [1]
+
+    response = await put(api, [task])
+    assert response.status_code == 200, response.text
+    assert api.instance.distributed_servers.maintenance_pending_worker_ids == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("worker_state", ["maintenance", "ready"])
 async def test_readiness_before_tunnel_reconnect_records_observation_and_holds_routing(
     report_api, worker_state

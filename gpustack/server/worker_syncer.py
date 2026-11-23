@@ -4,10 +4,12 @@ import aiohttp
 from typing import Callable, Optional
 
 from gpustack.schemas.workers import Worker, WorkerStateEnum
+from gpustack.schemas.config import ModelInstanceProxyModeEnum
 from gpustack.server.db import async_session
 from gpustack.server.services import WorkerService
 from gpustack.server.worker_request import is_worker_reachable
 from gpustack import envs
+from gpustack.utils.network import is_offline
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +64,8 @@ class WorkerSyncer:
 
         original_unreachable = {worker.id: worker.unreachable for worker in all_workers}
 
-        if self._should_check_unreachable(len(all_workers)):
+        check_unreachable = self._should_check_unreachable(len(all_workers))
+        if check_unreachable:
             tasks = [
                 self._set_worker_unreachable(worker)
                 for worker in all_workers
@@ -70,6 +73,11 @@ class WorkerSyncer:
             ]
             await asyncio.gather(*tasks)
 
+        maintenance_changed_ids = {
+            worker.id
+            for worker in all_workers
+            if _set_maintenance_proxy_heartbeat(worker, check_unreachable)
+        }
         state_changed_workers = self.filter_state_change_workers(all_workers)
         # Maintenance can hold state constant while endpoint reachability changes.
         changed_ids = {worker.id for worker in state_changed_workers}
@@ -77,7 +85,10 @@ class WorkerSyncer:
             worker
             for worker in all_workers
             if worker.id not in changed_ids
-            and worker.unreachable != original_unreachable[worker.id]
+            and (
+                worker.unreachable != original_unreachable[worker.id]
+                or worker.id in maintenance_changed_ids
+            )
         )
 
         should_update_workers = []
@@ -107,10 +118,22 @@ class WorkerSyncer:
                     or _probe_identity(worker) != identities.get(worker.id)
                 ):
                     continue
-                prior = (worker.unreachable, worker.state, worker.state_message)
-                worker.unreachable = observed[worker.id].unreachable
+                prior = (
+                    worker.unreachable,
+                    worker.state,
+                    worker.state_message,
+                    worker.maintenance,
+                )
+                if check_unreachable:
+                    worker.unreachable = observed[worker.id].unreachable
+                _set_maintenance_proxy_heartbeat(worker, check_unreachable)
                 worker.compute_state()
-                if (worker.unreachable, worker.state, worker.state_message) != prior:
+                if (
+                    worker.unreachable,
+                    worker.state,
+                    worker.state_message,
+                    worker.maintenance,
+                ) != prior:
                     changed.append(worker)
                     state_to_worker_name[worker.state].append(worker.name)
             await WorkerService(session).batch_update(changed)
@@ -194,3 +217,22 @@ def _probe_identity(worker: Worker) -> tuple:
         worker.proxy_address,
         worker.token,
     )
+
+
+def _set_maintenance_proxy_heartbeat(worker: Worker, check_unreachable: bool) -> bool:
+    maintenance = worker.maintenance
+    if maintenance is None:
+        return False
+    heartbeat_lost = (
+        not check_unreachable
+        and maintenance.enabled
+        and worker.proxy_mode == ModelInstanceProxyModeEnum.WORKER
+        and is_offline(worker.heartbeat_time, envs.WORKER_HEARTBEAT_GRACE_PERIOD)[0]
+    )
+    value = True if heartbeat_lost else None
+    if maintenance.worker_proxy_heartbeat_lost == value:
+        return False
+    worker.maintenance = maintenance.model_copy(
+        update={"worker_proxy_heartbeat_lost": value}
+    )
+    return True

@@ -42,7 +42,14 @@ def inference_proxy_unavailable(worker: Worker) -> bool:
     """Check the proxy or tunnel on the worker's configured serving path."""
     if worker.proxy_mode == ModelInstanceProxyModeEnum.TUNNEL:
         return worker.proxy_address is None or worker.unreachable
-    return worker.proxy_mode == ModelInstanceProxyModeEnum.WORKER and worker.unreachable
+    return worker.proxy_mode == ModelInstanceProxyModeEnum.WORKER and (
+        worker.unreachable
+        or (
+            worker.state == WorkerStateEnum.MAINTENANCE
+            and worker.maintenance is not None
+            and worker.maintenance.worker_proxy_heartbeat_lost is True
+        )
+    )
 
 
 def managed_workload_serving_apis(
@@ -684,7 +691,11 @@ def model_instance_endpoints(
             if port and instance.worker_id
             else []
         )
-    pending = set(instance.distributed_servers.maintenance_pending_worker_ids)
+    pending = (
+        set(instance.distributed_servers.maintenance_pending_worker_ids)
+        if instance.distributed_servers is not None
+        else set()
+    )
     if workloads and workloads[0].component is not None:
         if workloads[0].component.kind == "vllm_hybrid":
             members = set(member_worker_ids(instance))

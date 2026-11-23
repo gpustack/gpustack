@@ -95,6 +95,15 @@ async def test_managed_worker_readiness_uses_one_fresh_complete_batch(unavailabl
         single.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_managed_readiness_requires_an_instance_manifest():
+    instance = new_model_instance(1, 'legacy', 1, worker_id=1)
+    service = ModelInstanceService(MagicMock())
+
+    assert not await service._managed_instance_ready(instance, [])
+    assert not await service._managed_workers_ready({1}, instance=instance)
+
+
 def _work(model_id, type_, changed_fields):
     return WorkEvent(
         keys=(model_id,),

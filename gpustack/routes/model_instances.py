@@ -1438,14 +1438,16 @@ def _validate_reported_workloads(worker_id, local, incoming, registration):
         raise ConflictException(message="Use observations for registered workloads")
 
 
-def _confirm_serving_path_observation(servers, worker, report):
+def _confirm_serving_path_observation(servers, worker, report, local_workloads):
+    # A full registration may replay the stored readiness. Only a runtime
+    # observation can confirm the registered owner's APIs after a disconnect.
     if (
         worker is not None
         and worker.id in servers.maintenance_pending_worker_ids
         and report.observations
         and report.state != ModelInstanceStateEnum.ERROR
         and not inference_proxy_unavailable(worker)
-        and managed_worker_observed_ready(servers.workloads, worker.id)
+        and managed_worker_observed_ready(local_workloads, worker.id)
     ):
         servers.maintenance_pending_worker_ids.remove(worker.id)
 
@@ -1527,7 +1529,7 @@ def _merge_workload_report(
     except ValueError as exc:
         raise BadRequestException(message=str(exc)) from exc
     _validate_complete_manifest(instance, servers.workloads)
-    _confirm_serving_path_observation(servers, current_worker, report)
+    _confirm_serving_path_observation(servers, current_worker, report, workloads)
     return servers
 
 
