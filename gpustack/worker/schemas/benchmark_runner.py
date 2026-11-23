@@ -3,12 +3,16 @@
 # Modifications have been made to fit project requirements.
 
 import json
+import math
 import uuid
 from pathlib import Path
 from typing import Any, Dict, Generic, Literal, Optional, Self, TypeVar
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 from gpustack.schemas.benchmark import BenchmarkMetrics
+
+# Full reports contain every request. Bound the optional read during result sync.
+MAX_CANCELLATION_REPORT_BYTES = 64 * 1024 * 1024
 
 BaseModelT = TypeVar("BaseModelT", bound=BaseModel)
 RegisterClassT = TypeVar("RegisterClassT", bound=type)
@@ -469,6 +473,37 @@ class GenerativeRequestStats(BaseModel):
         description="Token usage statistics for the generated output"
     )
 
+    def cancelled_after_sampling_stop(self, stop_time: float) -> bool:
+        # Scheduler finalization can lag a cancellation that happened earlier.
+        timings = self.info.timings
+        end = timings.resolve_end
+        return (
+            self.info.status == "cancelled"
+            and self.info.error == "Request was cancelled"
+            and not self.info.traceback
+            and timings.request_end is None
+            and (timings.resolve_start is None or timings.resolve_start <= stop_time)
+            and end is not None
+            and math.isfinite(end)
+            and end >= stop_time
+        )
+
+    def overlaps_measurement(self, start: float, end: float) -> bool:
+        # GuideLLM only accumulates cancellations once resolution starts.
+        # A started request contributes when it overlaps the measurement window.
+        timings = self.info.timings
+        if timings.resolve_start is None:
+            return False
+        started = timings.request_start
+        if started is None:
+            started = timings.resolve_start
+        ended = timings.request_end
+        if ended is None:
+            ended = timings.resolve_end
+        if ended is None:
+            return False
+        return ended >= start and started <= end
+
 
 class BenchmarkStrategy(BaseModel):
     """Scheduling strategy of a single benchmark run (guidellm config.strategy)."""
@@ -535,11 +570,68 @@ class GenerativeBenchmark(BaseModel):
         default=None,
         description=(
             "Scheduler end-state. end_processing_constraints names the constraint "
-            "that actually stopped this point (max_requests = normal; "
-            "requests_exhausted = dataset ran out; max_seconds/max_errors = early "
+            "that actually stopped this point (max_requests/min_requests = sample target; "
+            "requests_exhausted = dataset ran out; duration/error constraints = early "
             "stop). Kept only to derive the termination reason, then dropped."
         ),
     )
+    _full_boundary_count: Optional[int] = PrivateAttr(default=None)
+
+    def sampling_stop_time(self) -> Optional[float]:
+        state = self.scheduler_state or {}
+        constraints = state.get("end_processing_constraints")
+        if not isinstance(constraints, dict) or constraints.keys() != {"min_requests"}:
+            return None
+        action = constraints["min_requests"]
+        if not isinstance(action, dict) or action.get("request_processing") not in (
+            "stop",
+            "stop_local",
+            "stop_all",
+        ):
+            return None
+        metadata = action.get("metadata")
+        if (
+            not isinstance(metadata, dict)
+            or metadata.get("processed_exceeded") is not True
+        ):
+            return None
+        stop = state.get("end_processing_time")
+        if type(stop) in (int, float) and math.isfinite(stop) and stop > 0:
+            return stop
+        return None
+
+    def count_sampling_cancellations(
+        self, samples: Optional[list[GenerativeRequestStats]] = None
+    ) -> int:
+        if samples is None and self._full_boundary_count is not None:
+            return self._full_boundary_count
+        stop = self.sampling_stop_time()
+        if stop is None or self.metrics is None:
+            return 0
+        window = self.scheduler_metrics
+        if samples is None:
+            samples = self.requests_truncated.incomplete or []
+        confirmed = {
+            sample.request_id or sample.info.request_id
+            for sample in samples
+            if sample.cancelled_after_sampling_stop(stop)
+            and sample.overlaps_measurement(
+                window.measure_start_time, window.measure_end_time
+            )
+        }
+        return min(len(confirmed), self.metrics.request_totals.incomplete or 0)
+
+    def needs_full_cancellation_evidence(self) -> bool:
+        if self.metrics is None or self.sampling_stop_time() is None:
+            return False
+        incomplete = self.metrics.request_totals.incomplete or 0
+        if self.count_sampling_cancellations() >= incomplete:
+            return False
+        sample_count = len(self.requests_truncated.incomplete or [])
+        cancelled = (self.scheduler_state or {}).get("cancelled_requests")
+        return sample_count < incomplete or (
+            type(cancelled) is int and sample_count < cancelled
+        )
 
 
 class GenerativeBenchmarksReport(BaseModel):
@@ -565,12 +657,12 @@ class GenerativeBenchmarksReport(BaseModel):
         guidellm records the satisfied end constraints in
         ``scheduler_state.end_processing_constraints`` (keyed by constraint name).
         We pick the one that actually halted processing (request_processing in
-        stop/stop_local), falling back to the first. ``max_requests`` means the
-        point hit its target normally; anything else (``requests_exhausted`` =
-        dataset too small, ``max_seconds`` = timed out, ``max_errors*`` = too many
-        errors) is an early stop worth surfacing.
+        stop/stop_local), falling back to the first. ``max_requests`` and
+        ``min_requests`` are normal sample targets; other constraints such as
+        ``requests_exhausted`` (dataset exhausted), duration or error limits can
+        indicate an early stop.
         """
-        ss = bm.scheduler_state
+        ss = getattr(bm, "scheduler_state", None)
         if not isinstance(ss, dict):
             return None
         end = ss.get("end_processing_constraints") or ss.get("end_queuing_constraints")
@@ -585,20 +677,35 @@ class GenerativeBenchmarksReport(BaseModel):
         if name is None:
             name, item = next(iter(end.items()))
         meta = (item.get("metadata") if isinstance(item, dict) else {}) or {}
-        # Target = the max_requests constraint's configured value (this point's
-        # goal, e.g. 960), NOT the triggering constraint's own count (which for
-        # requests_exhausted is just the dataset size = processed).
+        # Sample targets come from configured request-count constraints, even
+        # when another constraint ended the measurement first.
         target = None
         sc = ss.get("scheduler_constraints")
-        if isinstance(sc, dict) and isinstance(sc.get("max_requests"), dict):
-            target = (sc["max_requests"].get("metadata") or {}).get("max_requests")
+        if isinstance(sc, dict):
+            for kind in ("max_requests", "min_requests"):
+                action = sc.get(kind)
+                if isinstance(action, dict):
+                    target = (action.get("metadata") or {}).get(kind)
+                    if target is not None:
+                        break
         if target is None:
-            target = meta.get("max_requests") or meta.get("num_requests")
-        return {
+            target = (
+                meta.get("max_requests")
+                or meta.get("min_requests")
+                or meta.get("num_requests")
+            )
+        termination = {
             "reason": name,
             "requested": target,
             "processed": meta.get("processed_requests"),
         }
+        if (
+            name == "min_requests"
+            and meta.get("processed_exceeded") is True
+            and bm.metrics is not None
+        ):
+            termination["cancelled_at_boundary"] = bm.count_sampling_cancellations()
+        return termination
 
     @staticmethod
     def _point_metrics_kwargs(bm: "GenerativeBenchmark") -> dict:
@@ -682,12 +789,17 @@ class GenerativeBenchmarksReport(BaseModel):
         bm = self._peak_benchmark()
         if bm is None:
             return None
-        # scheduler_state is bulky and only needed to derive per-point termination
-        # (done in to_results); strip it from the full report dump kept here.
+        # Preserve compact boundary evidence for every point and the
+        # representative metrics record before discarding scheduler internals.
         raw = self.model_dump()
-        for b in raw.get("benchmarks", []):
-            if isinstance(b, dict):
-                b.pop("scheduler_state", None)
+        for entry, benchmark in zip(raw["benchmarks"], self.benchmarks):
+            entry.pop("scheduler_state", None)
+            termination = self._termination_reason(benchmark)
+            if termination:
+                entry["termination"] = termination
+        termination = self._termination_reason(bm)
+        if termination:
+            raw["termination"] = termination
         return BenchmarkMetrics(
             raw_metrics=raw,
             **self._point_metrics_kwargs(bm),
@@ -740,7 +852,7 @@ class GenerativeBenchmarksReport(BaseModel):
         return results
 
     @classmethod
-    def load_file(cls, path: str) -> Self:
+    def load_file(cls, path: str | Path) -> Self:
         """
         Load report from JSON or YAML file.
 
@@ -760,4 +872,44 @@ class GenerativeBenchmarksReport(BaseModel):
             else:
                 raise ValueError(f"Unsupported file type: {file_type} for {file_path}.")
 
-        return cls.model_validate(model_dict)
+        report = cls.model_validate(model_dict)
+        report._read_full_cancellation_evidence(file_path)
+        return report
+
+    def _read_full_cancellation_evidence(self, summary_path: Path) -> None:
+        candidates = [
+            (i, point)
+            for i, point in enumerate(self.benchmarks)
+            if point.needs_full_cancellation_evidence()
+        ]
+        if not candidates:
+            return
+        full_path = summary_path.with_suffix(".full.json")
+        try:
+            with full_path.open("rb") as file:
+                data = file.read(MAX_CANCELLATION_REPORT_BYTES + 1)
+            if len(data) > MAX_CANCELLATION_REPORT_BYTES:
+                return
+            full_points = json.loads(data)["benchmarks"]
+            for i, point in candidates:
+                full = full_points[i]
+                # A concurrent or interrupted rewrite can leave a companion
+                # behind for a different run. Use only matching point evidence.
+                if (
+                    full["scheduler_state"] != point.scheduler_state
+                    or full["start_time"] != point.start_time
+                    or full["end_time"] != point.end_time
+                ):
+                    continue
+                samples = [
+                    GenerativeRequestStats.model_validate(sample)
+                    for sample in full["requests"]["incomplete"]
+                ]
+                point._full_boundary_count = max(
+                    point.count_sampling_cancellations(),
+                    point.count_sampling_cancellations(samples),
+                )
+        except (OSError, ValueError, KeyError, IndexError, TypeError):
+            # The summary is written first. It still supplies a lower bound
+            # if the companion is missing, partial, or malformed.
+            pass

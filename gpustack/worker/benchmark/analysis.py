@@ -37,6 +37,7 @@ from gpustack.schemas.benchmark import (
     benchmark_load_mode,
 )
 from gpustack.worker.benchmark.artifacts import ramp_facts_path
+from gpustack.worker.benchmark.request_stats import success_rate
 
 logger = logging.getLogger(__name__)
 
@@ -227,10 +228,8 @@ def slo_utilization(benchmark, r: dict) -> Optional[float]:
 
 
 def success_ok(r: dict) -> bool:
-    total = r.get("request_total") or 0
-    if total <= 0:
-        return False
-    return (r.get("request_successful") or 0) / total >= MIN_SUCCESS_RATE
+    rate = success_rate(r)
+    return rate is not None and rate >= MIN_SUCCESS_RATE
 
 
 def slo_boundary_located(
@@ -425,10 +424,9 @@ def compute_validity(
     overloaded_any = False
     worst_ok = None
     for r in rate_points:
-        total = r.get("request_total") or 0
-        if total <= 0:
+        ok = success_rate(r)
+        if ok is None:
             continue
-        ok = (r.get("request_successful") or 0) / total
         worst_ok = ok if worst_ok is None else min(worst_ok, ok)
         if ok < MIN_SUCCESS_RATE:
             overloaded_any = True
