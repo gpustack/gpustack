@@ -309,6 +309,7 @@ image_name_override: "gpustack/gpustack:main"
 image_repo: "gpustack/gpustack"
 # ========= service & networking ===========
 worker_ifname: en0
+# kv_transfer_ifname: "ens5f0"
 worker_port: 10150
 worker_metrics_port: 10151
 disable_worker_metrics: false
@@ -325,6 +326,8 @@ enable_hf_transfer: false
 # ========= TLS ===========
 insecure_tls: false
 ```
+
+`kv_transfer_ifname` 用于设置内置 vLLM NIXL 和 SGLang NIXL 部署在集群内传输 KV 缓存时的默认设备。如果节点的接口名称不同，请通过 **编辑节点**为各节点选择本机设备。参见 [KV 传输接口](pd-disaggregation.md#the-kv-transfer-interface)。
 
 上方 YAML 列出了 `Worker Configuration YAML` 当前支持的全部选项。各选项的含义参见完整的 GPUStack [配置文件文档](../cli-reference/start.md#config-file)。`proxy_mode` 选项控制 GPUStack Server 访问 Worker 的方式，参见 [Worker 连接模式](#worker-connection-modes)。
 

@@ -324,6 +324,7 @@ image_name_override: "gpustack/gpustack:main"
 image_repo: "gpustack/gpustack"
 # ========= service & networking ===========
 worker_ifname: en0
+# kv_transfer_ifname: "ens5f0"
 worker_port: 10150
 worker_metrics_port: 10151
 disable_worker_metrics: false
@@ -340,6 +341,8 @@ enable_hf_transfer: false
 # ========= TLS ===========
 insecure_tls: false
 ```
+
+`kv_transfer_ifname` sets the cluster default for KV transfer in built-in vLLM NIXL and SGLang NIXL deployments. Use **Edit Worker** to select a local device on nodes with different interface names. See [KV interface selection](pd-disaggregation.md#the-kv-transfer-interface).
 
 The above YAML lists all currently supported options for the `Worker Configuration YAML`. For the meaning of each option, refer to the full GPUStack [config file documentation](../cli-reference/start.md#config-file). The `proxy_mode` option controls how the server reaches the worker — see [Worker Connection Modes](#worker-connection-modes).
 

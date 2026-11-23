@@ -77,6 +77,7 @@ from gpustack.schemas.principals import Principal, PrincipalType
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.config import (
     SensitivePredefinedConfig,
+    PredefinedConfig,
     PredefinedConfigNoDefaults,
 )
 from gpustack.security import (
@@ -419,7 +420,12 @@ async def get_worker(
     worker = await Worker.one_by_id(session, id)
     assert_resource_visible(ctx, worker, not_found_message="worker not found")
     me = user.worker is not None and user.worker.id == worker.id
-    return to_worker_public(worker, me, await _lookup_allocated(worker.id))
+    public = to_worker_public(worker, me, await _lookup_allocated(worker.id))
+    if me and worker.deleted_at is None and worker.cluster_id is not None:
+        cluster = await Cluster.one_by_id(session, worker.cluster_id)
+        if cluster is not None and cluster.deleted_at is None and cluster.worker_config:
+            public.cluster_kv_transfer_ifname = cluster.worker_config.kv_transfer_ifname
+    return public
 
 
 @router.get("/{id}/dashboard")
@@ -750,11 +756,15 @@ def _resolve_create_worker_cluster_id(user: Principal, worker_in: WorkerCreate) 
 
 
 def _build_worker_config_dict(cluster: Cluster) -> Dict[str, Any]:
-    sensitive_fields = set(SensitivePredefinedConfig.model_fields.keys())
+    # Only startup settings belong in the configuration applied at registration.
+    startup_fields = (
+        PredefinedConfig.model_fields.keys()
+        - SensitivePredefinedConfig.model_fields.keys()
+    )
     worker_config = (
         {}
         if cluster.worker_config is None
-        else cluster.worker_config.model_dump(exclude=sensitive_fields)
+        else cluster.worker_config.model_dump(include=startup_fields)
     )
     # ``system_default_container_registry`` now lives in its own column on
     # the cluster; inject the cluster value (then the server-wide default)
@@ -813,6 +823,7 @@ async def _persist_worker_registration(
     if existing_worker is not None:
         if to_create_apikey is not None:
             new_worker.token = new_token
+        new_worker.model_fields_set.discard("kv_transfer_ifname")
         # Registration reconciles only the owner derived from the worker's
         # authorized cluster; request fields cannot select the new owner.
         if existing_worker.cluster_id != cluster.id:
@@ -999,7 +1010,7 @@ async def update_worker(
     assert_resource_visible(ctx, worker, not_found_message="worker not found")
     assert_org_owned_writable(ctx, worker, resource_label="worker")
 
-    patch = worker_in.model_dump()
+    patch = worker_in.model_dump(exclude_unset=True)
     if worker_in.maintenance is not None:
         worker.maintenance = worker_in.maintenance
         worker.compute_state()

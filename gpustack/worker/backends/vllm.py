@@ -1199,7 +1199,7 @@ class VLLMServer(InferenceServer):
         if dp_rank is not None:
             variables["dp_rank"] = dp_rank
         env = dict(injection.env) if injection else {}
-        supplied = render_values(self._model.env or {}, variables) or {}
+        supplied = render_values(self._model_env_for_launch(injection), variables) or {}
         for name in (
             "VLLM_NIXL_SIDE_CHANNEL_HOST",
             "VLLM_NIXL_SIDE_CHANNEL_PORT",

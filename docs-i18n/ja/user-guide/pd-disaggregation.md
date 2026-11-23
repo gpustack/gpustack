@@ -193,14 +193,20 @@ NVIDIA Mooncake は、推論イメージ内に転送エンジンのランタイ�
 
 ### KV 転送のインターフェース { #the-kv-transfer-interface }
 
-KV キャッシュは毎回ネットワークを通るため、使用するインターフェースは重要です。転送層は、自動選択ではコンテナブリッジ（`docker0`、`br-*`、`flannel.1`）を選び、ピアから到達できないアドレスを公開することがあります。この場合、構成エラーではなく、ハンドシェイク時のコネクターエラーになります。
+組み込みの vLLM NIXL と SGLang NIXL のデプロイでは、UCX が `docker0`、`br-*`、`flannel.1` などのコンテナブリッジを選択する場合があります。UCX がピアから到達できないアドレスを通知すると、ハンドシェイクに失敗します。GPUStack は Worker ごとに次の優先順で KV 転送インターフェースを選択します。
 
-GPUStack は Worker ごとにインターフェースを導出します。
+1. **Workerを編集**の **KV 転送インターフェース**。
+2. Worker の起動設定（`--kv-transfer-ifname`、`GPUSTACK_KV_TRANSFER_IFNAME`、または Worker のローカル YAML の `kv_transfer_ifname`）。
+3. クラスターの **Worker Configuration** YAML の `kv_transfer_ifname`。
+4. 自動検出。候補のインターフェースが複数ある場合、インスタンスのエラーメッセージに候補が表示されます。使用するインターフェースを明示的に指定してください。
 
-- **ルーティング可能なインターフェースが 1 つ** — それを使用します。設定は不要です。
-- **ルーティング可能なインターフェースが複数** — GPUStack は推測しません。その Worker の `--kv-transfer-ifname`、Worker 構成キー `kv_transfer_ifname`、または `GPUSTACK_KV_TRANSFER_IFNAME` に、KV トラフィックを流すインターフェースを設定してください。検出した候補は Worker ログに表示します。
+GPUStack は空白文字だけの値を未設定として扱います。インスタンスの起動時に、カンマ区切りの各項目の前後にある空白文字を取り除き、デバイス名とポートを指定順に `UCX_NET_DEVICES` で UCX に渡します。設定例には、Linux インターフェース `ens5f0`、ローカルの RDMA HCA ポート `mlx5_2:1`、カンマ区切りのデバイス一覧 `ens5f0,ens6f0` があります。
 
-管理用 NIC と RDMA NIC を持つ場合など、複数のネットワーク系統があるマシンでは明示的に設定してください。管理用 NIC が適切なことは、ほとんどありません。
+スケールアウト時や障害からの復旧時も含め、Prefill または Decode インスタンスが起動するたびに、最新の Worker 個別設定とクラスターの既定値が読み込まれます。実行中のインスタンスは、起動時に選択されたデバイスを使い続けます。すべてのインスタンスに変更を適用するには、PD デプロイを再起動してください。
+
+### Ascend Mooncake のネットワーク設定 { #ascend-mooncake-networking }
+
+`vllm-ascend-mooncake` では、ホスト側のハンドシェイクに Worker の登録 IP アドレス（`worker_ip`）と、そのアドレスが割り当てられているホストインターフェース（`Worker.ifname`）を使用します。KV データは NPU 側の RoCE ポートを通じて転送されます。GPUStack はローカルの `/etc/hccn.conf` を Prefill と Decode の両方のコンテナにマウントします。
 
 ### ポート { #ports }
 

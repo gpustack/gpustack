@@ -691,7 +691,11 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
     worker_group.add_argument(
         "--kv-transfer-ifname",
         type=str,
-        help="Network interface name carrying the KV transfer plane of disaggregated serving. Falls back to the auto-detected worker interface when this host has only one candidate interface; required on a multi-NIC host.",
+        help=(
+            "Interface for KV transfer in built-in vLLM NIXL and SGLang NIXL. "
+            "Takes a UCX device or comma-separated device list, such as ens5f0 or "
+            "mlx5_2:1,mlx5_3:1."
+        ),
         default=get_gpustack_env("KV_TRANSFER_IFNAME"),
     )
     worker_group.add_argument(

@@ -190,6 +190,7 @@ TLS 协议版本配置会写入 `GPUSTACK_GATEWAY_MIRROR_INGRESS_NAME` 指定的
 |------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------|---------|----------------|
 | `GPUSTACK_WORKER_HEARTBEAT_INTERVAL`                             | Worker 心跳间隔，单位为秒。                                                                                           | `30`    | Worker         |
 | `GPUSTACK_WORKER_STATUS_SYNC_INTERVAL`                           | Worker 状态同步间隔，单位为秒。                                                                              | `30`    | Worker         |
+| `GPUSTACK_KV_TRANSFER_IFNAME`                                    | Worker 启动时读取此变量，用来指定内置 vLLM NIXL 和 SGLang NIXL 部署的 KV 传输接口。示例包括 Linux 接口 `ens5f0`、RDMA HCA 端口 `mlx5_2:1`，以及以逗号分隔的设备列表 `ens5f0,ens6f0`。参见 [KV 传输接口](user-guide/pd-disaggregation.md#the-kv-transfer-interface)。 | (empty) | Worker         |
 | `GPUSTACK_WORKER_UNREACHABLE_CHECK_MODE`                         | Worker 不可达检测模式。可选值：`auto`、`enabled`、`disabled`。`auto` 在 Worker 数量 > 50 时禁用检测。            | `auto`  | Server         |
 | `GPUSTACK_WORKER_HEARTBEAT_GRACE_PERIOD`                         | Worker 心跳宽限期，单位为秒。                                                                                       | `150`   | Server         |
 | `GPUSTACK_MODEL_INSTANCE_RESCHEDULE_GRACE_PERIOD`                | 模型实例重新调度宽限期，单位为秒。                                                                              | `300`   | Server         |
