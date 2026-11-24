@@ -403,12 +403,18 @@ async def test_streaming_survives_a_chunk_boundary(client, monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("preview", [False, True], ids=["export", "preview"])
 async def test_gpu_export_streams_allocations_once_across_batches(
-    client, app_and_engine, monkeypatch
+    client, app_and_engine, monkeypatch, preview
 ):
     _, engine = app_and_engine
     async with AsyncSession(engine) as session:
-        for day, share, percentage in ((1, "0.1", 10), (1, "0.25", 25), (2, "0.1", 10)):
+        for day, share, percentage in (
+            (1, "0.1", 10),
+            (1, "0.25", 25),
+            (1, "0.05", 5),
+            (2, "0.1", 10),
+        ):
             session.add(
                 _sliced_meter(
                     4,
@@ -417,6 +423,14 @@ async def test_gpu_export_streams_allocations_once_across_batches(
                     {"slice_mode": "ratio", "sliced_memory_percentage": percentage},
                 )
             )
+        repeated = _sliced_meter(
+            4,
+            1,
+            "0.1",
+            {"slice_mode": "ratio", "sliced_memory_percentage": 10, "cpu_milli": 1000},
+        )
+        repeated.bucket_start = datetime(2026, 4, 1, 1)
+        session.add(repeated)
         await session.commit()
 
     stream = AsyncSession.stream
@@ -428,18 +442,33 @@ async def test_gpu_export_streams_allocations_once_across_batches(
 
     monkeypatch.setattr(AsyncSession, "stream", count_stream)
     monkeypatch.setattr(resource_routes.envs, "USAGE_EXPORT_STREAM_CHUNK_ROWS", 1)
-    response = await client.post(
-        "/usage/gpu-instances/breakdown/export",
-        json={**RANGE, "group_by": ["date", "instance"], "instance_ids": [4]},
-    )
+    url = "/usage/gpu-instances/breakdown"
+    payload = {**RANGE, "group_by": ["date", "instance"], "instance_ids": [4]}
+    if preview:
+        payload["include_gpu_allocation"] = True
+    else:
+        url += "/export"
+    response = await client.post(url, json=payload)
 
     assert response.status_code == 200, response.text
-    rows = _parse_csv(response.content)
-    assert [(r["Date"], r["GPU Allocation"], r["GPU Hours"]) for r in rows] == [
-        ("2026-04-02", "10%", "0.1"),
-        ("2026-04-01", "10% / 25%", "0.35"),
-    ]
     assert len(streamed) == 1
+    async with AsyncSession(engine) as session:
+        result = await stream(session, streamed[0])
+        assert len(await result.all()) == 4
+    if preview:
+        rows = [
+            (r["date"][:10], r["gpu_allocation"], r["metrics"]["gpu_hours"])
+            for r in response.json()["items"]
+        ]
+    else:
+        rows = [
+            (r["Date"], r["GPU Allocation"], float(r["GPU Hours"]))
+            for r in _parse_csv(response.content)
+        ]
+    assert rows == [
+        ("2026-04-02", "10%", 0.1),
+        ("2026-04-01", "5% / 10% / 25%", 0.5),
+    ]
 
 
 @pytest.mark.asyncio
