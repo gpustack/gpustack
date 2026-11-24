@@ -315,7 +315,9 @@ async def test_cleanup_waits_for_the_heartbeat_and_reschedule_grace_together(
     monkeypatch.setattr(
         observation, "_observation_started_at", _observation_started(400)
     )
-    offline_worker = _offline_worker(linux_nvidia_1_4090_24gx1(), heartbeat_age_seconds=600)
+    offline_worker = _offline_worker(
+        linux_nvidia_1_4090_24gx1(), heartbeat_age_seconds=600
+    )
 
     instance = new_model_instance(
         1,

@@ -1,7 +1,5 @@
 from datetime import datetime, timedelta, timezone
 
-import pytest
-
 from gpustack.utils import observation
 from gpustack.utils.network import is_heartbeat_offline, is_offline
 from gpustack.utils.observation import mark_observation_start
