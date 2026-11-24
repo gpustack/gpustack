@@ -26,7 +26,7 @@ from gpustack.schemas.common import (
 from typing import List
 from sqlalchemy.orm import declarative_base
 
-from gpustack.utils.network import is_offline
+from gpustack.utils.network import is_heartbeat_offline
 from .clusters import ClusterProvider, Cluster, WorkerPool
 
 if TYPE_CHECKING:
@@ -468,8 +468,8 @@ class WorkerBase(WorkerCreate):
         if self.state == WorkerStateEnum.NOT_READY and self.state_message is not None:
             return
 
-        is_not_ready_flag, last_heartbeat_str = is_offline(
-            self.heartbeat_time,
+        is_not_ready_flag, last_heartbeat_str = is_heartbeat_offline(
+            self,
             envs.WORKER_HEARTBEAT_GRACE_PERIOD,
             datetime.now(timezone.utc),
         )

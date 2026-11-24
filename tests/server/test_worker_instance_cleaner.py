@@ -11,12 +11,23 @@ from gpustack.schemas.models import (
 )
 from gpustack.schemas.workers import WorkerStateEnum
 from gpustack.server.worker_instance_cleaner import WorkerInstanceCleaner
+from gpustack.utils import observation
 from tests.fixtures.workers.fixtures import (
     linux_nvidia_1_4090_24gx1,
     linux_nvidia_2_4080_16gx2,
 )
 from tests.utils.mock import mock_async_session
 from tests.utils.model import new_model_instance, new_model_instance_workload
+
+
+@pytest.fixture(autouse=True)
+def _no_observation_window(monkeypatch):
+    """Age heartbeats from the record unless a test sets its own window."""
+    monkeypatch.setattr(observation, "_observation_started_at", None)
+
+
+def _observation_started(seconds_ago: int):
+    return datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)
 
 
 def _offline_worker(worker, *, heartbeat_age_seconds: int = 600):
@@ -193,3 +204,100 @@ async def test_offline_grace_does_not_delete_or_reschedule_managed_instances(
     assert instance.draining_since is None
     assert "rescheduled" not in caplog.text
     assert offline.state == WorkerStateEnum.NOT_READY
+
+
+@pytest.mark.asyncio
+async def test_cleanup_keeps_instances_while_the_server_has_just_started(monkeypatch):
+    """Server downtime must not be spent from the worker's grace period."""
+    monkeypatch.setattr(
+        observation, "_observation_started_at", _observation_started(30)
+    )
+    offline_worker = _offline_worker(
+        linux_nvidia_1_4090_24gx1(), heartbeat_age_seconds=600
+    )
+
+    instance = new_model_instance(
+        1,
+        "instance-on-worker-down-before-the-restart",
+        1,
+        worker_id=offline_worker.id,
+        state=ModelInstanceStateEnum.RUNNING,
+    )
+    instance.worker_name = offline_worker.name
+
+    batch_delete = AsyncMock()
+
+    with (
+        patch(
+            "gpustack.server.worker_instance_cleaner.async_session",
+            return_value=mock_async_session(),
+        ),
+        patch(
+            "gpustack.server.worker_instance_cleaner.Worker.all",
+            AsyncMock(return_value=[offline_worker]),
+        ),
+        patch(
+            "gpustack.server.worker_instance_cleaner.ModelInstance.all",
+            AsyncMock(return_value=[instance]),
+        ),
+        patch(
+            "gpustack.server.worker_instance_cleaner.ModelInstanceService.batch_delete",
+            batch_delete,
+        ),
+        patch(
+            "gpustack.server.worker_instance_cleaner.envs.MODEL_INSTANCE_RESCHEDULE_GRACE_PERIOD",
+            300,
+        ),
+    ):
+        await WorkerInstanceCleaner()._cleanup_offline_worker_instances()
+
+    batch_delete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_still_reschedules_once_the_observation_window_expires(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        observation, "_observation_started_at", _observation_started(600)
+    )
+    offline_worker = _offline_worker(
+        linux_nvidia_1_4090_24gx1(), heartbeat_age_seconds=600
+    )
+
+    instance = new_model_instance(
+        1,
+        "instance-on-a-worker-that-stayed-offline",
+        1,
+        worker_id=offline_worker.id,
+        state=ModelInstanceStateEnum.RUNNING,
+    )
+    instance.worker_name = offline_worker.name
+
+    batch_delete = AsyncMock(return_value=[instance.name])
+
+    with (
+        patch(
+            "gpustack.server.worker_instance_cleaner.async_session",
+            return_value=mock_async_session(),
+        ),
+        patch(
+            "gpustack.server.worker_instance_cleaner.Worker.all",
+            AsyncMock(return_value=[offline_worker]),
+        ),
+        patch(
+            "gpustack.server.worker_instance_cleaner.ModelInstance.all",
+            AsyncMock(return_value=[instance]),
+        ),
+        patch(
+            "gpustack.server.worker_instance_cleaner.ModelInstanceService.batch_delete",
+            batch_delete,
+        ),
+        patch(
+            "gpustack.server.worker_instance_cleaner.envs.MODEL_INSTANCE_RESCHEDULE_GRACE_PERIOD",
+            300,
+        ),
+    ):
+        await WorkerInstanceCleaner()._cleanup_offline_worker_instances()
+
+    batch_delete.assert_awaited_once()

@@ -62,6 +62,7 @@ from gpustack.schemas.principals import (
     platform_principal_id,
 )
 from gpustack.utils.name import bounded_instance_name
+from gpustack.utils.network import is_heartbeat_offline
 from gpustack.schemas.models import (
     servable_instances,
     BackendEnum,
@@ -99,7 +100,6 @@ from gpustack.utils.model_instance_workers import (
     model_instance_workloads_stopped,
     requires_group_recovery,
 )
-from gpustack.utils.network import is_offline
 from gpustack.server.workqueue import WorkEvent, WorkEventType, WorkQueue
 from gpustack.schemas.links import (
     ModelInstanceModelFileLink,
@@ -5577,7 +5577,7 @@ class WorkerController:
             worker.deleted_at is not None
             or worker.unreachable
             or worker.state not in (WorkerStateEnum.READY, WorkerStateEnum.MAINTENANCE)
-            or is_offline(worker.heartbeat_time, envs.WORKER_HEARTBEAT_GRACE_PERIOD)[0]
+            or is_heartbeat_offline(worker, envs.WORKER_HEARTBEAT_GRACE_PERIOD)[0]
         )
 
     async def _mark_managed_instance_unreachable(

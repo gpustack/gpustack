@@ -53,6 +53,7 @@ from gpustack.config.config import Config
 from gpustack.schemas.config import GatewayModeEnum
 from gpustack.config import registration
 from gpustack.server.pd_mode_catalog import load_pd_modes
+from gpustack.utils.observation import mark_observation_start
 from gpustack.server.controllers import (
     CacheServiceController,
     ModelController,
@@ -283,6 +284,9 @@ class Server:
 
     async def start(self):
         logger.info("Starting GPUStack server.")
+        # Heartbeat-age checks floor at this instant, so the time this process
+        # was not running never counts as worker downtime.
+        mark_observation_start()
 
         if self._config.external_auth_insecure_skip_tls_verify:
             logger.warning(
@@ -1703,6 +1707,11 @@ class Server:
         Note: If leadership is lost, the process exits directly (os._exit),
         so we don't need to track and cancel these tasks.
         """
+        # A standby that was up for a long time may have missed a full outage.
+        # Its observation window starts now, so stored heartbeats get the same
+        # grace period as on a fresh process before they count as silence.
+        mark_observation_start()
+
         # Scheduler
         self._start_scheduler()
 

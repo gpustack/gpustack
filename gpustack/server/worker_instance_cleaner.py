@@ -12,7 +12,7 @@ from gpustack.utils.model_instance_workers import (
     get_model_instance_worker_match,
     has_model_instance_stop_barrier,
 )
-from gpustack.utils.network import is_offline
+from gpustack.utils.network import is_heartbeat_offline
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +50,8 @@ class WorkerInstanceCleaner:
                 if worker.state == WorkerStateEnum.NOT_READY and (
                     not worker.maintenance or not worker.maintenance.enabled
                 ):
-                    offline, last_heartbeat_str = is_offline(
-                        worker.heartbeat_time,
+                    offline, last_heartbeat_str = is_heartbeat_offline(
+                        worker,
                         envs.MODEL_INSTANCE_RESCHEDULE_GRACE_PERIOD,
                     )
                     if offline:

@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -1427,3 +1427,28 @@ async def test_hybrid_worker_loss_withdraws_four_node_group_without_confirming_s
         if w.worker_id != worker_id
     ] == other
     assert updated.computed_resource_claim == instance.computed_resource_claim
+
+
+def test_managed_worker_unavailable_ignores_the_servers_own_downtime(monkeypatch):
+    """A stale heartbeat from before the server started is not a worker outage."""
+    from gpustack.utils import observation
+
+    worker = linux_nvidia_1_4090_24gx1()
+    worker.state = WorkerStateEnum.READY
+    worker.unreachable = False
+    worker.heartbeat_time = datetime.now(timezone.utc) - timedelta(seconds=600)
+    monkeypatch.setattr(
+        observation,
+        "_observation_started_at",
+        datetime.now(timezone.utc) - timedelta(seconds=30),
+    )
+
+    assert WorkerController._managed_worker_unavailable(worker) is False
+
+    monkeypatch.setattr(
+        observation,
+        "_observation_started_at",
+        datetime.now(timezone.utc) - timedelta(seconds=600),
+    )
+
+    assert WorkerController._managed_worker_unavailable(worker) is True
