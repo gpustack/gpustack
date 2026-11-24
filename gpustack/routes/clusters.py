@@ -450,6 +450,44 @@ def apply_shuihua_defaults(
         input.worker_config.proxy_mode = fallback
 
 
+def apply_cluster_defaults(
+    input: Union[ClusterCreate, ClusterUpdate], existing: Optional[Cluster] = None
+):
+    """
+    Default the worker settings a new cluster hands to its workers.
+
+    ``proxy_mode`` defaults to direct: in a data center the gateway can usually
+    reach the worker's instance ports, and routing through the worker proxy adds
+    a hop and contention under load. It is a default rather than a requirement
+    — an operator whose network cannot open the instance port range, or whose
+    workers sit behind NAT, can choose WORKER or TUNNEL explicitly, and only
+    they know that. Whatever the caller sets explicitly is left alone.
+
+    Existing clusters are never moved. On update this function only carries a
+    stored proxy mode over to a replacement ``worker_config``: a cluster created
+    before the default changed has nothing stored, and filling in DIRECT there
+    would silently change it during an upgrade. A missing ``worker_config`` is
+    left alone because ``Cluster.update`` applies ``model_fields_set``, so
+    assigning one here would overwrite the stored config with a bare default.
+    """
+    stored = existing.worker_config if existing is not None else None
+    stored_mode = stored.proxy_mode if stored is not None else None
+    if isinstance(input, ClusterCreate):
+        fallback = ModelInstanceProxyModeEnum.DIRECT
+    elif stored_mode is not None:
+        fallback = stored_mode
+    else:
+        return
+
+    if input.worker_config is None:
+        if not isinstance(input, ClusterCreate):
+            return
+        input.worker_config = PredefinedConfigNoDefaults(proxy_mode=fallback)
+        return
+    if input.worker_config.proxy_mode is None:
+        input.worker_config.proxy_mode = fallback
+
+
 def _post_update_worker_config(
     input: Union[ClusterCreate, ClusterUpdate],
     existing: Optional[Cluster] = None,
@@ -626,6 +664,8 @@ def create_update_check(
     if provider == ClusterProvider.Shuihua:
         apply_shuihua_defaults(input, existing)
         check_shuihua_requirements(input, existing)
+    else:
+        apply_cluster_defaults(input, existing)
     # The Kubernetes data-dir volume mount is checked by
     # ``enforce_data_dir_mounts``, after it has normalized the value — see the
     # note there on why it can't be validated off the request body.

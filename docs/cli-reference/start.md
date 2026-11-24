@@ -153,7 +153,7 @@ gpustack start [OPTIONS]
 | `--enable-hf-xet`                        | `False`                                | [Deprecated] Enable downloading model files using Hugging Face Xet.                                                                                                                          |
 | `--worker-ifname` value                  | (empty)                                | Network interface name of the worker node. Auto-detected by default.                                                                                                                         |
 | `--kv-transfer-ifname` value                      | (empty)                                | KV transfer interface in built-in vLLM NIXL and SGLang NIXL deployments. Examples include the Linux interface `ens5f0`, the RDMA HCA port `mlx5_2:1`, and a comma-separated device list such as `ens5f0,ens6f0`. See [KV interface selection](../user-guide/pd-disaggregation.md#the-kv-transfer-interface). |
-| `--proxy-mode` value                     | (empty)                                | Proxy mode for accessing model instances: `direct`, `worker`, or `tunnel` (worker dials out to the server; for workers behind firewall/NAT). Default `direct` embedded, `worker` standalone. |
+| `--proxy-mode` value                     | (empty)                                | Proxy mode for accessing model instances: `direct`, `worker`, or `tunnel` (worker dials out to the server; for workers behind firewall/NAT). Defaults to the cluster's worker configuration; without one, `worker`. |
 | `--benchmark-image-repo` value           | `gpustack/benchmark-runner`            | Override the default benchmark image repo for the GPUStack benchmark container. Unlike `--image-repo`, this value is used as-is, so include the tag.<br/>If the image `gpustack/benchmark-runner:<tag>` lives outside the `gpustack` namespace, e.g. `awesome.com/amazing-group/amazing-subgroup/gpustack-ai/benchmark-runner:<tag>`, first point `--system-default-container-registry=awesome.com/amazing-group/amazing-subgroup` to the registry with the parent namespace, then set this flag (or the worker `benchmark_image_repo` config key, or the `GPUSTACK_BENCHMARK_IMAGE_REPO` environment variable) to `gpustack-ai/benchmark-runner:<tag>`. |
 | `--benchmark-dir` value                  | `<data-dir>/benchmarks`                | Directory to store benchmark results.                                                                                                                                                        |
 | `--benchmark-max-duration-seconds` value | (empty)                                | Max duration for a benchmark before timeout. Disabled when empty.                                                                                                                            |
@@ -283,5 +283,5 @@ system_reserved:
   ram: 2
   vram: 1
 enable_hf_transfer: false
-proxy_mode: worker
+proxy_mode: direct
 ```

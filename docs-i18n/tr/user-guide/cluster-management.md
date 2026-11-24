@@ -315,7 +315,7 @@ worker_metrics_port: 10151
 disable_worker_metrics: false
 service_port_range: "40000-40063"
 ray_port_range: "41000-41999"
-proxy_mode: worker
+proxy_mode: direct
 # ========= system reserved resources ===========
 system_reserved:
   ram: 0
@@ -343,7 +343,11 @@ Varsayılan konteyner kayıt defteri, `Docker` veya `Kubernetes` kümeleri için
 - `worker` — istekler çalışanın yerleşik HTTP ters vekilinden geçerek yerel çıkarım sürecine iletilir. Çalışana sunucudan yine erişilebilmelidir; ancak yalnızca çalışan portunun açılması yeterlidir.
 - `tunnel` — çalışan sunucuya tek bir **giden** WebSocket bağlantısı tutar; sunucu çalışana yalnızca bu tünelden ulaşır. Çalışan sunucudan gelen bağlantıları kabul edemediğinde bu modu kullanın.
 
-Varsayılan değer, sunucu içindeki yerleşik çalışan için `direct` ve bağımsız çalışanlar için `worker`'dir.
+Yeni kümeler varsayılan olarak `direct` kullanır: `Worker Configuration YAML` içinde `proxy_mode: direct` bulunur ve kaydolan her worker, kendi `--proxy-mode` değerini ayarlamadığı sürece bu değeri kullanır. Hiçbir kümeye ait olmayan veya varsayılanı olmayan bir kümeye ait olan worker, kendi ayarına, yani `worker` değerine döner.
+
+`direct` için ağ geçidinin worker'ın çıkarım port aralığına (`--service-port-range`, varsayılan `40000-40063`) erişebilmesi gerekir; dağıtık vLLM için ayrıca Ray port aralığına (`--ray-port-range`, varsayılan `41000-41999`). `worker` yalnızca worker portunu gerektirir, `tunnel` ise hiçbir gelen port gerektirmez.
+
+Mevcut kümeler yükseltmeden sonra kullandıkları modu korur ve sunucu, hâlâ `worker` kullanan kümeler için uyarı günlüğü yazar. Bir kümeyi değiştirmek için bu portlar erişilebilir olduğunda `Worker Configuration YAML` içinde `proxy_mode: direct` ayarlayın.
 
 ### Tünel Modu (Güvenlik Duvarı veya NAT Arkasındaki Çalışan) { #tunnel-mode-worker-behind-a-firewall-or-nat }
 

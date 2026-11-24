@@ -154,7 +154,7 @@ gpustack start [OPTIONS]
 | `--enable-hf-xet`                        | `False`                                | [Устарело] Включить загрузку файлов моделей через Hugging Face Xet. |
 | `--worker-ifname` значение                  | (пусто)                                | Имя сетевого интерфейса узла-воркера. По умолчанию определяется автоматически. |
 | `--kv-transfer-ifname` значение                      | (пусто)                                | Интерфейс передачи KV-кэша во встроенных режимах vLLM NIXL и SGLang NIXL. Примеры значений включают интерфейс Linux `ens5f0`, порт RDMA HCA `mlx5_2:1` и список устройств через запятую `ens5f0,ens6f0`. См. [Интерфейс передачи KV-кэша](../user-guide/pd-disaggregation.md#the-kv-transfer-interface). |
-| `--proxy-mode` значение                     | (пусто)                                | Режим проксирования для доступа к экземплярам моделей: `direct`, `worker` или `tunnel` (воркер сам соединяется с сервером; для воркеров за межсетевым экраном/NAT). По умолчанию — `direct` для встроенного и `worker` для отдельного воркера. |
+| `--proxy-mode` значение                     | (пусто)                                | Режим проксирования для доступа к экземплярам моделей: `direct`, `worker` или `tunnel` (воркер сам соединяется с сервером; для воркеров за межсетевым экраном/NAT). По умолчанию берётся из конфигурации воркеров кластера; если она не задана — `worker`. |
 | `--benchmark-image-repo` значение           | `gpustack/benchmark-runner`            | Переопределить репозиторий образа контейнера бенчмарков GPUStack по умолчанию. В отличие от `--image-repo`, значение используется как есть, поэтому включайте тег.<br/>Если образ `gpustack/benchmark-runner:<tag>` находится вне пространства имён `gpustack`, например `awesome.com/amazing-group/amazing-subgroup/gpustack-ai/benchmark-runner:<tag>`, сначала укажите реестр с родительским пространством имён через `--system-default-container-registry=awesome.com/amazing-group/amazing-subgroup`, затем задайте этому флагу (либо ключу конфигурации воркера `benchmark_image_repo`, либо переменной среды `GPUSTACK_BENCHMARK_IMAGE_REPO`) значение `gpustack-ai/benchmark-runner:<tag>`. |
 | `--benchmark-dir` значение                  | `<data-dir>/benchmarks`                | Каталог хранения результатов бенчмарков. |
 | `--benchmark-max-duration-seconds` значение | (пусто)                                | Максимальная длительность бенчмарка до тайм-аута. Пустое значение отключает ограничение. |
@@ -284,5 +284,5 @@ system_reserved:
   ram: 2
   vram: 1
 enable_hf_transfer: false
-proxy_mode: worker
+proxy_mode: direct
 ```

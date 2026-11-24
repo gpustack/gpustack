@@ -392,9 +392,9 @@ def test_create_update_check_allows_editing_a_configured_cluster(server_config):
 @pytest.mark.parametrize(
     "provider", [ClusterProvider.Docker, ClusterProvider.DigitalOcean]
 )
-def test_other_providers_are_untouched(server_config, provider):
+def test_other_providers_default_to_direct(server_config, provider):
     request = ClusterCreate(name="c", provider=provider, credential_id=1)
 
     create_update_check(provider, request)
 
-    assert request.worker_config is None
+    assert request.worker_config.proxy_mode is ModelInstanceProxyModeEnum.DIRECT

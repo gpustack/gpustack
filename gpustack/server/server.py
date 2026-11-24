@@ -50,7 +50,11 @@ from gpustack.extension import plugin_needs_instantiation
 from gpustack.server.passwords import set_password
 from gpustack.server.services import provision_bootstrap_admin_orgs
 from gpustack.config.config import Config
-from gpustack.schemas.config import GatewayModeEnum
+from gpustack.schemas.config import (
+    GatewayModeEnum,
+    ModelInstanceProxyModeEnum,
+    PredefinedConfigNoDefaults,
+)
 from gpustack.config import registration
 from gpustack.server.pd_mode_catalog import load_pd_modes
 from gpustack.server.controllers import (
@@ -601,6 +605,44 @@ class Server:
         self._create_async_task(worker_instance_cleaner.start())
 
         logger.debug("Worker instance cleaner started.")
+
+    async def _warn_worker_proxy_mode(self):
+        """Point out clusters that still relay inference through the worker proxy.
+
+        New clusters default to direct, while existing ones keep whatever mode
+        they were on. A startup advisory is the only place a server-side
+        deployment learns that direct mode needs the instance port range
+        reachable from the gateway.
+        """
+        try:
+            async with async_session() as session:
+                workers = await Worker.all(session)
+                clusters = await Cluster.all(session)
+        except Exception as e:
+            logger.debug(f"Skipping worker proxy mode advisory: {e}")
+            return
+
+        worker_counts = {}
+        for worker in workers:
+            if worker.proxy_mode == ModelInstanceProxyModeEnum.WORKER:
+                worker_counts[worker.cluster_id] = (
+                    worker_counts.get(worker.cluster_id, 0) + 1
+                )
+        if not worker_counts:
+            return
+
+        cluster_names = {cluster.id: cluster.name for cluster in clusters}
+        for cluster_id, count in worker_counts.items():
+            cluster_name = cluster_names.get(cluster_id, "unclustered")
+            logger.warning(
+                f"Cluster {cluster_name} has {count} worker(s) using the worker "
+                "proxy mode: inference requests are relayed through the worker "
+                "process. Direct mode performs better under high concurrency, but "
+                "the gateway must be able to reach the worker's inference ports "
+                "(--service-port-range, default 40000-40063) and the Ray port "
+                "range for distributed vLLM. Set proxy_mode to direct in the "
+                "cluster's worker configuration once those ports are reachable."
+            )
 
     def _start_scaling_scheduler(self):
         scaling_scheduler = ScalingScheduler()
@@ -1344,6 +1386,9 @@ class Server:
             registration_token="",
             is_default=set_default,
             owner_principal_id=platform_principal_id(),
+            worker_config=PredefinedConfigNoDefaults(
+                proxy_mode=ModelInstanceProxyModeEnum.DIRECT
+            ),
         )
         default_cluster = await Cluster.create(
             session, default_cluster, auto_commit=False
@@ -1740,6 +1785,10 @@ class Server:
 
         # Worker Instance Cleaner
         self._start_worker_instance_cleaner()
+
+        # Existing clusters keep their proxy mode across an upgrade; point out
+        # the ones that could move to direct mode.
+        self._create_async_task(self._warn_worker_proxy_mode())
 
         # Usage Details Archiver (move aged rows to archive table)
         self._start_usage_details_archiver()

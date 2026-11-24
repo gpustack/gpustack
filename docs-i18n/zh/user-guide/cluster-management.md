@@ -315,7 +315,7 @@ worker_metrics_port: 10151
 disable_worker_metrics: false
 service_port_range: "40000-40063"
 ray_port_range: "41000-41999"
-proxy_mode: worker
+proxy_mode: direct
 # ========= system reserved resources ===========
 system_reserved:
   ram: 0
@@ -343,7 +343,11 @@ insecure_tls: false
 - `worker`——请求通过 Worker 内置的 HTTP 反向代理，再由其转发给本地推理进程。GPUStack Server 仍须能访问 Worker，但只需暴露 Worker 端口。
 - `tunnel`——Worker 保持一条到 GPUStack Server 的**出站** WebSocket 连接，GPUStack Server 仅通过该隧道访问 Worker。Worker 无法接受来自 GPUStack Server 的入站连接时，请使用此模式。
 
-GPUStack Server 内嵌 Worker 默认为 `direct`，独立 Worker 默认为 `worker`。
+新建集群默认使用 `direct`：其 `Worker Configuration YAML` 中带有 `proxy_mode: direct`，之后注册的 Worker 都会采用该值，除非它另行设置了 `--proxy-mode`。不属于任何集群、或所属集群没有默认值的 Worker 则回退到自身设置，即 `worker`。
+
+`direct` 要求网关能够访问 Worker 的推理端口范围（`--service-port-range`，默认 `40000-40063`）；分布式 vLLM 还需要 Ray 端口范围（`--ray-port-range`，默认 `41000-41999`）。`worker` 只需要访问 Worker 端口，`tunnel` 则不需要任何入站端口。
+
+升级后已有集群保持原有模式，对于仍使用 `worker` 的集群，Server 会输出警告日志。待上述端口可达后，在其 `Worker Configuration YAML` 中设置 `proxy_mode: direct` 即可切换。
 
 ### 隧道模式（Worker 位于防火墙或 NAT 后） { #tunnel-mode-worker-behind-a-firewall-or-nat }
 

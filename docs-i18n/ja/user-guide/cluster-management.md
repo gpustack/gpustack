@@ -311,7 +311,7 @@ worker_metrics_port: 10151
 disable_worker_metrics: false
 service_port_range: "40000-40063"
 ray_port_range: "41000-41999"
-proxy_mode: worker
+proxy_mode: direct
 # ========= system reserved resources ===========
 system_reserved:
   ram: 0
@@ -339,7 +339,11 @@ insecure_tls: false
 - `worker` — リクエストは、ワーカー内蔵の HTTP リバースプロキシを経由し、ローカルの推論プロセスに転送されます。引き続きサーバーからワーカーに到達できる必要がありますが、公開するのはワーカーポートだけで済みます。
 - `tunnel` — ワーカーはサーバーへの 1 本の**アウトバウンド** WebSocket 接続を維持し、サーバーはこのトンネルだけを通じてワーカーにアクセスします。ワーカーがサーバーからのインバウンド接続を受け付けられない場合に使用します。
 
-デフォルトは、サーバー内の組み込みワーカーでは `direct`、スタンドアロンワーカーでは `worker` です。
+新しいクラスタはデフォルトで `direct` を使用します。`Worker Configuration YAML` に `proxy_mode: direct` が設定され、登録するワーカーは、独自に `--proxy-mode` を指定しない限りその値を使用します。どのクラスタにも属さないワーカー、またはデフォルトを持たないクラスタのワーカーは、自身の設定である `worker` にフォールバックします。
+
+`direct` では、ゲートウェイからワーカーの推論ポート範囲（`--service-port-range`、デフォルト `40000-40063`）に到達できる必要があります。分散 vLLM ではさらに Ray ポート範囲（`--ray-port-range`、デフォルト `41000-41999`）も必要です。`worker` はワーカーポートのみ、`tunnel` は受信ポートを一切必要としません。
+
+既存のクラスタはアップグレード後も使用中のモードを維持し、`worker` のままのクラスタについてはサーバーが警告ログを出力します。切り替えるには、上記のポートに到達できる状態で、そのクラスタの `Worker Configuration YAML` に `proxy_mode: direct` を設定します。
 
 ### トンネルモード（ファイアウォールまたは NAT 配下のワーカー） { #tunnel-mode-worker-behind-a-firewall-or-nat }
 
