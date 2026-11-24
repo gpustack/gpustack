@@ -3,10 +3,25 @@ from types import SimpleNamespace
 
 import pytest
 
+from gpustack.schemas.models import RoleSpec
 from gpustack.utils.pd_router_command import (
     render_router_command_template,
+    router_environment,
     validate_router_command_template,
 )
+
+
+def test_router_environment_combines_defaults_deployment_and_role():
+    model = SimpleNamespace(
+        env={"ROUTER_CONFIG": "/etc/config.json", "LOG_LEVEL": "warn"},
+        roles=[RoleSpec(name="router", env={"LOG_LEVEL": "info"}, env_mode="merge")],
+    )
+
+    assert router_environment(model, {"LOG_LEVEL": "error", "DEFAULT": "1"}) == {
+        "DEFAULT": "1",
+        "ROUTER_CONFIG": "/etc/config.json",
+        "LOG_LEVEL": "info",
+    }
 
 
 def test_runtime_values_are_substituted_once_and_keep_quotes_and_metacharacters():

@@ -61,12 +61,11 @@ def references_router_peers(command: Optional[str]) -> bool:
 def router_environment(
     model, defaults: Optional[Mapping[str, str]] = None
 ) -> Dict[str, str]:
-    """Resolve the effective Router env, preserving whole-map role overrides."""
-    from gpustack.schemas.models import find_role
+    """Apply the Router's effective environment over its runtime defaults."""
+    from gpustack.schemas.models import find_role, role_effective_env
 
     role = find_role(model, "router")
-    role_env = getattr(role, "env", None)
-    env = role_env if role_env is not None else getattr(model, "env", None)
+    env = role_effective_env(role, getattr(model, "env", None))
     return {**(defaults or {}), **(env or {})}
 
 
