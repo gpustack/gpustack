@@ -847,3 +847,82 @@ def test_new_language_workers_find_native_queries(
         assert any(
             location.startswith("user-guide/guide/") for location in matches
         ), query
+
+
+@pytest.mark.parametrize("offline", [False, True])
+def test_language_workers_find_technical_identifiers(
+    multilingual_source, offline, monkeypatch
+):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required to exercise the bundled browser worker")
+    monkeypatch.setenv("DOCS_COMMIT", "1234567890abcdef")
+    configuration = multilingual_source / "mkdocs.yml"
+    settings = yaml.safe_load(configuration.read_text())
+    settings["plugins"]["search"] = builder.config_field(
+        (ROOT / "mkdocs.yml").read_text(), "plugins"
+    )["search"]
+    configuration.write_text(yaml.safe_dump(settings))
+    for language in i18n.LANGUAGES:
+        source = multilingual_source / (
+            "docs" if language == "en" else f"docs-i18n/{language}"
+        )
+        with (source / "user-guide/guide.md").open("a", encoding="utf-8") as guide:
+            guide.write(
+                "\nSet `GPUSTACK_KV_TRANSFER_IFNAME` for the cache service. "
+                "Check the memory configuration.\n"
+            )
+    if offline:
+        configuration = multilingual_source / "mkdocs.offline.yml"
+        configuration.write_text(
+            yaml.safe_dump(
+                {
+                    "INHERIT": "mkdocs.yml",
+                    "site_url": "",
+                    "extra": {"offline": True, "version": None},
+                    "hooks": [
+                        "hack/mkdocs_offline.py",
+                        "hack/mkdocs_i18n.py",
+                        "hack/mkdocs_multilingual.py",
+                    ],
+                }
+            )
+        )
+    output = multilingual_source / "site"
+    builder.build_language(configuration, output)
+    native_queries = {
+        "en": "Cluster",
+        "zh": "集群",
+        "ja": "言語モデル",
+        "ru": "управление",
+        "tr": "küme",
+    }
+    script = (ROOT / "tests/fixtures/docs_search_worker.cjs").read_text()
+    missing = []
+    for language, native_query in native_queries.items():
+        site = output / i18n.language_prefix(language)
+        worker = next((site / "assets/javascripts/workers").glob("search.*.min.js"))
+        if language == "ja":
+            worker = next(worker.parent.glob("search.ja.*.min.js"))
+        queries = [
+            "GPUSTACK_KV_TRANSFER_IFNAME",
+            "gpustack_kv_transfer_ifname",
+            "GPUSTACK_KV_TRANSFER_IFNAM",
+            "cache service",
+            "service",
+            "memory",
+            "configuration",
+            native_query,
+        ]
+        result = subprocess.run(
+            [node, "-e", script, str(site), str(worker), json.dumps(queries)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        for query, matches in json.loads(result.stdout).items():
+            if not any(
+                location.startswith("user-guide/guide/") for location in matches
+            ):
+                missing.append((language, query))
+    assert not missing
