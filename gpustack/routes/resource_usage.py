@@ -1142,20 +1142,48 @@ async def _attach_dimensions(  # noqa: C901
             }
 
 
-def _gpu_allocation_label(dimensions: dict) -> Optional[str]:
-    count = parse_accelerator_count(dimensions.get("gpu_count"))
-    percentage = parse_accelerator_count(dimensions.get("sliced_memory_percentage"))
-    profile = dimensions.get("partitioned_profile")
-    mode = dimensions.get("slice_mode") or slice_mode_of(percentage, profile)
+_GPU_ALLOCATION_FIELDS = (
+    "slice_mode",
+    "sliced_memory_percentage",
+    "partitioned_profile",
+    "gpu_count",
+)
+
+
+class _GPUAllocation(NamedTuple):
+    mode: str
+    percentage: int
+    card_count: int
+    label: str
+
+
+def _gpu_allocation(row) -> Optional[_GPUAllocation]:
+    count = parse_accelerator_count(getattr(row, "gpu_count", None))
+    percentage = parse_accelerator_count(getattr(row, "sliced_memory_percentage", None))
+    profile = getattr(row, "partitioned_profile", None)
+    stored_mode = getattr(row, "slice_mode", None)
+    mode = stored_mode or slice_mode_of(percentage, profile)
     if mode == SLICE_MODE_PROFILE and profile:
         label = profile
     elif mode == SLICE_MODE_RATIO and percentage:
         label = f"{percentage}%"
-    elif mode == SLICE_MODE_WHOLE and (count or dimensions.get("slice_mode")):
+    elif mode == SLICE_MODE_WHOLE and (count or stored_mode):
         label = "Full GPU"
     else:
         return None
-    return f"{label} × {count}" if count > 1 else label
+    return _GPUAllocation(
+        mode, percentage if mode == SLICE_MODE_RATIO else 0, max(1, count), label
+    )
+
+
+def _format_gpu_allocations(allocations: Set[_GPUAllocation]) -> Optional[str]:
+    return (
+        " / ".join(
+            f"{a.label} × {a.card_count}" if a.card_count > 1 else a.label
+            for a in sorted(allocations)
+        )
+        or None
+    )
 
 
 def _allocation_group_filter(columns, keys):
@@ -1174,7 +1202,7 @@ def _allocation_group_filter(columns, keys):
 
 async def _attach_gpu_allocations(session, source: Select, rows, items: List[dict]):
     """Read allocation facts for the returned groups inside the same scope."""
-    group_columns = tuple(source.selected_columns)[:-1]
+    group_columns = tuple(source.selected_columns)[: -len(_GPU_ALLOCATION_FIELDS)]
     row_keys = [
         tuple(getattr(row, col.key, None) for col in group_columns) for row in rows
     ]
@@ -1188,14 +1216,14 @@ async def _attach_gpu_allocations(session, source: Select, rows, items: List[dic
         result = await session.stream(statement.execution_options(yield_per=batch_size))
         try:
             async for row in result:
-                label = _gpu_allocation_label(row[-1] or {})
-                if label:
-                    labels[row[:-1]].add(label)
+                allocation = _gpu_allocation(row)
+                if allocation:
+                    labels[row[: len(group_columns)]].add(allocation)
         finally:
             await result.close()
 
     for key, item in zip(row_keys, items):
-        item["gpu_allocation"] = " / ".join(sorted(labels[key])) or None
+        item["gpu_allocation"] = _format_gpu_allocations(labels[key])
 
 
 @dataclass
@@ -1427,12 +1455,19 @@ async def _build_resource_breakdown_statement(  # noqa: C901
         carries_creator=carries_creator,
         carries_organization=carries_organization,
         effective_scope=effective_scope,
-        # A billed shape can contain distinct allocations with equal weights.
-        # Keep the snapshots of the selected groups, outside the metric/count SQL.
+        # Project just the scalar facets: equal billed weights can describe
+        # different allocations, while identical hourly snapshots need one row.
+        # The metric and count queries do not select these facets.
         gpu_allocation_source=(
-            scoped_usage.with_only_columns(*select_cols, MeteredUsage.dimensions).where(
-                MeteredUsage.resource_type == RESOURCE_TYPE_GPU_INSTANCE
+            scoped_usage.with_only_columns(
+                *select_cols,
+                *(
+                    MeteredUsage.dimensions[field].as_string().label(field)
+                    for field in _GPU_ALLOCATION_FIELDS
+                ),
             )
+            .where(MeteredUsage.resource_type == RESOURCE_TYPE_GPU_INSTANCE)
+            .distinct()
             if include_gpu_allocation and supports_gpu_allocation(request.group_by)
             else None
         ),
@@ -1862,10 +1897,10 @@ async def _resolve_resource_export_sheets(
 
 
 def _gpu_allocation_export_statement(query: ResourceBreakdownQuery, request):
-    """Read allocation snapshots with their report group in the same cursor."""
+    """Read the distinct allocations for each report group in the same cursor."""
     groups = query.items_statement.order_by(None).subquery("usage_groups")
     allocations = query.gpu_allocation_source.subquery("usage_allocations")
-    keys = [key for key in allocations.c.keys() if key != "dimensions"]
+    keys = [key for key in allocations.c.keys() if key not in _GPU_ALLOCATION_FIELDS]
     nullable_key = "group_id" if "group_id" in keys else "group_key"
     left, right = groups.c[nullable_key], allocations.c[nullable_key]
     # Keep the NULL match an equality join, with a separate NULL check so a
@@ -1881,7 +1916,7 @@ def _gpu_allocation_export_statement(query: ResourceBreakdownQuery, request):
         for key in _resource_breakdown_sort_keys(request, query.metric_keys)
     ]
     statement = (
-        select(*groups.c, allocations.c.dimensions.label("allocation_dimensions"))
+        select(*groups.c, *(allocations.c[field] for field in _GPU_ALLOCATION_FIELDS))
         .select_from(groups.outerjoin(allocations, match))
         .order_by(
             *(
@@ -1905,28 +1940,26 @@ async def _resource_export_partitions(result, allocation_keys):
 
     rows, allocations = [], []
     previous_row, previous_key = None, None
-    labels: Set[str] = set()
+    labels: Set[_GPUAllocation] = set()
     async for partition in result.partitions(chunk_size):
         for row in partition:
             key = tuple(getattr(row, name, None) for name in allocation_keys)
             if key != previous_key:
                 if previous_row is not None:
                     rows.append(previous_row)
-                    allocations.append(" / ".join(sorted(labels)) or None)
+                    allocations.append(_format_gpu_allocations(labels))
                     if len(rows) == chunk_size:
                         yield rows, allocations
                         rows, allocations = [], []
                 previous_row, previous_key = row, key
                 labels.clear()
-            label = _gpu_allocation_label(
-                getattr(row, "allocation_dimensions", None) or {}
-            )
-            if label:
-                labels.add(label)
+            allocation = _gpu_allocation(row)
+            if allocation:
+                labels.add(allocation)
 
     if previous_row is not None:
         rows.append(previous_row)
-        allocations.append(" / ".join(sorted(labels)) or None)
+        allocations.append(_format_gpu_allocations(labels))
         yield rows, allocations
 
 
