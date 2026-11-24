@@ -13,6 +13,7 @@ from gpustack.utils.model_instance_workers import (
     has_model_instance_stop_barrier,
 )
 from gpustack.utils.network import is_heartbeat_offline
+from gpustack.utils.observation import observation_elapsed_seconds
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,17 @@ class WorkerInstanceCleaner:
         """
         Retain managed assignments and reschedule only legacy offline instances.
         """
+        # A fresh observation window owes workers the heartbeat grace to
+        # reconnect and then the full reschedule grace before anything on them
+        # is deleted. Counting only the observation floor would leave just the
+        # difference between the two periods.
+        observed_for = observation_elapsed_seconds()
+        if observed_for is not None and observed_for < (
+            envs.WORKER_HEARTBEAT_GRACE_PERIOD
+            + envs.MODEL_INSTANCE_RESCHEDULE_GRACE_PERIOD
+        ):
+            return
+
         async with async_session() as session:
             workers = await Worker.all(session)
             if not workers:

@@ -23,6 +23,13 @@ def observation_started_at() -> Optional[datetime]:
     return _observation_started_at
 
 
+def observation_elapsed_seconds() -> Optional[float]:
+    """Seconds since this process started observing, or None if it isn't."""
+    if _observation_started_at is None:
+        return None
+    return (datetime.now(timezone.utc) - _observation_started_at).total_seconds()
+
+
 def mark_observation_start(at: Optional[datetime] = None) -> None:
     """Start a new observation window, defaulting to now.
 
