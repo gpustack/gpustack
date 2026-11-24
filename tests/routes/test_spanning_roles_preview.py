@@ -10,7 +10,7 @@ def _worker(gpus: int):
     return SimpleNamespace(
         id=1,
         status=SimpleNamespace(
-            gpu_devices=[SimpleNamespace(index=i) for i in range(gpus)]
+            gpu_devices=[SimpleNamespace(index=i, vendor="nvidia") for i in range(gpus)]
         ),
     )
 
@@ -46,17 +46,22 @@ def _create(**kwargs):
 
 
 @pytest.mark.asyncio
-async def test_the_route_answers_with_both_numbers():
+@pytest.mark.parametrize("env", [None, {"GPUSTACK_SKIP_MODEL_EVALUATION": "1"}])
+async def test_the_route_answers_with_both_numbers(env):
     """Both are needed by the one sentence the form writes, so both cross the
     wire — the form must not have to hold half the comparison."""
     from gpustack.routes.models import preview_spanning_roles
-    from gpustack.schemas.models import RoleSpec
+    from gpustack.schemas.models import DisaggregationSpec, RoleSpec
 
     model_in = _create(
         cluster_id=1,
         backend="vLLM",
-        backend_parameters=["--tensor-parallel-size=16"],
-        roles=[RoleSpec(name="prefill", replicas=1)],
+        env=env,
+        disaggregation=DisaggregationSpec(mode="vllm-nixl"),
+        roles=[
+            RoleSpec(name="prefill", backend_parameters=["--tensor-parallel-size=16"]),
+            RoleSpec(name="decode", backend_parameters=["--tensor-parallel-size=4"]),
+        ],
     )
     with (
         patch(
@@ -75,7 +80,8 @@ async def test_the_route_answers_with_both_numbers():
 
 
 @pytest.mark.asyncio
-async def test_a_cluster_the_caller_cannot_see_is_not_answered_about():
+@pytest.mark.parametrize("env", [None, {"GPUSTACK_SKIP_MODEL_EVALUATION": "1"}])
+async def test_a_cluster_the_caller_cannot_see_is_not_answered_about(env):
     """The answer describes someone else's machines. It is a small fact — the
     widest card count in a fleet — but it is still a fact about a cluster the
     caller was not given."""
@@ -85,6 +91,7 @@ async def test_a_cluster_the_caller_cannot_see_is_not_answered_about():
 
     model_in = _create(
         cluster_id=1,
+        env=env,
         backend="vLLM",
         backend_parameters=["--tensor-parallel-size=16"],
         roles=[RoleSpec(name="prefill", replicas=1)],

@@ -41,6 +41,13 @@ def test_a_window_on_one_role_only_is_unverified():
     assert _pairing_unverified(model) is True
 
 
+def test_a_skipped_pairing_does_not_report_unverified_factors():
+    model = _model(prefill=_role("prefill", ["--max-model-len=8192"]))
+    model.env = {"GPUSTACK_SKIP_MODEL_EVALUATION": "1"}
+
+    assert _pairing_unverified(model) is False
+
+
 def test_a_window_on_both_roles_is_not():
     model = _model(
         prefill=_role("prefill", ["--max-model-len=8192"]),

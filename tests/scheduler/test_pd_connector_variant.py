@@ -54,10 +54,13 @@ async def test_evaluation_records_layout_even_with_existing_metadata(monkeypatch
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("override_scope", ["model", "roles"])
+@pytest.mark.parametrize("skip_evaluation", [False, True])
 async def test_architecture_override_preserves_source_layout(
-    monkeypatch, override_scope
+    monkeypatch, override_scope, skip_evaluation
 ):
     model = _model()
+    if skip_evaluation:
+        model.env = {"GPUSTACK_SKIP_MODEL_EVALUATION": "1"}
     parameters = ['--hf-overrides={"architectures":["Qwen3ForCausalLM"]}']
     if override_scope == "model":
         model.backend_parameters = parameters

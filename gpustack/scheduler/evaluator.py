@@ -77,6 +77,7 @@ from gpustack.utils.gpu import (
     compare_compute_capability,
 )
 from gpustack.utils.command import flatten_to_argv
+from gpustack.utils.envs import should_skip_model_evaluation
 from gpustack.utils.hybrid_attention import (
     HYBRID_MODEL_DOC_URL,
     is_hybrid_attention,
@@ -1208,7 +1209,7 @@ async def evaluate_model_metadata(
         elif not is_audio_model(model):
             await scheduler.evaluate_pretrained_config(model, workers=workers)
     except Exception as e:
-        if model.env and model.env.get("GPUSTACK_SKIP_MODEL_EVALUATION"):
+        if should_skip_model_evaluation(model.env):
             logger.warning(f"Ignore model evaluation error for model {model.name}: {e}")
             return True, []
 

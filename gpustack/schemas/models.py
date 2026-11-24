@@ -21,6 +21,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field as PydanticField,
+    PrivateAttr,
     field_serializer,
     field_validator,
     model_validator,
@@ -50,6 +51,7 @@ from gpustack.schemas.links import (
 )
 from gpustack.utils.name import bounded_follower_name
 from gpustack.utils.command import find_parameter, find_bool_parameter
+from gpustack.utils.envs import should_skip_model_evaluation
 from gpustack.schemas.model_routes import (
     ModelRoute,
     ModelRouteTarget,
@@ -1412,6 +1414,8 @@ class RoleEffectiveModel(ModelBase):
     """
 
     id: Optional[int] = None
+    # PD metadata reads can honor the deployment opt-out after replacing env.
+    _deployment_skip_model_evaluation: Optional[bool] = PrivateAttr(default=None)
 
     # Deliberately left unhashable, which is what `Model` is too — SQLModel
     # sets `__hash__ = None` on a table class the same way pydantic does for
@@ -1633,6 +1637,13 @@ def role_effective_model(model, role_name: Optional[str]):
         return model
 
     projected = RoleEffectiveModel.model_validate(model)
+    if projected.disaggregation is not None:
+        deployment_flag = getattr(model, "_deployment_skip_model_evaluation", None)
+        projected._deployment_skip_model_evaluation = (
+            should_skip_model_evaluation(projected.env)
+            if deployment_flag is None
+            else deployment_flag
+        )
     for field in _ROLE_OVERRIDE_FIELDS:
         value = getattr(role, field, None)
         independent_backend = role.backend is not None and field in ROLE_BACKEND_FIELDS

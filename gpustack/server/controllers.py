@@ -132,6 +132,7 @@ from gpustack.server.cache_provider_catalog import (
     get_cache_provider,
 )
 from gpustack.validation.pd.pairing import undecidable_factors
+from gpustack.utils.envs import should_skip_model_evaluation
 from gpustack.utils.pd_router_launch import router_backend_definition
 from gpustack.utils.hub import is_mmproj_file
 from gpustack.server import pd_membership
@@ -4099,6 +4100,8 @@ def _pd_pairing_roles(model: Model) -> Tuple[Optional[RoleSpec], Optional[RoleSp
 
 def _pairing_unverified(model: Model) -> bool:
     """Whether a pairing factor has an unresolved effective value."""
+    if should_skip_model_evaluation(getattr(model, "env", None)):
+        return False
     prefill, decode = _pd_pairing_roles(model)
     if prefill is None or decode is None:
         return False

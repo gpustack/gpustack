@@ -389,7 +389,18 @@ connector. An unsupported topology can fail at startup or during KV transfer.
 After both roles start, send an inference request and confirm that Decode
 receives remote KV.
 
-GPUStack checks these settings when saving a deployment.
+Set `GPUSTACK_SKIP_MODEL_EVALUATION` to a non-empty value such as `1` in the
+deployment's top-level `env` to continue the preview after model metadata
+evaluation errors. A catalog model spec can supply this value as a default.
+Deployment previews still validate inputs, report which roles must span
+machines, and estimate resources when possible.
+
+For PD, the flag skips the early accelerator type check and the P/D pairing
+checks during preview, save, and scheduler analysis. GPUStack still validates
+the deployment structure. Actual scheduling checks worker eligibility and
+allocates resources and ports.
+
+By default, GPUStack checks these settings when saving a deployment.
 
 - **Prefill and decode must declare the same context length.** No engine checks
   this, and a mismatch is invisible until a long prompt arrives.

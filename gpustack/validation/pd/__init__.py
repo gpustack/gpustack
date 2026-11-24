@@ -10,6 +10,7 @@ from typing import Optional, Union
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.schemas.models import Model, ModelCreate, ModelSpecBase, ModelUpdate
+from gpustack.utils.envs import should_skip_model_evaluation
 
 
 async def validate_pd_config(
@@ -67,9 +68,20 @@ async def validate_pd_config(
             raise BadRequestException(
                 message="Router requires a command from its role or selected backend."
             )
-    config = await resolve_pairing_model_config(model_in, stored=stored)
-    validate_role_pairing(model_in, stored=stored, pretrained_config=config)
-    await validate_pd_mode_runtime(
-        session, model_in, cluster_id=cluster_id, stored=stored
+    skip_evaluation = should_skip_model_evaluation(effective.env)
+    config = (
+        None
+        if skip_evaluation
+        else await resolve_pairing_model_config(model_in, stored=stored)
     )
+    validate_role_pairing(
+        model_in,
+        stored=stored,
+        pretrained_config=config,
+        skip_compatibility=skip_evaluation,
+    )
+    if not skip_evaluation:
+        await validate_pd_mode_runtime(
+            session, model_in, cluster_id=cluster_id, stored=stored
+        )
     await validate_gather_layer(session, model_in, cluster_id=cluster_id, stored=stored)

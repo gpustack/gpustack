@@ -10,8 +10,15 @@ import pytest
 
 from gpustack.policies.worker_filters.local_path_filter import LocalPathFilter
 from gpustack.schemas.filesystem import FileExistsResponse
-from gpustack.schemas.models import GPUSelector, Model, SourceEnum
-from gpustack.scheduler import evaluator
+from gpustack.schemas.models import (
+    DisaggregationSpec,
+    GPUSelector,
+    Model,
+    RoleSpec,
+    SourceEnum,
+    role_effective_model,
+)
+from gpustack.scheduler import calculator, evaluator
 from gpustack.schemas.model_evaluations import ModelEvaluationResult
 from gpustack.scheduler.calculator import read_local_path_file_from_workers
 from gpustack.scheduler.evaluator import evaluate_model_metadata
@@ -25,6 +32,43 @@ def make_local_path_model() -> Model:
         source=SourceEnum.LOCAL_PATH,
         local_path="/mnt/models/foo",
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "pd, deployment_flag, role_env, tolerate_error",
+    [
+        (True, "0", {"ROLE_VAR": "decode"}, True),
+        (True, "false", {}, True),
+        (True, None, {"GPUSTACK_SKIP_MODEL_EVALUATION": "1"}, True),
+        (True, None, {}, False),
+        (False, "1", {}, False),
+    ],
+)
+async def test_projected_pd_metadata_read_honors_deployment_opt_out(
+    monkeypatch, tmp_path, pd, deployment_flag, role_env, tolerate_error
+):
+    model = make_local_path_model()
+    model.owner_principal_id = 1
+    model.local_path = str(tmp_path / "model")
+    model.disaggregation = DisaggregationSpec(mode="vllm-nixl") if pd else None
+    model.env = (
+        {"GPUSTACK_SKIP_MODEL_EVALUATION": deployment_flag} if deployment_flag else None
+    )
+    model.roles = [RoleSpec(name="prefill"), RoleSpec(name="decode", env=role_env)]
+    read_config = AsyncMock(side_effect=ValueError("metadata unavailable"))
+    monkeypatch.setattr(calculator, "get_pretrained_config_from_workers", read_config)
+
+    projected = role_effective_model(model, "decode").model_copy()
+
+    assert projected.env == role_env
+    assert projected.model_dump()["env"] == role_env
+    if tolerate_error:
+        assert await calculator.get_pretrained_config_with_workers(projected) is None
+    else:
+        with pytest.raises(ValueError, match="metadata unavailable"):
+            await calculator.get_pretrained_config_with_workers(projected)
+    read_config.assert_awaited_once()
 
 
 @pytest.mark.asyncio
