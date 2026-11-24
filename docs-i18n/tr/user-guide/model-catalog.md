@@ -134,6 +134,7 @@ Her model seti aşağıdaki alanlara sahiptir:
 | size                | int           | Modelin milyarlarca parametre cinsinden boyutu.                                                                 |
 | licenses            | list of str   | Modelin lisanslarının listesi.                                                              |
 | release_date        | string        | Modelin YYYY-AA-GG formatında çıkış tarihi.                                         |
+| experimental       | boolean       | İsteğe bağlıdır. `true` olarak ayarlandığında katalog öğesinde “Deneysel” rozeti gösterilir. Değer `false` veya `null` olduğunda ya da alan belirtilmediğinde rozet gösterilmez. Bu alan yalnızca görüntüleme amaçlıdır. |
 | specs               | list of spec  | Model için dağıtım spesifikasyonlarının listesi. |
 
 

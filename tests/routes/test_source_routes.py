@@ -17,6 +17,7 @@ import httpx
 import pytest
 import pytest_asyncio
 import yaml
+from fastapi import FastAPI
 from gpustack_runner.runner import Runner
 from pydantic import ValidationError
 from sqlalchemy import event as sa_event, select
@@ -57,6 +58,7 @@ from gpustack.schemas.runner_source import (
     reconcile_runner_overrides,
 )
 from gpustack.server import controllers
+from gpustack.server.db import get_session
 from gpustack.server.sources import core as core_module
 from gpustack.server.sources import probe as probe_module
 from gpustack.server.sources import routes as routes_module
@@ -281,6 +283,62 @@ class TestCatalogSourceConfig:
     async def session(self):
         async with _make_source_session(CatalogSource, CatalogModelEntry) as session:
             yield session
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("source_type", [SourceTypeEnum.FILE, SourceTypeEnum.URL])
+    async def test_experimental_marker_round_trips_with_stable_id(
+        self, session, monkeypatch, source_type
+    ):
+        document = yaml.safe_load(_catalog("Example"))
+        model_set = document["model_sets"][0]
+        legacy_entry = await CatalogModelEntry.create(
+            session,
+            CatalogModelEntry(kind="model_set", name="Example", payload=model_set),
+        )
+        entry_id = legacy_entry.id
+
+        app = FastAPI()
+        app.include_router(model_sets.router, prefix="/v2/model-sets")
+        app.dependency_overrides[get_session] = lambda: session
+        if source_type == SourceTypeEnum.URL:
+            _install_fake_url_fetch(monkeypatch)
+
+        async with _REAL_ASYNC_CLIENT(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+
+            async def assert_marker(expected):
+                response = await client.get("/v2/model-sets")
+                assert response.status_code == 200
+                (item,) = response.json()["items"]
+                assert item["id"] == entry_id
+                assert item["experimental"] is expected
+
+            await assert_marker(None)
+            for fields, expected in [
+                ({"experimental": True}, True),
+                ({"experimental": False}, False),
+                ({}, None),
+                ({"experimental": None}, None),
+            ]:
+                document["model_sets"] = [{**model_set, **fields}]
+                content = yaml.safe_dump(document)
+                if source_type == SourceTypeEnum.FILE:
+                    upsert = _upsert(source_type=source_type, content=content)
+                else:
+                    monkeypatch.setitem(_REMOTE, "doc", content)
+                    upsert = _upsert(
+                        source_type=source_type, url="https://example.com/c.yaml"
+                    )
+                config = await update_source_config(session, _CATALOG_SPEC, upsert)
+                (stored_set,) = yaml.safe_load(config.custom.content)["model_sets"]
+                assert stored_set.get("experimental") is expected
+                await _catalog_materialized(session)
+                entry = await CatalogModelEntry.one_by_id(session, entry_id)
+                assert entry is not None
+                assert entry.payload["experimental"] is expected
+                assert "experimental" not in entry.payload["specs"][0]
+                await assert_marker(expected)
 
     @pytest.mark.asyncio
     async def test_a_record_this_version_cannot_read_is_named_on_the_way_in(

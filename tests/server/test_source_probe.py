@@ -257,6 +257,10 @@ async def test_a_round_applies_each_slot_then_returns_early_at_two_levels(
     the release ref moved, since the decision is per file — and a document that
     normalizes to the stored text is downloaded and then not written.
     """
+    catalog = yaml.safe_load(_catalog("Official"))
+    catalog["model_sets"][0]["experimental"] = True
+    document = yaml.safe_dump(catalog)
+    mirror.files[_CATALOG_FILE] = document
     result = await refresh_sources(session, now=_T0)
     assert result.changed == {
         "catalog": True,
@@ -273,8 +277,9 @@ async def test_a_round_applies_each_slot_then_returns_early_at_two_levels(
     assert stored.source_type == SourceTypeEnum.OFFICIAL
     assert stored.enabled is True
     assert stored.auto_update_hours == probe.OFFICIAL_DEFAULT_HOURS
-    assert stored.content == normalize_catalog_yaml(_catalog("Official"))
-    assert stored.remote_hash == sha256_of(_catalog("Official"))
+    assert yaml.safe_load(stored.content)["model_sets"][0]["experimental"] is True
+    assert stored.content == normalize_catalog_yaml(document)
+    assert stored.remote_hash == sha256_of(document)
     first_updated_at = stored.updated_at
 
     # Level 1: nothing moved — the index is read, nothing is downloaded.
@@ -299,13 +304,13 @@ async def test_a_round_applies_each_slot_then_returns_early_at_two_levels(
 
     # Level 2: the catalog moved (a comment) but normalizes to the same text — it
     # is downloaded and then not written.
-    mirror.files[_CATALOG_FILE] = _catalog("Official") + "\n# regenerated\n"
+    mirror.files[_CATALOG_FILE] = document + "\n# regenerated\n"
     result = await refresh_sources(session, now=_T0 + 39 * _HOUR)
     assert result.changed["catalog"] is False
     assert mirror.file_requests == [_CATALOG_FILE]
     stored = await _official(session, CatalogSource)
     assert stored.updated_at == first_updated_at
-    assert stored.remote_hash == sha256_of(_catalog("Official"))
+    assert stored.remote_hash == sha256_of(document)
 
 
 @pytest.mark.asyncio

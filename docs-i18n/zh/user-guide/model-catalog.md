@@ -134,6 +134,7 @@ model_sets:
 | size | int | 模型大小，以十亿参数为单位。 |
 | licenses | list of str | 模型许可证列表。 |
 | release_date | string | 模型发布日期，格式为 YYYY-MM-DD。 |
+| experimental | boolean | 可选。设为 `true` 时，模型目录条目会显示“实验性”标签。设为 `false`、`null` 或省略此字段时，标签不显示。此字段仅用于展示。 |
 | specs | list of spec | 模型部署规格列表。 |
 
 每个部署规格包含以下字段：
