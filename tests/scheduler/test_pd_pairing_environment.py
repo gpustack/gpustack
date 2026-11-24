@@ -66,9 +66,38 @@ async def test_metadata_rejects_incompatible_role_environments(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("pairing_failure", [True, False])
+async def test_skip_evaluation_avoids_metadata_loaded_only_for_pairing(monkeypatch):
+    model = Model(
+        name="pairing",
+        source=SourceEnum.HUGGING_FACE,
+        huggingface_repo_id="org/model",
+        backend="vLLM",
+        backend_version="0.29.0",
+        backend_parameters=['--hf-overrides={"architectures":["Qwen3ForCausalLM"]}'],
+        env={"GPUSTACK_SKIP_MODEL_EVALUATION": "1"},
+        disaggregation=DisaggregationSpec(mode=PDModeEnum.VLLM_NIXL),
+        roles=[
+            RoleSpec(name="prefill", env={"VLLM_MLA_DISABLE": "0"}),
+            RoleSpec(name="decode", env={"VLLM_MLA_DISABLE": "1"}),
+        ],
+    )
+    monkeypatch.setattr(
+        scheduler, "evaluate_diffusion_model", AsyncMock(return_value=False)
+    )
+    loader = AsyncMock(return_value=SimpleNamespace(kv_lora_rank=512))
+    monkeypatch.setattr(scheduler, "get_pretrained_config_with_workers", loader)
+
+    await scheduler.evaluate_pretrained_config(model)
+
+    loader.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "pairing_failure,skip_evaluation", [(True, False), (False, False), (True, True)]
+)
 async def test_evaluation_blocks_incompatible_pairs_but_preserves_metadata_fallback(
-    monkeypatch, pairing_failure
+    monkeypatch, pairing_failure, skip_evaluation
 ):
     from datetime import datetime, timezone
     from unittest.mock import MagicMock
@@ -91,6 +120,7 @@ async def test_evaluation_blocks_incompatible_pairs_but_preserves_metadata_fallb
         huggingface_repo_id="org/model",
         backend="vLLM",
         backend_version="0.29.0",
+        env={"GPUSTACK_SKIP_MODEL_EVALUATION": "1"} if skip_evaluation else None,
         disaggregation=DisaggregationSpec(mode=PDModeEnum.VLLM_NIXL),
         roles=[
             RoleSpec(name="prefill", env={"VLLM_MLA_DISABLE": "0"}),
@@ -130,7 +160,8 @@ async def test_evaluation_blocks_incompatible_pairs_but_preserves_metadata_fallb
     runner = scheduler.Scheduler.__new__(scheduler.Scheduler)
     runner._queue = SimpleNamespace(put=AsyncMock())
     await runner._evaluate(instance)
-    if pairing_failure:
+    loader.assert_awaited_once()
+    if pairing_failure and not skip_evaluation:
         runner._queue.put.assert_not_awaited()
         assert instance.state == ModelInstanceStateEnum.ERROR
         assert "VLLM_MLA_DISABLE" in instance.state_message

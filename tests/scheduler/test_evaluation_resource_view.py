@@ -8,16 +8,69 @@ import pytest
 
 from gpustack.scheduler import evaluator
 from gpustack.policies import utils as policy_utils
-from gpustack.policies.resource_view import ResourceView
 from gpustack.schemas.model_sets import ModelSpec
 from gpustack.schemas.models import DisaggregationSpec, RoleSpec, SourceEnum
 from gpustack.schemas.port_reservations import WorkerPortAvailability
+from gpustack.schemas.workers import WorkerStateEnum
 from tests.fixtures.workers.fixtures import linux_nvidia_22_H100_80gx8
 from tests.utils.mock import mock_async_session
 
 
+def mock_evaluation_inventory(monkeypatch, workers):
+    monkeypatch.setattr(
+        evaluator.Worker, "all_by_fields", AsyncMock(return_value=workers)
+    )
+    monkeypatch.setattr(
+        evaluator.ModelInstance, "all_by_fields", AsyncMock(return_value=[])
+    )
+    monkeypatch.setattr(
+        evaluator.scheduler,
+        "prioritize_workers_with_model_files",
+        AsyncMock(return_value=workers),
+    )
+    monkeypatch.setattr(evaluator, "cache_instances_in", AsyncMock(return_value=[]))
+    monkeypatch.setattr(evaluator, "evaluate_cache", {})
+    monkeypatch.setattr(evaluator, "evaluate_model_limiter", evaluator.AsyncLimiter(1))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pd", [False, True])
+async def test_opt_out_keeps_preview_defaults_and_input_validation(monkeypatch, pd):
+    model = ModelSpec(
+        source=SourceEnum.HUGGING_FACE,
+        huggingface_repo_id="org/model",
+        backend="vLLM",
+        env={"GPUSTACK_SKIP_MODEL_EVALUATION": "1"},
+        roles=(
+            [RoleSpec(name=role) for role in ("prefill", "decode", "router")]
+            if pd
+            else None
+        ),
+        disaggregation=DisaggregationSpec(mode="vllm-nixl") if pd else None,
+    )
+    params = ["--port=18000"]
+    catalog_spec = model.model_copy(update={"backend_parameters": params})
+    mock_evaluation_inventory(monkeypatch, [])
+    monkeypatch.setattr(
+        evaluator,
+        "get_catalog_spec_by_source_key",
+        AsyncMock(return_value=catalog_spec),
+    )
+    monkeypatch.setattr(evaluator, "set_gguf_model_file_path", AsyncMock())
+    metadata = AsyncMock()
+    monkeypatch.setattr(evaluator, "evaluate_model_metadata", metadata)
+
+    (result,) = await evaluator.evaluate_models(None, None, [model])
+
+    assert result.default_spec.backend_parameters == params
+    assert not result.compatible
+    assert any("--port" in msg for msg in result.compatibility_messages)
+    metadata.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('fits', [False, True])
+@pytest.mark.parametrize('tolerate_metadata_errors', [False, True])
 @pytest.mark.parametrize(
     'mode,pd',
     [
@@ -30,7 +83,7 @@ from tests.utils.mock import mock_async_session
     ],
 )
 async def test_unsaved_spec_completes_real_resource_evaluation(
-    config, monkeypatch, tmp_path, mode, pd, fits
+    config, monkeypatch, tmp_path, mode, pd, fits, tolerate_metadata_errors
 ):
     from gpustack.scheduler import port_budget
 
@@ -41,6 +94,7 @@ async def test_unsaved_spec_completes_real_resource_evaluation(
     if not fits:
         worker.status.gpu_devices = worker.status.gpu_devices[:1]
     worker.cluster_id = 1
+    worker.state = WorkerStateEnum.READY
     worker.system_principal_id = 101
     parameters = [
         '--distributed-executor-backend=mp',
@@ -58,6 +112,11 @@ async def test_unsaved_spec_completes_real_resource_evaluation(
         backend='vLLM',
         backend_version='0.32.0',
         cluster_id=1,
+        env=(
+            {'GPUSTACK_SKIP_MODEL_EVALUATION': '0'}
+            if tolerate_metadata_errors
+            else None
+        ),
         backend_parameters=[] if pd else parameters,
         roles=(
             [
@@ -110,15 +169,8 @@ async def test_unsaved_spec_completes_real_resource_evaluation(
         ),
     )
 
-    result = await evaluator.evaluate_model(
-        config,
-        None,
-        model,
-        [worker],
-        [],
-        resource_view=ResourceView([]),
-        cache_instances=[],
-    )
+    mock_evaluation_inventory(monkeypatch, [worker])
+    (result,) = await evaluator.evaluate_models(config, None, [model], cluster_id=1)
 
     assert not result.error, result.error_message
     assert result.compatible == fits, (

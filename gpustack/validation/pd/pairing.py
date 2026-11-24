@@ -106,6 +106,7 @@ def validate_role_pairing(  # noqa: C901
     stored: Optional[Model] = None,
     *,
     pretrained_config: Optional[Any] = None,
+    skip_compatibility: bool = False,
 ) -> None:
     """Reject provably incompatible parameter and environment configurations.
 
@@ -119,6 +120,7 @@ def validate_role_pairing(  # noqa: C901
         model_in: The submitted deployment specification.
         stored: The stored deployment supplying omitted update fields.
         pretrained_config: Source configuration for model-dependent rules.
+        skip_compatibility: Limit validation to connector configuration structure.
     """
 
     def field(name: str):
@@ -141,6 +143,9 @@ def validate_role_pairing(  # noqa: C901
     for role, parameters in ((prefill, prefill_params), (decode, decode_params)):
         if (role.backend or backend) == BackendEnum.VLLM.value:
             _validate_connector_json(parameters, role.name)
+
+    if skip_compatibility:
+        return
 
     verdict, prefill_len, decode_len = compare_max_model_len(
         prefill_params, decode_params
@@ -191,11 +196,9 @@ def undecidable_factors(
 ) -> List[str]:
     """The pairing factors where one side declared and the other went silent.
 
-    Not a list of mismatches -- a mismatch between two determinable values is
-    refused at admission and never reaches here. This is the residue: the
-    places where GPUStack knows one side's value, cannot resolve the other's,
-    and therefore did not check. Naming that is the point, because the
-    alternative the user experiences is a check they believe happened.
+    These are the factors where GPUStack knows one side's value and cannot
+    resolve the other's. Reporting them tells callers which comparisons
+    require more information.
 
     Both sides silent is deliberately not on the list. Two roles taking the
     same default from the same engine on the same model agree whatever it

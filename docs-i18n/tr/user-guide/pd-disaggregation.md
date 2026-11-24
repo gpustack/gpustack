@@ -239,7 +239,11 @@ Varsayılan aralık **64 bağlantı noktası** içerir; bu çoğu dağıtım iç
 
 Desteklenen tensör paralelliği topolojileri çıkarım motorunun sürümüne, modele ve KV bağlayıcısına bağlıdır. Uyumsuz bir topoloji başlatma veya KV aktarımı sırasında hata verebilir. Her iki rol başladıktan sonra bir çıkarım isteği gönderin ve Decode rolünün uzak KV verisini aldığını doğrulayın.
 
-Yanlış yanıtlar sunan bir grup oluşturacak yapılandırma, çalışma zamanından ziyade kaydetme zamanında reddedilir:
+Model meta verileri değerlendirilirken hata oluşsa da önizlemenin devam etmesi için dağıtımın en üst düzey `env` alanında `GPUSTACK_SKIP_MODEL_EVALUATION` değişkenine `1` gibi boş olmayan bir değer verin. Katalogdaki model tanımı bu değeri varsayılan olarak belirleyebilir. Önizleme girdileri doğrulamaya, birden fazla makineye yayılması gereken rolleri göstermeye ve mümkün olduğunda kaynak gereksinimlerini hesaplamaya devam eder.
+
+PD için bu ayar, hızlandırıcı türü ön kontrolünü ve önizleme, kaydetme ve zamanlayıcı analizi sırasındaki P/D eşleşme kontrollerini atlar. GPUStack dağıtım yapısını doğrulamaya devam eder. Dağıtımı planlarken uygun çalışanları belirleyip kaynakları ve bağlantı noktalarını ayırır.
+
+Varsayılan olarak GPUStack, dağıtımı kaydederken aşağıdaki ayarları kontrol eder.
 
 - **Ön doldurma ve kod çözme aynı bağlam uzunluğunu bildirmelidir.** Hiçbir motor bunu kontrol etmez ve uzun bir komut gelene kadar bir uyumsuzluk görünmez.
 - **Veri türü, KV önbellek veri türü, blok boyutu ve KV önbellek düzeni iki taraf arasında** aynı olmalıdır.

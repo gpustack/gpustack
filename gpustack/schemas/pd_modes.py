@@ -829,18 +829,19 @@ class PDRouter(BaseModel):
 
 
 class PDTensorParallelPairingEnum(str, Enum):
-    """Tensor-parallel pairing values for clients of the PD mode API."""
+    """Deprecated tensor-parallel policy values retained for PD mode API compatibility."""
 
     DECODE_GE_PREFILL = "decode_ge_prefill"
-    """decode's tensor parallelism must be at least prefill's (NIXL)."""
     PREFILL_GE_DECODE = "prefill_ge_decode"
-    """prefill's tensor parallelism must be at least decode's."""
     ANY = "any"
-    """No constraint GPUStack knows of; the engine is the judge."""
 
 
 class PDPairing(BaseModel):
-    """Compatibility field for clients of the PD mode API."""
+    """Compatibility settings for existing PD mode recipes and API clients.
+
+    The deprecated `tensor_parallel` field is ignored. The inference engine
+    and its KV connector validate the TP topology.
+    """
 
     tensor_parallel: PDTensorParallelPairingEnum = PDTensorParallelPairingEnum.ANY
 

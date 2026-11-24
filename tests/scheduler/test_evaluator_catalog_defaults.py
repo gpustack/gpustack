@@ -114,6 +114,26 @@ def make_worker(name="hopper", vendor="nvidia", cc="9.0", arch_family=None):
 
 
 @pytest.mark.asyncio
+async def test_catalog_defaults_preserve_the_declared_environment(monkeypatch):
+    catalog_env = {
+        "GPUSTACK_SKIP_MODEL_EVALUATION": "1",
+        "VLLM_LOGGING_LEVEL": "INFO",
+    }
+    model = make_model("model-catalog.yaml")
+    catalog_spec = model.model_copy(update={"env": catalog_env})
+    monkeypatch.setattr(
+        evaluator,
+        "get_catalog_spec_by_source_key",
+        AsyncMock(return_value=catalog_spec),
+    )
+
+    assert await evaluator.set_default_spec(None, model, [])
+    assert model.env == catalog_env
+    assert model.env is not catalog_spec.env
+    assert catalog_spec.env == catalog_env
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "cc,cache_dtype",
     [
