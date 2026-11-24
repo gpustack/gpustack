@@ -859,9 +859,13 @@ def test_language_workers_find_technical_identifiers(
     monkeypatch.setenv("DOCS_COMMIT", "1234567890abcdef")
     configuration = multilingual_source / "mkdocs.yml"
     settings = yaml.safe_load(configuration.read_text())
-    settings["plugins"]["search"] = builder.config_field(
-        (ROOT / "mkdocs.yml").read_text(), "plugins"
-    )["search"]
+    overrides = builder.config_field((ROOT / "mkdocs.yml").read_text(), "theme")[
+        "custom_dir"
+    ]
+    settings["theme"]["custom_dir"] = overrides
+    template = Path(overrides) / "partials/language.html"
+    (multilingual_source / template).parent.mkdir(parents=True)
+    shutil.copy2(ROOT / template, multilingual_source / template)
     configuration.write_text(yaml.safe_dump(settings))
     for language in i18n.LANGUAGES:
         source = multilingual_source / (
@@ -872,6 +876,8 @@ def test_language_workers_find_technical_identifiers(
                 "\nSet `GPUSTACK_KV_TRANSFER_IFNAME` for the cache service. "
                 "Check the memory configuration.\n"
             )
+            if language == "ja":
+                guide.write("\nこれを確認します。\n")
     if offline:
         configuration = multilingual_source / "mkdocs.offline.yml"
         configuration.write_text(
@@ -901,9 +907,9 @@ def test_language_workers_find_technical_identifiers(
     missing = []
     for language, native_query in native_queries.items():
         site = output / i18n.language_prefix(language)
-        worker = next((site / "assets/javascripts/workers").glob("search.*.min.js"))
-        if language == "ja":
-            worker = next(worker.parent.glob("search.ja.*.min.js"))
+        worker_dir = site / "assets/javascripts/workers"
+        pattern = "search.ja.*.min.js" if language == "ja" else "search.*.min.js"
+        worker = next(worker_dir.glob(pattern))
         queries = [
             "GPUSTACK_KV_TRANSFER_IFNAME",
             "gpustack_kv_transfer_ifname",
@@ -914,6 +920,8 @@ def test_language_workers_find_technical_identifiers(
             "configuration",
             native_query,
         ]
+        if language == "ja":
+            queries.append("これ")
         result = subprocess.run(
             [node, "-e", script, str(site), str(worker), json.dumps(queries)],
             check=True,

@@ -1,7 +1,11 @@
 (() => {
   function updateSearch(event) {
     const input = event.target;
-    if (!event.isComposing && input.matches('[data-md-component="search-query"]')) {
+    if (
+      !event.isComposing &&
+      typeof input?.matches === "function" &&
+      input.matches('[data-md-component="search-query"]')
+    ) {
       // Material reads the query on keyup. Notify it after paste or IME commit.
       input.dispatchEvent(new Event("keyup"));
     }

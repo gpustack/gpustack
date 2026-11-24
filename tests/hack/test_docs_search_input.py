@@ -38,6 +38,8 @@ listeners.get('input')({target, isComposing: false});
 assert.deepEqual(queries, ['集群', '集群管理']);
 
 listeners.get('input')({target: {matches: () => false}});
+listeners.get('input')({target: new EventTarget()});
+listeners.get('input')({target: null});
 assert.deepEqual(queries, ['集群', '集群管理']);
 """
     subprocess.run([node, "-e", script], cwd=root, check=True, timeout=15)

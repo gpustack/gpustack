@@ -87,10 +87,7 @@ theme:
 # and to silently lose whichever one a later edit here forgot to copy over.
 plugins:
   glightbox: {}
-  search:
-    # Wildcard queries bypass stemming, so preserve full technical identifiers.
-    pipeline:
-      - stopWordFilter
+  search: {}
   redirects:
     redirect_maps:
       'installation/nvidia/installation.md': 'installation/requirements.md'

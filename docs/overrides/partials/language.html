@@ -1,0 +1,10 @@
+{% import "partials/languages/" ~ config.theme.language ~ ".html" as lang %}
+{% import "partials/languages/en.html" as fallback %}
+{% macro t(key) -%}
+  {%- if config.theme.language == "zh" and key == "search.config.pipeline" -%}
+    {#- Preserve full technical identifiers because wildcard queries bypass stemming. -#}
+    stopWordFilter
+  {%- else -%}
+    {{ lang.t(key) or fallback.t(key) or key }}
+  {%- endif -%}
+{%- endmacro %}
