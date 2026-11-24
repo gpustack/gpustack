@@ -65,6 +65,7 @@ class ModelSetBase(BaseModel):
     size_unit: Optional[SizeUnit] = None
     licenses: Optional[List[str]] = None
     release_date: Optional[date] = None
+    experimental: Optional[bool] = None
 
     model_config = ConfigDict(protected_namespaces=())
 

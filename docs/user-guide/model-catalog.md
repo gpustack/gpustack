@@ -119,18 +119,19 @@ Each draft model has the following fields:
 
 Each model set has the following fields:
 
-| Field               | Type          | Description                                                                                     |
-|---------------------|---------------|-------------------------------------------------------------------------------------------------|
-| name                | string        | The name of the model.                                                                      |
-| description         | string        | A brief description of the model.                                                           |
-| home                | string        | The homepage URL of the model.                                                              |
-| icon                | string        | The icon URL of the model.                                                                  |
-| categories          | list of str   | A list of categories that the model belongs to.                                                  |
-| capabilities        | list of str   | A list of capabilities of the model.                                                       |
-| size                | int           | The size of the model in billions of parameters.                                                                 |
-| licenses            | list of str   | A list of licenses of the model.                                                              |
-| release_date        | string        | The release date of the model in YYYY-MM-DD format.                                         |
-| specs               | list of spec  | A list of deployment specifications for the model. |
+| Field        | Type         | Description                                                                                                                                                             |
+| ------------ | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| name         | string       | The name of the model.                                                                                                                                                  |
+| description  | string       | A brief description of the model.                                                                                                                                       |
+| home         | string       | The homepage URL of the model.                                                                                                                                          |
+| icon         | string       | The icon URL of the model.                                                                                                                                              |
+| categories   | list of str  | A list of categories that the model belongs to.                                                                                                                         |
+| capabilities | list of str  | A list of capabilities of the model.                                                                                                                                    |
+| size         | int          | The size of the model in billions of parameters.                                                                                                                        |
+| licenses     | list of str  | A list of licenses of the model.                                                                                                                                        |
+| release_date | string       | The release date of the model in YYYY-MM-DD format.                                                                                                                     |
+| experimental | boolean      | Optional. Set to `true` to display an Experimental badge on the catalog item. Use `false`, `null`, or omit the field to hide the badge. This field is for display only. |
+| specs        | list of spec | A list of deployment specifications for the model.                                                                                                                      |
 
 
 Each deployment spec has the following fields:

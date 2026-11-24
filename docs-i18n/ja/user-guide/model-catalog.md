@@ -130,6 +130,7 @@ model_sets:
 | size | int | 10 億パラメーター単位のモデルサイズ。 |
 | licenses | list of str | モデルのライセンスの一覧。 |
 | release_date | string | YYYY-MM-DD 形式のモデルのリリース日。 |
+| experimental | boolean | 任意。`true` に設定すると、カタログ項目に「実験的」バッジが表示されます。`false`、`null`、またはフィールドを省略した場合は表示されません。このフィールドは表示専用です。 |
 | specs | list of spec | モデルのデプロイ仕様の一覧。 |
 
 各デプロイ仕様には、次のフィールドがあります。
