@@ -923,12 +923,13 @@ async def test_filtered_page_scans_more_candidates_within_budget(
 
 
 @pytest.mark.asyncio
-async def test_pages_preserve_traces_in_the_boundary_second():
-    candidates = [_candidate(i, 102 * _NS + 10_000 * i) for i in range(101, 0, -1)]
-    candidates.append(_candidate(102, 101 * _NS))
+@pytest.mark.parametrize("count", [101, 240])
+async def test_pages_preserve_traces_in_the_boundary_second(count):
+    candidates = [_candidate(i, 102 * _NS + 10_000 * i) for i in range(count, 0, -1)]
+    candidates.append(_candidate(count + 1, 101 * _NS))
     position = TracePagePosition(start=1, end=200, before=200)
     seen = []
-    for _ in range(11):
+    for _ in range(count // 10 + 1):
         matching = [
             trace
             for trace in candidates
@@ -959,7 +960,7 @@ async def test_pages_preserve_traces_in_the_boundary_second():
         assert position.end == 200
         assert position.before == 103
 
-    expected = [f"{i:x}" for i in range(101, 0, -1)] + [f"{102:x}"]
+    expected = [f"{i:x}" for i in range(count, 0, -1)] + [f"{count + 1:x}"]
     assert seen == expected
 
 

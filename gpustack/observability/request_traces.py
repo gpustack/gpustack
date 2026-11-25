@@ -10,7 +10,13 @@ from dataclasses import dataclass, field
 from typing import Annotated, Any, AsyncIterator, Dict, List, Literal, Optional, Tuple
 
 import aiohttp
-from pydantic import BaseModel, Field, StringConstraints
+from pydantic import (
+    BaseModel,
+    Field,
+    StringConstraints,
+    field_serializer,
+    field_validator,
+)
 
 from gpustack.api.exceptions import ServiceUnavailableException
 from gpustack.observability.tracing import PUBLIC_INFERENCE_PATHS
@@ -49,6 +55,7 @@ _IDENTIFIER_SEARCH_BATCH_SIZE = 10
 _TRACE_DETAIL_BATCH_SIZE = 10
 _TEMPO_QUERY_TIMEOUT = 8
 _CURSOR_ID_LIMIT = 240
+_TRACE_ID_BYTES = 16
 _NANOSECONDS_PER_SECOND = 1_000_000_000
 
 
@@ -112,6 +119,31 @@ class TracePagePosition(BaseModel):
     seen: List[_TraceId] = Field(default_factory=list, max_length=_CURSOR_ID_LIMIT)
     partial: Optional[_TraceId] = None
     offset: int = Field(default=0, ge=0)
+
+    @field_serializer("seen", when_used="json")
+    def _pack_seen(self, seen: List[str]) -> str:
+        # Fixed-width binary IDs keep the cursor small even in a dense second.
+        packed = b"".join(
+            bytes.fromhex(trace_id.zfill(_TRACE_ID_BYTES * 2)) for trace_id in seen
+        )
+        return base64.urlsafe_b64encode(packed).decode()
+
+    @field_validator("seen", mode="before")
+    @classmethod
+    def _unpack_seen(cls, seen):
+        # A cursor from an existing page can still contain a list of hex IDs.
+        if not isinstance(seen, str):
+            return seen
+        packed = base64.b64decode(seen, altchars=b"-_", validate=True)
+        if (
+            len(packed) % _TRACE_ID_BYTES
+            or len(packed) > _CURSOR_ID_LIMIT * _TRACE_ID_BYTES
+        ):
+            raise ValueError("Invalid packed trace IDs")
+        return [
+            packed[start : start + _TRACE_ID_BYTES].hex().lstrip("0") or "0"
+            for start in range(0, len(packed), _TRACE_ID_BYTES)
+        ]
 
     def encode(self) -> str:
         return base64.urlsafe_b64encode(self.model_dump_json().encode()).decode()

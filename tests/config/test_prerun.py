@@ -154,6 +154,41 @@ def test_builtin_tempo_max_retained_bytes(
     assert (env_name in caplog.text) is (value != str(expected))
 
 
+@pytest.mark.parametrize("helm", [False, True])
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("", "168h"),
+        ("+1h30.5m", "+1h30.5m"),
+        ("1.5h", "1.5h"),
+        ("7days", "168h"),
+        ("1h unknown", "168h"),
+        ("0s", "168h"),
+        ("-1h", "168h"),
+        ("9223372036854775807ns", "9223372036854775807ns"),
+        ("9223372036854775808ns", "168h"),
+    ],
+)
+def test_builtin_tempo_retention(tmp_path, monkeypatch, caplog, helm, value, expected):
+    run_dir = tmp_path / "run"
+    env_name = "GPUSTACK_BUILTIN_TEMPO_RETENTION"
+    monkeypatch.setenv("GPUSTACK_RUN_DIR", str(run_dir))
+    monkeypatch.setenv(env_name, value)
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+    monkeypatch.delenv("GPUSTACK_BUILTIN_TEMPO_POD", raising=False)
+    if helm:
+        monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes")
+        monkeypatch.setenv("GPUSTACK_BUILTIN_TEMPO_POD", "gpustack-server-0")
+        monkeypatch.setenv("GPUSTACK_SERVER_ID", "gpustack-server-0")
+    cfg = Config(data_dir=str(tmp_path / "data"), gateway_mode="disabled")
+
+    assert prerun.prepare_builtin_tempo(cfg)
+
+    config = yaml.safe_load((run_dir / "tempo" / "config.yaml").read_text())
+    assert config["compactor"]["compaction"]["block_retention"] == expected
+    assert (env_name in caplog.text) is bool(value and value != expected)
+
+
 def test_disable_tracing_environment_skips_tempo_service_and_ports(
     tmp_path, monkeypatch
 ):

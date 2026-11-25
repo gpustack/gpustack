@@ -1,6 +1,7 @@
 import os
 import sys
 import argparse
+from decimal import Decimal, ROUND_DOWN
 from glob import escape as escape_glob
 import json
 import logging
@@ -52,6 +53,19 @@ ALLOY_LOG_TEMPLATE = Path("/etc/gpustack/logging/docker.alloy.tmpl")
 _DOCKER_MOUNTINFO = Path("/proc/self/mountinfo")
 _DOCKER_CONTAINER_MOUNT = re.compile(r"/containers/([0-9a-f]{64})/[^/]+$")
 _HIGRESS_TRACING_FILTER = "gpustack-otel-tracing"
+_TEMPO_DURATION_PART = re.compile(
+    r"([0-9]+(?:\.[0-9]*)?|\.[0-9]+)(ns|us|µs|μs|ms|s|m|h)"
+)
+_TEMPO_DURATION_UNITS = {
+    "ns": 1,
+    "us": 1_000,
+    "µs": 1_000,
+    "μs": 1_000,
+    "ms": 1_000_000,
+    "s": 1_000_000_000,
+    "m": 60_000_000_000,
+    "h": 3_600_000_000_000,
+}
 
 
 def setup_prerun_cmd(subparsers: argparse._SubParsersAction):
@@ -527,6 +541,21 @@ def _is_helm_tempo_pod(cfg: Config) -> bool:
     return bool(pod and pod == cfg.server_id and not cfg.disable_tracing)
 
 
+def _valid_tempo_retention(retention: str) -> bool:
+    # Go durations support compound units and truncate each part to nanoseconds.
+    duration = retention.removeprefix("+")
+    parts = list(_TEMPO_DURATION_PART.finditer(duration))
+    if "".join(part[0] for part in parts) != duration:
+        return False
+    nanoseconds = sum(
+        (Decimal(part[1]) * _TEMPO_DURATION_UNITS[part[2]]).to_integral_value(
+            rounding=ROUND_DOWN
+        )
+        for part in parts
+    )
+    return 0 < nanoseconds < 2**63
+
+
 def prepare_builtin_tempo(cfg: Config) -> bool:
     """Write the configuration consumed by the supervised Tempo service."""
     helm_tempo = _is_helm_tempo_pod(cfg)
@@ -535,7 +564,16 @@ def prepare_builtin_tempo(cfg: Config) -> bool:
 
     path = Path(os.getenv("GPUSTACK_RUN_DIR") or "/run/gpustack") / "tempo/config.yaml"
     data = Path(cfg.data_dir) / "tempo"
-    retention = os.getenv("GPUSTACK_BUILTIN_TEMPO_RETENTION") or "168h"
+    retention_env = "GPUSTACK_BUILTIN_TEMPO_RETENTION"
+    default_retention = "168h"
+    retention = os.getenv(retention_env) or default_retention
+    if not _valid_tempo_retention(retention):
+        retention = default_retention
+        logger.warning(
+            "Invalid %s. Using %s for embedded Tempo retention.",
+            retention_env,
+            retention,
+        )
     max_bytes_env = "GPUSTACK_BUILTIN_TEMPO_MAX_RETAINED_BYTES"
     default_max_bytes = 30_000_000_000
     try:

@@ -86,6 +86,19 @@ kubectl get ingressclass higress
 
 If you need to customize Higress parameters, refer to the [Higress documentation](https://higress.cn/en/docs/latest/ops/deploy-by-helm).
 
+### Observability
+
+When log export is enabled, Alloy stores Kubernetes log read positions in an
+`emptyDir`. Replacing the Alloy Pod, including during a rollout or reschedule,
+can replay logs that Kubernetes still retains.
+
+For built-in Tempo query mTLS, a live Helm upgrade reuses the generated Secret.
+Offline rendering creates fresh certificates because it cannot read the Secret
+from the cluster. For GitOps, create a Secret with `ca.crt`, `server.crt`,
+`server.key`, `client.crt`, and `client.key`, then set
+`tracing.tempo.queryTLSSecretName`. To renew certificates, sign them with the
+same CA, create a new Secret, and update the Helm value to roll the Server Pods.
+
 ### GPUStack Helm Chart Parameters
 
 | Parameter                                | Default                           | Description                                                               |
@@ -113,7 +126,7 @@ If you need to customize Higress parameters, refer to the [Higress documentation
 | server.externalDatabaseURL               | null                              | External database connection string                                       |
 | server.dataVolume.hostPath               | null                              | Host path for data volume; if set, uses hostPath instead of PVC           |
 | server.dataVolume.size                   | `100Gi`                           | PVC storage request per Server replica. An explicit empty value falls back to `10Gi`. |
-| tracing.tempo.retention                  | `168h`                            | Maximum age of searchable blocks in built-in Tempo                        |
+| tracing.tempo.retention                  | `168h`                            | Maximum age of searchable blocks in built-in Tempo. Use a positive Go duration such as `72h`. Invalid values fall back to `168h`. |
 | tracing.tempo.maxRetainedBytes           | `30000000000`                     | Total capacity of searchable blocks in built-in Tempo, in bytes. Tempo evicts the oldest blocks when this limit is exceeded, even if they have not expired. |
 | tracing.tempo.queryTLSSecretName          | `""`                              | Existing built-in Tempo query mTLS Secret for a multi-replica Server release. |
 | server.apiPort                           | 30080                             | API service port                                                          |

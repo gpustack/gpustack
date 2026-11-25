@@ -1,3 +1,5 @@
+import base64
+import json
 from types import SimpleNamespace
 import ssl
 import time
@@ -295,6 +297,47 @@ def test_cursor_pins_24_hour_window(trace_client, monkeypatch):
         assert query.await_args.kwargs["position"] == first
     assert client.get(url, params={"cursor": "invalid"}).status_code == 400
     assert query.await_count == 2
+
+
+def test_dense_trace_cursor_fits_an_8_kib_request_line(trace_client, monkeypatch):
+    client, _, cfg = trace_client
+    cfg.effective_trace_otlp_endpoint = "tempo:4317"
+    cfg.get_trace_query_url.return_value = "http://tempo:3200"
+    client.app.state.http_client_no_proxy = object()
+    query = AsyncMock(return_value=request_traces.RequestTracePage(items=[]))
+    monkeypatch.setattr(request_traces, "search_request_trace_page", query)
+
+    before = int(time.time())
+    position = request_traces.TracePagePosition(
+        start=before - 300,
+        end=before,
+        before=before,
+        seen=["a" * 30 + f"{index:02x}" for index in range(239)] + ["f"],
+        partial="b" * 32,
+        offset=7,
+    )
+    url = "/models/42/request-traces"
+    response = client.get(url, params={"cursor": position.encode()})
+    assert response.status_code == 200
+    assert len(b"GET " + response.request.url.raw_path + b" HTTP/1.1\r\n") < 8192
+    assert query.await_args.kwargs["position"] == position
+
+    legacy = base64.urlsafe_b64encode(json.dumps(position.model_dump()).encode())
+    assert client.get(url, params={"cursor": legacy.decode()}).status_code == 200
+    assert query.await_args.kwargs["position"] == position
+
+
+@pytest.mark.parametrize("seen", ["!!!!", "YQ==", "A" * 5152])
+def test_trace_cursor_rejects_invalid_packed_ids(trace_client, seen):
+    client, _, _ = trace_client
+    before = int(time.time())
+    payload = {"start": before - 300, "end": before, "before": before, "seen": seen}
+    cursor = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
+
+    assert (
+        client.get("/models/42/request-traces", params={"cursor": cursor}).status_code
+        == 400
+    )
 
 
 @pytest.mark.parametrize("view", ["page", "detail"])
