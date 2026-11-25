@@ -369,12 +369,56 @@ imagePullSecrets:
 {{- end }}
 {{- end -}}
 
+{{- define "gpustack.tempoName" -}}
+{{- printf "%s-tempo" .Release.Name -}}
+{{- end -}}
+
+{{- define "gpustack.tempoHost" -}}
+{{- printf "%s.%s.svc.%s" (include "gpustack.tempoName" .) .Release.Namespace .Values.clusterDomain -}}
+{{- end -}}
+
+{{/* Keep a single Tempo instance on the first Server Pod's data volume. */}}
+{{- define "gpustack.tempoPodName" -}}
+{{- if and .Values.tracing.enabled .Values.server.enabled (not .Values.tracing.endpoint) -}}
+{{- printf "%s-server-0" .Release.Name -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "gpustack.tempoQueryTLS" -}}
+{{- if and (include "gpustack.tempoPodName" .) (gt (int (.Values.server.replicas | default 1)) 1) -}}
+true
+{{- end -}}
+{{- end -}}
+
+{{- define "gpustack.tempoQueryTLSSecretName" -}}
+{{- .Values.tracing.tempo.queryTLSSecretName | default (printf "%s-tempo-query-tls" .Release.Name) -}}
+{{- end -}}
+
+{{- define "gpustack.tracingEndpoint" -}}
+{{- if .Values.tracing.enabled -}}
+{{- if .Values.tracing.endpoint -}}
+{{- .Values.tracing.endpoint -}}
+{{- else if .Values.server.enabled -}}
+{{- printf "%s:4317" (include "gpustack.tempoHost" .) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "gpustack.observabilityEnv" -}}
 {{- with .Values.logging.endpoint }}
 - name: GPUSTACK_LOG_OTLP_ENDPOINT
   value: {{ . | quote }}
 - name: GPUSTACK_LOG_POD_RELEASE
   value: {{ $.Release.Name | quote }}
+{{- end }}
+{{- if not .Values.tracing.enabled }}
+- name: GPUSTACK_DISABLE_TRACING
+  value: "true"
+{{- else }}
+{{- with (include "gpustack.tracingEndpoint" .) }}
+- name: GPUSTACK_TRACE_OTLP_ENDPOINT
+  value: {{ . | quote }}
+{{- end }}
 {{- end }}
 {{- end }}
 

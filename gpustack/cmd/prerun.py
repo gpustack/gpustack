@@ -40,6 +40,7 @@ from gpustack.utils.s6_services import (
     migration_services,
     observability_services,
     log_collection_services,
+    trace_storage_services,
     all_services,
     gpustack_service_name,
 )
@@ -79,6 +80,7 @@ def run(args: argparse.Namespace):
         enabled_services = determine_enabled_services(
             cfg,
             logs_active=prepare_log_collection(cfg),
+            tempo_active=prepare_builtin_tempo(cfg),
         )
         # migrate hardcode postgres data dir if needed for determining dependency services
         migrate_hardcode_postgres_data_and_password(cfg, enabled_services)
@@ -137,6 +139,9 @@ def ports_for_services(cfg: Config) -> Dict[int, str]:
     if not gateway_disabled:
         ports[cfg.api_port] = gpustack_service_name
 
+    if cfg.use_builtin_tempo() or _is_helm_tempo_pod(cfg):
+        trace_storage_services.set_ports(cfg, ports)
+
     return ports
 
 
@@ -144,10 +149,11 @@ def check_ports_availability(cfg: Config, *services: str):
     # Implement port availability checks here
     all_services = list(services) + [gpustack_service_name]
     ports = ports_for_services(cfg)
+    # Tempo's longrun waits for occupied ports without blocking the Server.
     ports_to_check = {
         port: service
         for port, service in ports.items()
-        if not all_services or service in all_services
+        if service in all_services and service not in trace_storage_services.services
     }
     should_fail = False
     for port, service in ports_to_check.items():
@@ -500,6 +506,96 @@ def prepare_log_collection(cfg: Config) -> bool:
     return True
 
 
+def _is_helm_tempo_pod(cfg: Config) -> bool:
+    pod = os.getenv("GPUSTACK_BUILTIN_TEMPO_POD")
+    return bool(pod and pod == cfg.server_id and not cfg.disable_tracing)
+
+
+def prepare_builtin_tempo(cfg: Config) -> bool:
+    """Write the configuration consumed by the supervised Tempo service."""
+    helm_tempo = _is_helm_tempo_pod(cfg)
+    if not helm_tempo and not cfg.use_builtin_tempo():
+        return False
+
+    path = Path(os.getenv("GPUSTACK_RUN_DIR") or "/run/gpustack") / "tempo/config.yaml"
+    data = Path(cfg.data_dir) / "tempo"
+    retention = os.getenv("GPUSTACK_BUILTIN_TEMPO_RETENTION") or "168h"
+    max_bytes_env = "GPUSTACK_BUILTIN_TEMPO_MAX_RETAINED_BYTES"
+    default_max_bytes = 30_000_000_000
+    try:
+        max_retained_bytes = int(os.getenv(max_bytes_env, str(default_max_bytes)))
+    except ValueError:
+        max_retained_bytes = 0
+    if not 0 < max_retained_bytes < 2**64:
+        max_retained_bytes = default_max_bytes
+        logger.warning(
+            "Invalid %s. Using %d bytes for embedded Tempo retention.",
+            max_bytes_env,
+            max_retained_bytes,
+        )
+    loopback = "127.0.0.1"
+    server = {
+        "http_listen_address": loopback,
+        "http_listen_port": cfg.builtin_tempo_http_port,
+        "grpc_listen_address": loopback,
+        "grpc_listen_port": cfg.builtin_tempo_grpc_port,
+    }
+    if helm_tempo and cfg.builtin_tempo_tls_dir:
+        tls_dir = Path(cfg.builtin_tempo_tls_dir)
+        server.update(
+            http_listen_address="0.0.0.0",
+            http_tls_config={
+                "cert_file": str(tls_dir / "server.crt"),
+                "key_file": str(tls_dir / "server.key"),
+                "client_ca_file": str(tls_dir / "ca.crt"),
+                "client_auth_type": "RequireAndVerifyClientCert",
+            },
+        )
+    try:
+        _write_yaml_atomically(
+            path,
+            {
+                "target": "all",
+                "server": server,
+                "distributor": {
+                    "receivers": {
+                        "otlp": {
+                            "protocols": {
+                                "grpc": {
+                                    "endpoint": f"0.0.0.0:{cfg.builtin_tempo_otlp_port}"
+                                },
+                            },
+                        },
+                    },
+                },
+                "ingester": {
+                    "lifecycler": {"address": loopback},
+                    "flush_all_on_shutdown": True,
+                },
+                "memberlist": {"bind_addr": [loopback], "bind_port": 0},
+                "storage": {
+                    "trace": {
+                        "backend": "local",
+                        "blocklist_poll": "1m",
+                        "wal": {"path": str(data / "wal")},
+                        "local": {"path": str(data / "blocks")},
+                    },
+                },
+                "compactor": {
+                    "compaction": {
+                        "block_retention": retention,
+                        "max_retained_bytes": max_retained_bytes,
+                    }
+                },
+                "usage_report": {"reporting_enabled": False},
+            },
+        )
+    except OSError as exc:
+        logger.warning("Unable to configure embedded Tempo: %s", exc)
+        return False
+    return True
+
+
 def prepare_observability_config(cfg: Config):
     env_config_path = prepare_env("GPUSTACK_OBSERVABILITY_CONFIG", "observability")
     with open(env_config_path, "w") as f:
@@ -630,7 +726,9 @@ datasources:
     )
 
 
-def determine_enabled_services(cfg: Config, logs_active: bool = False) -> List[str]:
+def determine_enabled_services(
+    cfg: Config, logs_active: bool = False, tempo_active: bool = False
+) -> List[str]:
     services = []
     # embedded database
     if cfg.database_url is None and cfg.server_role() in [
@@ -648,6 +746,8 @@ def determine_enabled_services(cfg: Config, logs_active: bool = False) -> List[s
         services.extend(observability_services.all_services())
     if logs_active:
         services.extend(log_collection_services.all_services())
+    if tempo_active:
+        services.extend(trace_storage_services.all_services())
 
     return services
 

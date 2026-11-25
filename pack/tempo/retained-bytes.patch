@@ -1,0 +1,148 @@
+--- a/tempodb/config.go
++++ b/tempodb/config.go
+@@ -134,0 +135 @@
++	MaxRetainedBytes        uint64        `yaml:"max_retained_bytes"`
+--- a/tempodb/tempodb.go
++++ b/tempodb/tempodb.go
+@@ -146,3 +146,4 @@
+-	r backend.Reader
+-	w backend.Writer
+-	c backend.Compactor
++	retentionMu sync.Mutex // Serializes local capacity eviction with compaction.
++	r           backend.Reader
++	w           backend.Writer
++	c           backend.Compactor
+--- a/tempodb/compactor.go
++++ b/tempodb/compactor.go
+@@ -242,0 +243,4 @@
++	if compactorCfg.MaxRetainedBytes > 0 && rw.cfg.Backend == backend.Local {
++		rw.retentionMu.Lock()
++		defer rw.retentionMu.Unlock()
++	}
+--- a/tempodb/retention.go
++++ b/tempodb/retention.go
+@@ -4,0 +5,3 @@
++	"os"
++	"path/filepath"
++	"sort"
+@@ -76,0 +80,5 @@
++	limit := compactorCfg.MaxRetainedBytes
++	if limit > 0 && rw.cfg.Backend == backend.Local {
++		rw.retentionMu.Lock()
++		defer rw.retentionMu.Unlock()
++	}
+@@ -77,0 +86,18 @@
++	var sizes map[backend.UUID]uint64
++	var retained uint64
++	if limit > 0 && rw.cfg.Backend == backend.Local {
++		var err error
++		sizes, retained, err = localBlockSizes(rw.cfg.Local.Path, tenantID, blocklist)
++		if err != nil {
++			metricRetentionErrors.Inc()
++			level.Error(rw.logger).Log("msg", "unable to measure retained blocks", "tenantID", tenantID, "err", err)
++		}
++		blocklist = append([]*backend.BlockMeta(nil), blocklist...)
++		sort.Slice(blocklist, func(i, j int) bool {
++			a, b := blocklist[i], blocklist[j]
++			if a.EndTime.Equal(b.EndTime) {
++				return a.BlockID.String() < b.BlockID.String()
++			}
++			return a.EndTime.Before(b.EndTime)
++		})
++	}
+@@ -83 +109 @@
+-			if b.EndTime.Before(cutoff) && compactorSharder.Owns(b.BlockID.String()) {
++			if (b.EndTime.Before(cutoff) || retained > limit) && compactorSharder.Owns(b.BlockID.String()) {
+@@ -89,0 +116 @@
++					retained -= sizes[b.BlockID]
+@@ -126,0 +154,31 @@
++
++// localBlockSizes counts the files in searchable blocks, including their indexes
++// and bloom filters. WAL and compacted blocks have separate lifecycles.
++func localBlockSizes(root, tenant string, blocks []*backend.BlockMeta) (map[backend.UUID]uint64, uint64, error) {
++	sizes := make(map[backend.UUID]uint64, len(blocks))
++	var total uint64
++	for _, block := range blocks {
++		files, err := os.ReadDir(filepath.Join(root, tenant, block.BlockID.String()))
++		if os.IsNotExist(err) {
++			continue
++		}
++		if err != nil {
++			return nil, 0, err
++		}
++		for _, file := range files {
++			if !file.Type().IsRegular() {
++				continue
++			}
++			info, err := file.Info()
++			if os.IsNotExist(err) {
++				continue
++			}
++			if err != nil {
++				return nil, 0, err
++			}
++			sizes[block.BlockID] += uint64(info.Size())
++		}
++		total += sizes[block.BlockID]
++	}
++	return sizes, total, nil
++}
+--- a/tempodb/retention_test.go
++++ b/tempodb/retention_test.go
+@@ -383,0 +384,56 @@
++
++func TestRetentionCapsLocalStorage(t *testing.T) {
++	tempDir := t.TempDir()
++	store := path.Join(tempDir, "traces")
++	r, w, c, err := New(&Config{
++		Backend: backend.Local,
++		Local:   &local.Config{Path: store},
++		Block: &common.BlockConfig{
++			BloomFP: 0.01, BloomShardSizeBytes: 100_000,
++			IndexDownsampleBytes: 17, IndexPageSizeBytes: 1000,
++			Version: encoding.DefaultEncoding().Version(),
++		},
++		WAL: &wal.Config{Filepath: path.Join(tempDir, "wal")},
++	}, nil, log.NewNopLogger())
++	require.NoError(t, err)
++	ctx := context.Background()
++	cfg := &CompactorConfig{
++		MaxCompactionRange: time.Hour, BlockRetention: 7 * 24 * time.Hour,
++		CompactedBlockRetention: time.Hour, RetentionConcurrency: 1,
++	}
++	require.NoError(t, c.EnableCompaction(ctx, cfg, &mockSharder{}, &mockOverrides{}))
++	want := make([]*backend.BlockMeta, 0, 4)
++	for i, age := range []time.Duration{8 * 24 * time.Hour, 3 * time.Hour, 2 * time.Hour, time.Hour} {
++		meta := &backend.BlockMeta{BlockID: backend.NewUUID(), TenantID: testTenantID}
++		head, err := w.WAL().NewBlock(meta, model.CurrentEncoding)
++		require.NoError(t, err)
++		complete, err := w.CompleteBlock(ctx, head)
++		require.NoError(t, err)
++		meta = complete.BlockMeta()
++		meta.StartTime = time.Now().Add(-age)
++		meta.EndTime = meta.StartTime.Add(time.Minute)
++		// Make the oldest unexpired block larger so one eviction is sufficient.
++		if i == 1 {
++			require.NoError(t, os.WriteFile(path.Join(store, testTenantID, meta.BlockID.String(), "bloom-extra"), make([]byte, 131072), 0o600))
++		}
++		want = append(want, meta)
++	}
++	rw := r.(*readerWriter)
++	rw.blocklist.Update(testTenantID, want, nil, nil, nil)
++	_, cfg.MaxRetainedBytes, err = localBlockSizes(store, testTenantID, want[2:])
++	require.NoError(t, err)
++	rw.doRetention(ctx)
++	require.Equal(t, want[2:], rw.blocklist.Metas(testTenantID))
++	require.Len(t, rw.blocklist.CompactedMetas(testTenantID), 2)
++	_, bytes, err := localBlockSizes(store, testTenantID, rw.blocklist.Metas(testTenantID))
++	require.NoError(t, err)
++	require.LessOrEqual(t, bytes, cfg.MaxRetainedBytes)
++
++	cfg.CompactedBlockRetention = 0
++	rw.doRetention(ctx)
++	require.Empty(t, rw.blocklist.CompactedMetas(testTenantID))
++	for _, evicted := range want[:2] {
++		_, err := os.Stat(path.Join(store, testTenantID, evicted.BlockID.String()))
++		require.ErrorIs(t, err, os.ErrNotExist)
++	}
++}

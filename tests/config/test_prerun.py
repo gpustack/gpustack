@@ -1,3 +1,4 @@
+import argparse
 from pathlib import Path
 import json
 import re
@@ -37,6 +38,226 @@ def test_prepare_s6_overlay_cleans_dependency_only_services(tmp_path):
 
     assert (user_contents / "postgres").exists()
     assert not (user_contents / "gpustack-migration").exists()
+
+
+def test_builtin_tempo_config_and_service(tmp_path, monkeypatch):
+    run_dir = tmp_path / "run"
+    monkeypatch.setenv("GPUSTACK_RUN_DIR", str(run_dir))
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+    monkeypatch.delenv("GPUSTACK_BUILTIN_TEMPO_MAX_RETAINED_BYTES", raising=False)
+    cfg = Config(
+        data_dir=str(tmp_path / "data"),
+        gateway_mode="disabled",
+        disable_builtin_observability=True,
+        builtin_tempo_otlp_port=13417,
+        builtin_tempo_http_port=13200,
+    )
+    s6_base = tmp_path / "s6-rc.d"
+    service = s6_base / "user" / "contents.d" / "tempo"
+    active = prerun.prepare_builtin_tempo(cfg)
+    services = prerun.determine_enabled_services(cfg, tempo_active=active)
+    prepare_s6_overlay(services, [], s6_base)
+
+    config = yaml.safe_load((run_dir / "tempo" / "config.yaml").read_text())
+    assert service.exists()
+    assert "tempo" not in prerun.determine_dependency_services(cfg)
+    assert "grafana" not in services
+    assert config["server"] == {
+        "http_listen_address": "127.0.0.1",
+        "http_listen_port": 13200,
+        "grpc_listen_address": "127.0.0.1",
+        "grpc_listen_port": 9095,
+    }
+    receiver = config["distributor"]["receivers"]["otlp"]["protocols"]
+    assert receiver == {"grpc": {"endpoint": "0.0.0.0:13417"}}
+    assert config["storage"]["trace"] == {
+        "backend": "local",
+        "blocklist_poll": "1m",
+        "wal": {"path": str(tmp_path / "data" / "tempo" / "wal")},
+        "local": {"path": str(tmp_path / "data" / "tempo" / "blocks")},
+    }
+    assert config["compactor"]["compaction"] == {
+        "block_retention": "168h",
+        "max_retained_bytes": 30_000_000_000,
+    }
+    assert config["ingester"]["flush_all_on_shutdown"] is True
+    assert {
+        port
+        for port, service_name in prerun.ports_for_services(cfg).items()
+        if service_name == "tempo"
+    } == {13417, 13200, 9095}
+    with pytest.raises(Exception, match="Port conflict: 9095"):
+        prerun.ports_for_services(cfg.model_copy(update={"port": 9095}))
+
+    monkeypatch.setattr(prerun, "is_port_available", lambda port: port != 13417)
+    monkeypatch.setattr(prerun, "is_port_reusable", lambda port: False)
+    check_ports_availability(cfg, *services)
+    assert service.exists()
+    assert cfg.effective_trace_otlp_endpoint.endswith(":13417")
+
+    external = cfg.model_copy(update={"trace_otlp_endpoint": "collector:4317"})
+    active = prerun.prepare_builtin_tempo(external)
+    services = prerun.determine_enabled_services(external, tempo_active=active)
+    prepare_s6_overlay(services, [], s6_base)
+    assert not service.exists()
+    assert "tempo" not in prerun.ports_for_services(external).values()
+
+
+@pytest.mark.parametrize("run_dir", [None, ""])
+def test_helm_tempo_uses_default_run_dir(tmp_path, monkeypatch, run_dir):
+    if run_dir is None:
+        monkeypatch.delenv("GPUSTACK_RUN_DIR", raising=False)
+    else:
+        monkeypatch.setenv("GPUSTACK_RUN_DIR", run_dir)
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes")
+    monkeypatch.setenv("GPUSTACK_BUILTIN_TEMPO_POD", "gpustack-server-0")
+    cfg = Config(
+        data_dir=str(tmp_path / "data"),
+        gateway_mode="disabled",
+        server_id="gpustack-server-0",
+        trace_otlp_endpoint="gpustack-tempo:4317",
+    )
+    paths = []
+    monkeypatch.setattr(
+        prerun, "_write_yaml_atomically", lambda path, _content: paths.append(path)
+    )
+
+    assert prerun.prepare_builtin_tempo(cfg)
+    assert paths == [Path("/run/gpustack/tempo/config.yaml")]
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("12000000000", 12_000_000_000),
+        ("30 GB", 30_000_000_000),
+        ("0", 30_000_000_000),
+        ("-1", 30_000_000_000),
+        (str(2**64), 30_000_000_000),
+    ],
+)
+def test_builtin_tempo_max_retained_bytes(
+    tmp_path, monkeypatch, caplog, value, expected
+):
+    run_dir = tmp_path / "run"
+    env_name = "GPUSTACK_BUILTIN_TEMPO_MAX_RETAINED_BYTES"
+    monkeypatch.setenv("GPUSTACK_RUN_DIR", str(run_dir))
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+    monkeypatch.setenv(env_name, value)
+    cfg = Config(data_dir=str(tmp_path / "data"), gateway_mode="disabled")
+
+    assert prerun.prepare_builtin_tempo(cfg)
+
+    config = yaml.safe_load((run_dir / "tempo" / "config.yaml").read_text())
+    assert config["compactor"]["compaction"]["max_retained_bytes"] == expected
+    assert (env_name in caplog.text) is (value != str(expected))
+
+
+def test_disable_tracing_environment_skips_tempo_service_and_ports(
+    tmp_path, monkeypatch
+):
+    run_dir = tmp_path / "run"
+    monkeypatch.setenv("GPUSTACK_RUN_DIR", str(run_dir))
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+    monkeypatch.setenv("GPUSTACK_DISABLE_TRACING", "true")
+    cfg = Config(data_dir=str(tmp_path / "data"), gateway_mode="disabled")
+
+    assert not prerun.prepare_builtin_tempo(cfg)
+    assert not (run_dir / "tempo").exists()
+    assert "tempo" not in prerun.ports_for_services(cfg).values()
+    assert cfg.effective_trace_otlp_endpoint is None
+
+
+def test_tempo_config_write_failure_skips_service_without_aborting_prerun(
+    tmp_path, monkeypatch, caplog
+):
+    monkeypatch.setenv("GPUSTACK_RUN_DIR", str(tmp_path / "run"))
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+    cfg = Config(
+        data_dir=str(tmp_path / "data"),
+        database_url="postgresql://user:pass@database.example/db",
+        gateway_mode="disabled",
+        disable_builtin_observability=True,
+    )
+    s6_base = tmp_path / "s6-rc.d"
+    prepare_s6_overlay(["tempo"], [], s6_base)
+    monkeypatch.setattr(prerun, "parse_args", lambda args: cfg)
+    monkeypatch.setattr(prerun, "is_port_available", lambda port: True)
+
+    def fail_to_write(path, content):
+        raise PermissionError("Tempo config is not writable")
+
+    monkeypatch.setattr(prerun, "_write_yaml_atomically", fail_to_write)
+
+    prerun.run(argparse.Namespace(s6_base_path=str(s6_base)))
+
+    assert "Unable to configure embedded Tempo" in caplog.text
+    assert not (s6_base / "user" / "contents.d" / "tempo").exists()
+
+
+@pytest.mark.parametrize(
+    "server_id,disable_tracing,expected",
+    [
+        ("gpustack-server-0", False, True),
+        ("gpustack-server-1", False, False),
+        ("gpustack-server-0", True, False),
+    ],
+)
+@pytest.mark.parametrize("tls", [False, True])
+def test_helm_tempo_uses_the_selected_servers_data_dir(
+    tmp_path, monkeypatch, server_id, disable_tracing, expected, tls
+):
+    run_dir = tmp_path / "run"
+    data_dir = tmp_path / "server-data"
+    monkeypatch.setenv("GPUSTACK_RUN_DIR", str(run_dir))
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes")
+    monkeypatch.setenv("GPUSTACK_SERVER_ID", server_id)
+    monkeypatch.setenv("GPUSTACK_BUILTIN_TEMPO_POD", "gpustack-server-0")
+    monkeypatch.setenv("GPUSTACK_BUILTIN_TEMPO_RETENTION", "12h")
+    monkeypatch.setenv("GPUSTACK_BUILTIN_TEMPO_MAX_RETAINED_BYTES", "12000000000")
+    tls_dir = tmp_path / "tempo-tls"
+    if tls:
+        monkeypatch.setenv("GPUSTACK_BUILTIN_TEMPO_TLS_DIR", str(tls_dir))
+    endpoint = "gpustack-tempo.inference.svc.cluster.local:4317"
+    cfg = Config(
+        data_dir=str(data_dir),
+        gateway_mode="disabled",
+        trace_otlp_endpoint=endpoint,
+        disable_tracing=disable_tracing,
+    )
+
+    active = prerun.prepare_builtin_tempo(cfg)
+    services = prerun.determine_enabled_services(cfg, tempo_active=active)
+    assert active is expected
+    assert ("tempo" in services) is expected
+    assert (prerun.ports_for_services(cfg).get(4317) == "tempo") is expected
+    assert "tempo" not in prerun.determine_dependency_services(cfg)
+    assert cfg.effective_trace_otlp_endpoint == (None if disable_tracing else endpoint)
+    config_path = run_dir / "tempo" / "config.yaml"
+    assert config_path.exists() is expected
+    if expected:
+        config = yaml.safe_load(config_path.read_text())
+        if tls:
+            assert config["server"]["http_listen_address"] == "0.0.0.0"
+            assert config["server"]["http_tls_config"] == {
+                "cert_file": str(tls_dir / "server.crt"),
+                "key_file": str(tls_dir / "server.key"),
+                "client_ca_file": str(tls_dir / "ca.crt"),
+                "client_auth_type": "RequireAndVerifyClientCert",
+            }
+        else:
+            assert config["server"]["http_listen_address"] == "127.0.0.1"
+            assert "http_tls_config" not in config["server"]
+        assert config["storage"]["trace"] == {
+            "backend": "local",
+            "blocklist_poll": "1m",
+            "wal": {"path": str(data_dir / "tempo" / "wal")},
+            "local": {"path": str(data_dir / "tempo" / "blocks")},
+        }
+        assert config["compactor"]["compaction"] == {
+            "block_retention": "12h",
+            "max_retained_bytes": 12_000_000_000,
+        }
 
 
 def _one_gpustack_port(monkeypatch):

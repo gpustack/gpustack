@@ -356,10 +356,27 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
 
     # Observability settings
     common_group.add_argument(
+        "--disable-tracing",
+        action=OptionalBoolAction,
+        help="Disable GPUStack-managed trace export and embedded Tempo.",
+        default=get_gpustack_env_bool("DISABLE_TRACING"),
+    )
+    common_group.add_argument(
+        "--trace-otlp-endpoint",
+        type=str,
+        help="OTLP/gRPC host:port for exporting traces to an external receiver. Overrides embedded Tempo when set.",
+        default=get_gpustack_env("TRACE_OTLP_ENDPOINT"),
+    )
+    common_group.add_argument(
         "--log-otlp-endpoint",
         type=str,
         help="Full OTLP/HTTP logs URL (e.g. http://<collector-host>:4318/v1/logs) to enable structured log collection and export.",
         default=get_gpustack_env("LOG_OTLP_ENDPOINT"),
+    )
+    server_group.add_argument(
+        "--trace-query-url",
+        help="Tempo HTTP base URL for deployment request tracing.",
+        default=get_gpustack_env("TRACE_QUERY_URL"),
     )
     server_group.add_argument(
         "--disable-builtin-observability",
@@ -955,6 +972,8 @@ def set_common_options(args, config_data: dict):
         "trusted_proxy_cidrs",
         "service_discovery_name",
         "namespace",
+        "disable_tracing",
+        "trace_otlp_endpoint",
         "log_otlp_endpoint",
     ]
 
@@ -1030,6 +1049,7 @@ def set_server_options(args, config_data: dict):
         "builtin_grafana_port",
         "prometheus_url",
         "grafana_url",
+        "trace_query_url",
         "grafana_worker_dashboard_uid",
         "grafana_model_dashboard_uid",
     ]

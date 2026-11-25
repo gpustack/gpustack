@@ -1,0 +1,4 @@
+#!/bin/sh
+
+# Tempo can exit successfully after a listener fails to bind.
+sleep 5

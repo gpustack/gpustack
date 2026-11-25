@@ -1,9 +1,10 @@
 import logging
 import math
 import random
+import re
 import secrets
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
-from urllib.parse import unquote, urlencode
+from urllib.parse import unquote, urlencode, urlsplit
 
 import aiohttp
 from fastapi import APIRouter, Depends, Request, Response, Query
@@ -98,6 +99,7 @@ from gpustack.k8s.bootstrap import render_bootstrap
 from gpustack.k8s.chart import chart_available
 from gpustack.k8s.manifest_template import TemplateConfig
 from gpustack.config.config import (
+    Config,
     get_global_config,
     get_cluster_image_name,
     has_custom_container_namespace,
@@ -1198,6 +1200,27 @@ async def create_worker_pool(
         raise InternalServerErrorException(message=f"Failed to create worker pool: {e}")
 
 
+def _worker_trace_endpoint(cfg: Optional[Config], server_url: str) -> Optional[str]:
+    if cfg is None or not (endpoint := cfg.effective_trace_otlp_endpoint):
+        return None
+    if cfg.trace_advertise_endpoint:
+        return cfg.trace_advertise_endpoint
+    if not cfg.use_builtin_tempo():
+        return endpoint
+
+    # Docker registration commands leave the server container's network.
+    # Use the worker-facing server address with the separate OTLP port.
+    try:
+        host = urlsplit(server_url).hostname
+    except ValueError:
+        return None
+    if not host or not re.fullmatch(r"[a-zA-Z0-9._:-]+", host):
+        return None
+    if ":" in host:
+        host = f"[{host}]"
+    return f"{host}:{cfg.builtin_tempo_otlp_port}"
+
+
 def get_registration_from_cluster(
     request: Request, cluster: Cluster
 ) -> ClusterRegistrationTokenPublic:
@@ -1208,6 +1231,9 @@ def get_registration_from_cluster(
     server_url = get_server_url(request, cluster.server_url)
     env = parse_base_model_to_env_vars(sensitive_registration)
     global_config = get_global_config()
+    trace_endpoint = _worker_trace_endpoint(global_config, server_url)
+    if trace_endpoint:
+        env["GPUSTACK_TRACE_OTLP_ENDPOINT"] = trace_endpoint
     is_server_configured_endpoint = cluster.server_url is None or bool(
         global_config
         and global_config.server_external_url

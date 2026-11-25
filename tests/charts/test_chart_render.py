@@ -175,6 +175,139 @@ def container_env(docs: list[dict], kind: str, name: str) -> dict[str, str]:
     pytest.fail(f"{kind}/{name} not rendered")
 
 
+@pytest.mark.parametrize("host_path", [None, "/srv/gpustack"])
+def test_bundled_tempo_runs_with_the_server_data_volume(host_path, tmp_path):
+    values = tmp_path / "tempo-values.yaml"
+    values.write_text("tracing:\n  tempo:\n    maxRetainedBytes: 12000000000\n")
+    docs = render(
+        "--namespace",
+        "inference",
+        "--values",
+        str(values),
+        "--set",
+        "server.replicas=2,tracing.tempo.retention=12h,"
+        "tracing.advertiseEndpoint=trace.example:4317",
+        "--set-string",
+        "server.externalDatabaseURL=postgresql://user:pass@database.example/db",
+        "--set-string",
+        f"server.dataVolume.hostPath={host_path or ''}",
+    )
+    tempo = [doc for doc in docs if doc["metadata"]["name"] == "gpustack-tempo"]
+    (service,) = tempo
+    assert service["kind"] == "Service"
+    assert service["spec"]["type"] == "ClusterIP"
+    assert service["spec"]["selector"] == {
+        "statefulset.kubernetes.io/pod-name": "gpustack-server-0"
+    }
+    assert [
+        (port["name"], port["port"], port["targetPort"])
+        for port in service["spec"]["ports"]
+    ] == [("otlp-grpc", 4317, 4317), ("https", 3200, 3200)]
+    secret = next(
+        doc
+        for doc in docs
+        if doc["kind"] == "Secret"
+        and doc["metadata"]["name"] == "gpustack-tempo-query-tls"
+    )
+    assert secret["metadata"]["namespace"] == "inference"
+    assert set(secret["data"]) == {
+        "ca.crt",
+        "server.crt",
+        "server.key",
+        "client.crt",
+        "client.key",
+    }
+    server_workload = next(
+        doc
+        for doc in docs
+        if doc["metadata"]["name"] == "gpustack-server" and doc["kind"] == "StatefulSet"
+    )
+    assert server_workload["spec"]["replicas"] == 2
+    pod = server_workload["spec"]["template"]["spec"]
+    (server_container,) = pod["containers"]
+    assert {"mountPath": "/var/lib/gpustack", "name": "gpustack-data-dir"} in (
+        server_container["volumeMounts"]
+    )
+    tls_dir = "/etc/gpustack/tempo-query-tls"
+    assert {"mountPath": tls_dir, "name": "tempo-query-tls", "readOnly": True} in (
+        server_container["volumeMounts"]
+    )
+    if host_path:
+        assert {
+            "name": "gpustack-data-dir",
+            "hostPath": {"path": host_path, "type": "DirectoryOrCreate"},
+        } in pod["volumes"]
+        assert "volumeClaimTemplates" not in server_workload["spec"]
+    else:
+        (claim,) = server_workload["spec"]["volumeClaimTemplates"]
+        assert claim["metadata"]["name"] == "gpustack-data-dir"
+    server = container_env(docs, "StatefulSet", "gpustack-server")
+    assert server["GPUSTACK_BUILTIN_TEMPO_POD"] == "gpustack-server-0"
+    assert server["GPUSTACK_BUILTIN_TEMPO_RETENTION"] == "12h"
+    assert server["GPUSTACK_BUILTIN_TEMPO_MAX_RETAINED_BYTES"] == "12000000000"
+    assert server["GPUSTACK_TRACE_ADVERTISE_ENDPOINT"] == "trace.example:4317"
+    assert server["GPUSTACK_TRACE_OTLP_ENDPOINT"] == (
+        "gpustack-tempo.inference.svc.cluster.local:4317"
+    )
+    assert server["GPUSTACK_TRACE_QUERY_URL"] == (
+        "https://gpustack-tempo.inference.svc.cluster.local:3200"
+    )
+    assert server["GPUSTACK_TRACE_QUERY_TLS_DIR"] == tls_dir
+    assert server["GPUSTACK_BUILTIN_TEMPO_TLS_DIR"] == tls_dir
+
+
+def test_bundled_tempo_can_mount_a_stable_query_tls_secret():
+    def render_tls(name):
+        docs = render(
+            "--namespace",
+            "inference",
+            "--set",
+            "server.replicas=2",
+            "--set-string",
+            "server.externalDatabaseURL=postgresql://database.example/db",
+            "--set-string",
+            f"tracing.tempo.queryTLSSecretName={name}",
+        )
+        assert not any(
+            doc["metadata"]["name"].startswith("gpustack-tempo")
+            for doc in docs
+            if doc["kind"] == "Secret"
+        )
+        template = next(
+            doc["spec"]["template"]
+            for doc in docs
+            if doc["kind"] == "StatefulSet"
+            and doc["metadata"]["name"] == "gpustack-server"
+        )
+        volume = next(
+            v for v in template["spec"]["volumes"] if v["name"] == "tempo-query-tls"
+        )
+        assert volume["secret"]["secretName"] == name
+        env = container_env(docs, "StatefulSet", "gpustack-server")
+        assert (
+            env["GPUSTACK_TRACE_QUERY_URL"]
+            == "https://gpustack-tempo.inference.svc.cluster.local:3200"
+        )
+        return template
+
+    first = render_tls("tempo-tls-v1")
+    assert render_tls("tempo-tls-v1") == first
+    assert render_tls("tempo-tls-v2") != first
+
+
+def test_external_query_url_does_not_use_the_bundled_tempo_client_credentials():
+    docs = render(
+        "--set",
+        "server.replicas=2,tracing.queryURL=https://tempo.example",
+        "--set-string",
+        "server.externalDatabaseURL=postgresql://user:pass@database.example/db",
+    )
+    server = container_env(docs, "StatefulSet", "gpustack-server")
+    assert server["GPUSTACK_TRACE_QUERY_URL"] == "https://tempo.example"
+    assert "GPUSTACK_TRACE_QUERY_TLS_DIR" not in server
+    assert "GPUSTACK_BUILTIN_TEMPO_TLS_DIR" in server
+
+
 @pytest.mark.parametrize("auth_secret", ["", "logs-auth"])
 def test_logging_references_existing_secrets(auth_secret):
     docs = render(
@@ -366,6 +499,13 @@ def test_higress_logs_keep_existing_gateway_pod_layout(setting, containers):
     )
 
 
+def test_worker_only_without_a_trace_endpoint_has_no_tempo():
+    docs = render(*WORKER_ONLY, *SERVER_AND_TOKEN)
+    worker = container_env(docs, "DaemonSet", "gpustack-worker")
+    assert "GPUSTACK_TRACE_OTLP_ENDPOINT" not in worker
+    assert "gpustack-tempo" not in names(docs, "Service")
+
+
 @pytest.mark.parametrize(
     "settings,message",
     [
@@ -374,6 +514,13 @@ def test_higress_logs_keep_existing_gateway_pod_layout(setting, containers):
             "require an HTTPS",
         ),
         ("logging.endpoint=https://user:password@logs/v1/logs", "without credentials"),
+        ("tracing.endpoint=https://collector:4317", "OTLP/gRPC host:port"),
+        ("tracing.endpoint=collector:65536", "OTLP/gRPC host:port"),
+        ("tracing.advertiseEndpoint=collector:0", "tracing.advertiseEndpoint"),
+        (
+            "tracing.endpoint=collector:4317,higress-core.global.enableIstioAPI=false",
+            "global.enableIstioAPI",
+        ),
     ],
 )
 def test_invalid_telemetry_settings_are_rejected(settings, message):

@@ -112,6 +112,20 @@ def worker_daemonset(docs: List[dict]) -> dict:
     pytest.fail("the gpustack-worker DaemonSet was not rendered")
 
 
+def test_trace_endpoint_from_registration_reaches_worker():
+    endpoint = "tempo.monitoring.svc.cluster.local:4317"
+    values = build_chart_values(config(env={"GPUSTACK_TRACE_OTLP_ENDPOINT": endpoint}))
+    assert values["tracing"]["endpoint"] == endpoint
+    docs = render(values)
+    pod = worker_daemonset(docs)["spec"]["template"]["spec"]
+    worker = next(c for c in pod["containers"] if c["name"] == "gpustack-worker")
+    assert any(
+        item["name"] == "GPUSTACK_TRACE_OTLP_ENDPOINT" and item["value"] == endpoint
+        for item in worker["env"]
+    )
+    assert not any(doc["metadata"]["name"].endswith("-tempo") for doc in docs)
+
+
 class TestSplitImageReference:
     @pytest.mark.parametrize(
         "reference,expected",

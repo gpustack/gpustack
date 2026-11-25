@@ -102,6 +102,22 @@ logging:
   caSecret:
     name: ""
     key: ca.crt
+tracing:
+  enabled: true
+  # External OTLP/gRPC host:port. Takes precedence over built-in Tempo.
+  # A worker-only release needs a supplied endpoint to export traces.
+  endpoint: ""
+  # Tempo HTTP base URL for the request trace UI when using an external receiver.
+  queryURL: ""
+  # Optional OTLP/gRPC address handed out by the server in Worker registration
+  # commands. Set this when the ingest endpoint uses DNS local to the cluster.
+  advertiseEndpoint: ""
+  tempo:
+    retention: 168h
+    # Capacity limit for searchable blocks in bytes.
+    maxRetainedBytes: 30000000000
+    # Optional existing mTLS Secret for built-in Tempo queries in HA releases.
+    queryTLSSecretName: ""
 server:
   # Deploy the GPUStack server (control plane) from this release.
   #

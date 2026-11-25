@@ -62,3 +62,16 @@ supplying a username and password asks for.
 {{- end }}
 {{- end }}
 {{- end }}
+{{- if .Values.tracing.enabled }}
+{{- range $field, $endpoint := dict "endpoint" .Values.tracing.endpoint "advertiseEndpoint" .Values.tracing.advertiseEndpoint }}
+{{- if $endpoint }}
+{{- $port := last (splitList ":" $endpoint) | atoi }}
+{{- if or (not (regexMatch "^(\\[[0-9a-fA-F:.]+\\]|[a-zA-Z0-9_.-]+):[0-9]{1,5}$" $endpoint)) (lt $port 1) (gt $port 65535) }}
+{{- fail (printf "tracing.%s must be an OTLP/gRPC host:port address." $field) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if and .Values.tracing.endpoint .Values.server.enabled (index .Values "higress-core" "enabled") (not (index .Values "higress-core" "global" "enableIstioAPI")) }}
+{{- fail "tracing.endpoint requires higress-core.global.enableIstioAPI for the bundled gateway." }}
+{{- end }}
+{{- end }}

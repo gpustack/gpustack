@@ -1,0 +1,45 @@
+{{- with (include "gpustack.tempoPodName" .) }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gpustack.tempoName" $ }}
+  namespace: {{ $.Release.Namespace }}
+spec:
+  type: ClusterIP
+  selector:
+    statefulset.kubernetes.io/pod-name: {{ . | quote }}
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+    {{- if include "gpustack.tempoQueryTLS" $ }}
+    - name: https
+      port: 3200
+      targetPort: 3200
+    {{- end }}
+{{- end }}
+{{- if and (include "gpustack.tempoQueryTLS" .) (not .Values.tracing.tempo.queryTLSSecretName) }}
+---
+{{- $name := include "gpustack.tempoQueryTLSSecretName" . }}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace $name }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+data:
+  {{- if $existing }}
+  {{- toYaml $existing.data | nindent 2 }}
+  {{- else }}
+  {{- $host := include "gpustack.tempoHost" . }}
+  {{- $ca := genCA $name 3650 }}
+  {{- $server := genSignedCert $host nil (list $host) 3650 $ca }}
+  {{- $client := genSignedCert (printf "%s-server" .Release.Name) nil nil 3650 $ca }}
+  ca.crt: {{ $ca.Cert | b64enc }}
+  server.crt: {{ $server.Cert | b64enc }}
+  server.key: {{ $server.Key | b64enc }}
+  client.crt: {{ $client.Cert | b64enc }}
+  client.key: {{ $client.Key | b64enc }}
+  {{- end }}
+{{- end }}

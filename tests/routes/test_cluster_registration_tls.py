@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from gpustack import envs
+from gpustack.config.config import Config
 from gpustack.routes import clusters
 from gpustack.schemas.clusters import SensitiveRegistrationConfig
 from gpustack.schemas.config import (
@@ -26,6 +27,7 @@ def _registration(server_url, ssl_ca_certfile=None, ssl_certfile=None):
         server_external_url=server_url,
         ssl_ca_certfile=ssl_ca_certfile,
         ssl_certfile=ssl_certfile,
+        effective_trace_otlp_endpoint=None,
     )
     return request, cluster, config
 
@@ -147,3 +149,58 @@ def test_registration_env_var_name_matches_the_runtime_reader():
         SensitiveRegistrationConfig(token="token", insecure_tls=True)
     )
     assert env[envs.INSECURE_TLS_ENV] == "true"
+
+
+@pytest.mark.parametrize(
+    "server_url,docker,options,expected",
+    [
+        ("http://server:30080", True, {}, "server:4317"),
+        ("http://[2001:db8::1]:30080", True, {}, "[2001:db8::1]:4317"),
+        (
+            "http://server:30080",
+            True,
+            {"trace_advertise_endpoint": "remote-tempo:14431"},
+            "remote-tempo:14431",
+        ),
+        (
+            "http://server:30080",
+            True,
+            {"trace_otlp_endpoint": "collector:4317"},
+            "collector:4317",
+        ),
+        (
+            "http://server:30080",
+            False,
+            {"trace_otlp_endpoint": "gpustack-tempo.test.svc.cluster.local:4317"},
+            "gpustack-tempo.test.svc.cluster.local:4317",
+        ),
+        (
+            "http://server:30080",
+            True,
+            {
+                "disable_tracing": True,
+                "trace_otlp_endpoint": "collector:4317",
+                "trace_advertise_endpoint": "remote-tempo:14431",
+            },
+            None,
+        ),
+        ("http://server$(example):30080", True, {}, None),
+        ("http://server:30080", False, {}, None),
+    ],
+)
+def test_registration_trace_endpoint(
+    monkeypatch, tmp_path, server_url, docker, options, expected
+):
+    monkeypatch.delenv("GPUSTACK_RUN_DIR", raising=False)
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+    if docker:
+        monkeypatch.setenv("GPUSTACK_RUN_DIR", str(tmp_path / "run"))
+    request, cluster, _ = _registration(server_url)
+    cluster.server_url = server_url
+    config = Config(data_dir=str(tmp_path), advertise_address="172.19.0.2", **options)
+    monkeypatch.setattr(clusters, "get_global_config", lambda: config)
+    monkeypatch.setattr(clusters, "get_cluster_image_name", lambda *_: "image")
+
+    registration = clusters.get_registration_from_cluster(request, cluster)
+
+    assert registration.env.get("GPUSTACK_TRACE_OTLP_ENDPOINT") == expected
