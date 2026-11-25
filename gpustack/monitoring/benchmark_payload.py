@@ -18,6 +18,7 @@ from gpustack.server.db import async_session
 
 DEFAULT_MAX_ARCHIVE_BYTES = 256 * 1024 * 1024
 ARCHIVE_FORMAT_VERSION = 1
+_TERMINAL_RETRY_AT = 32503680000.0  # Year 3000 sentinel for disabled retries (MySQL DOUBLE compatible)
 
 
 class BenchmarkPayloadError(RuntimeError):
@@ -281,7 +282,7 @@ class BenchmarkPayloadStore:
             record.last_error = code
             record.lease_owner, record.lease_until = None, 0
             if retry_seconds is None:
-                record.retry_at = float('inf')
+                record.retry_at = _TERMINAL_RETRY_AT
                 if lease.finalize_requested_at is not None:
                     record.sealed = True
             else:
@@ -347,11 +348,11 @@ class BenchmarkPayloadStore:
         now = await database_now(session)
         if not _available(record, now) or record.run_id != run_id:
             return False
+        if record.last_error == 'archive_scope_budget_exceeded':
+            return False
         if record.repair_requested:
             return True
         if not record.sealed and not record.last_error:
-            return False
-        if record.last_error == 'archive_scope_budget_exceeded':
             return False
         record.repair_requested = record.sealed
         if not record.sealed:

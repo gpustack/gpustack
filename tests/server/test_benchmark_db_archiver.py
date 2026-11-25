@@ -340,3 +340,5 @@ async def test_archive_scope_budget_exceeded_rejects_repair(monkeypatch):
     session = SimpleNamespace()
     eligible = await store.request_repair(session, 1, 'run-1')
     assert eligible is False
+    record.repair_requested = True
+    assert await store.request_repair(session, 1, 'run-1') is False
