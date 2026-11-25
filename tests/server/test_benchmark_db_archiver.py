@@ -327,9 +327,15 @@ async def test_archive_scope_budget_exceeded_rejects_repair(monkeypatch):
     async def mock_database_now(session):
         return 1000.0
 
-    monkeypatch.setattr('gpustack.monitoring.benchmark_payload.locked_payload', mock_locked_payload)
-    monkeypatch.setattr('gpustack.monitoring.benchmark_payload.database_now', mock_database_now)
-    monkeypatch.setattr('gpustack.monitoring.benchmark_payload._available', lambda rec, now: True)
+    monkeypatch.setattr(
+        'gpustack.monitoring.benchmark_payload.locked_payload', mock_locked_payload
+    )
+    monkeypatch.setattr(
+        'gpustack.monitoring.benchmark_payload.database_now', mock_database_now
+    )
+    monkeypatch.setattr(
+        'gpustack.monitoring.benchmark_payload._available', lambda rec, now: True
+    )
 
     session = SimpleNamespace()
     eligible = await store.request_repair(session, 1, 'run-1')

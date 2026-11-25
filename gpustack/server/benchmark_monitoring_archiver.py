@@ -779,9 +779,9 @@ class BenchmarkMonitoringArchiver:
                 _mark_empty_roles(key, response, history)
                 outputs[key] = response
         if not summary_only:
-            outputs[f'{scope}/resources/all/aggregate'] = (
-                await collectors.collect_benchmark_resource_metrics(history, **options)
-            )
+            outputs[
+                f'{scope}/resources/all/aggregate'
+            ] = await collectors.collect_benchmark_resource_metrics(history, **options)
         return outputs
 
     @staticmethod

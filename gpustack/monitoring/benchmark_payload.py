@@ -266,7 +266,9 @@ class BenchmarkPayloadStore:
             record.retry_at = now + retry_seconds
             return True
 
-    async def fail(self, lease, reason: str, *, retry_seconds: float | None = 60) -> bool:
+    async def fail(
+        self, lease, reason: str, *, retry_seconds: float | None = 60
+    ) -> bool:
         """Record a writer failure without replacing data or unsealing an archive."""
         async with self.sessions() as session, session.begin():
             record = await locked_payload(session, lease.benchmark_id)
