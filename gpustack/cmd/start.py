@@ -908,6 +908,7 @@ def run_server(cfg: Config):
 
 
 def run_worker(cfg: Config):
+    # Spawned workers initialize process-local tracing before allocating state.
     start_tracemalloc_if_enabled()
     setup_application_logging(cfg, "worker")
     set_global_config(cfg)

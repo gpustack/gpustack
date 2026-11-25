@@ -11,6 +11,7 @@ that decides whether a non-2xx raises -- runs for real.
 """
 
 import asyncio
+import logging
 from types import SimpleNamespace
 from typing import Optional
 from unittest.mock import AsyncMock, MagicMock
@@ -18,7 +19,9 @@ from unittest.mock import AsyncMock, MagicMock
 import aiohttp
 import pytest
 from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
+from gpustack.api.auth import get_current_user
 from gpustack.api.exceptions import (
     GatewayTimeoutException,
     ServiceUnavailableException,
@@ -29,8 +32,9 @@ from gpustack.api.middlewares import (
     RequestTimeMiddleware,
 )
 from gpustack.routes import openai as openai_route
-from gpustack.server.deps import get_current_user
+from gpustack.schemas.config import GatewayModeEnum
 from gpustack.server import worker_request
+from gpustack.server.app import create_app
 from gpustack.server.services import RouteTargetResolution
 from tests.utils.mock import mock_async_session
 
@@ -127,6 +131,75 @@ def _patch_http_session(request, monkeypatch, *, response=None, error=None):
     )
     request.app.state.http_client = session
     request.app.state.http_client_no_proxy = session
+
+
+@pytest.mark.parametrize("status_code", [200, 400, None])
+@pytest.mark.parametrize("stream", [False, True])
+def test_native_request_id_matches_worker_and_access_log(
+    config, monkeypatch, caplog, status_code, stream
+):
+    app = create_app(
+        config.model_copy(update={"gateway_mode": GatewayModeEnum.disabled})
+    )
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1)
+    _stub_pipeline(monkeypatch)
+    returned_headers = {"x-gpustack-request-id": "upstream-id"}
+    body = b'data: [DONE]\n\n' if stream and status_code == 200 else b'{"id":"engine"}'
+    outbound = {}
+    error = (
+        aiohttp.ClientConnectionError("connection refused")
+        if status_code is None
+        else None
+    )
+    _patch_http_session(
+        SimpleNamespace(app=app),
+        monkeypatch,
+        response=_FakeWorkerResponse(status_code, body, headers=returned_headers),
+        error=error,
+    )
+
+    if stream:
+
+        async def stream_to_worker(**kwargs):
+            outbound.update(kwargs["headers"])
+            if error is not None:
+                raise error
+            yield body, returned_headers, status_code
+
+        monkeypatch.setattr(openai_route, "stream_to_worker", stream_to_worker)
+
+    with caplog.at_level(logging.INFO, logger="gpustack.inference.access"):
+        response = TestClient(app).post(
+            "/v1/chat/completions",
+            json={"model": "qwen3", "stream": stream},
+            headers={
+                "X-Request-Id": "client-id",
+                "X-GPUStack-Request-Id": "client-platform-id",
+            },
+        )
+    if not stream:
+        outbound.update(app.state.http_client.request.await_args.kwargs["headers"])
+
+    expected_status = status_code if status_code is not None else 503
+    assert response.status_code == expected_status
+    if error is None:
+        assert response.content == body
+    else:
+        assert response.json()["error"]["code"] == expected_status
+    (request_id,) = response.headers.get_list("X-GPUStack-Request-Id")
+    assert request_id not in {"client-id", "client-platform-id", "upstream-id"}
+    assert outbound["x-request-id"] == request_id
+    assert "x-gpustack-request-id" not in outbound
+    (record,) = (
+        record
+        for record in caplog.records
+        if record.name == "gpustack.inference.access"
+    )
+    assert record.request_id == request_id
+    assert record.model_route_id == 3
+    assert record.model_instance_id == 11
+    assert record.worker_id == 1
+    assert record.response_code == expected_status
 
 
 async def _proxy(monkeypatch, *, status_code=None, body=b"", error=None, headers=None):

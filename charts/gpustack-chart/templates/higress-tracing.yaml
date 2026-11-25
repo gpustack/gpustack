@@ -1,0 +1,122 @@
+{{- $endpoint := include "gpustack.tracingEndpoint" . }}
+{{- if and .Values.server.enabled (index .Values "higress-core" "enabled") (index .Values "higress-core" "global" "enableIstioAPI") (or $endpoint .Values.logging.endpoint) }}
+{{- $gateway := index .Subcharts "higress-core" }}
+{{- $selector := include "gateway.selectorLabels" $gateway | fromYaml }}
+{{- if not $selector }}
+{{- fail "The bundled Higress gateway needs a workload selector for observability." }}
+{{- end }}
+{{- $port := last (splitList ":" $endpoint) }}
+{{- $host := trimAll "[]" (trimSuffix (printf ":%s" $port) $endpoint) }}
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: gpustack-otel-tracing
+  namespace: {{ .Release.Namespace }}
+  labels:
+{{ include "chart_labels" . | indent 4 }}
+spec:
+  workloadSelector:
+    labels:
+{{ toYaml $selector | indent 6 }}
+  configPatches:
+    {{- if $endpoint }}
+    - applyTo: CLUSTER
+      match:
+        context: GATEWAY
+      patch:
+        operation: ADD
+        value:
+          name: gpustack-otlp-traces
+          {{- if or (contains ":" $host) (regexMatch "^([0-9]{1,3}\\.){3}[0-9]{1,3}$" $host) }}
+          type: STATIC
+          {{- else }}
+          type: STRICT_DNS
+          dns_lookup_family: V4_PREFERRED
+          {{- end }}
+          connect_timeout: 1s
+          load_assignment:
+            cluster_name: gpustack-otlp-traces
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address:
+                          address: {{ $host | quote }}
+                          port_value: {{ atoi $port }}
+          typed_extension_protocol_options:
+            envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+              '@type': type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+              explicit_http_config:
+                http2_protocol_options: {}
+    {{- end }}
+    - applyTo: NETWORK_FILTER
+      match:
+        context: GATEWAY
+        listener:
+          filterChain:
+            filter:
+              name: envoy.filters.network.http_connection_manager
+      patch:
+        operation: MERGE
+        value:
+          name: envoy.filters.network.http_connection_manager
+          typed_config:
+            '@type': type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+            {{- if $endpoint }}
+            tracing:
+              random_sampling:
+                value: 100
+              max_path_tag_length: 0
+              custom_tags:
+                - tag: gpustack.request_id
+                  request_header:
+                    name: x-request-id
+              provider:
+                name: envoy.tracers.opentelemetry
+                typed_config:
+                  '@type': type.googleapis.com/envoy.config.trace.v3.OpenTelemetryConfig
+                  service_name: gpustack.higress
+                  grpc_service:
+                    envoy_grpc:
+                      cluster_name: gpustack-otlp-traces
+                    timeout: 3s
+            {{- end }}
+            local_reply_config:
+              mappers:
+                - filter:
+                    not_health_check_filter: {}
+                  headers_to_add:
+                    - header:
+                        key: x-gpustack-request-id
+                        value: '%REQ(X-REQUEST-ID)%'
+                      append_action: ADD_IF_ABSENT
+    {{- if $endpoint }}
+    - applyTo: HTTP_FILTER
+      match:
+        context: GATEWAY
+        listener:
+          filterChain:
+            filter:
+              name: envoy.filters.network.http_connection_manager
+              subFilter:
+                name: envoy.filters.http.router
+      patch:
+        operation: MERGE
+        value:
+          name: envoy.filters.http.router
+          typed_config:
+            '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+            start_child_span: true
+    {{- end }}
+    - applyTo: ROUTE_CONFIGURATION
+      match:
+        context: GATEWAY
+      patch:
+        operation: MERGE
+        value:
+          response_headers_to_add:
+            - header:
+                key: x-gpustack-request-id
+                value: '%REQ(X-REQUEST-ID)%'
+              append_action: ADD_IF_ABSENT
+{{- end }}

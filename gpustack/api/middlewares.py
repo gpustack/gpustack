@@ -3,11 +3,21 @@ import functools
 import json
 import logging
 import time
-from typing import Type, Union
+from typing import Set, Type, Union
+from uuid import uuid4
 from fastapi import Request, Response, status
-from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
+from fastapi.responses import (
+    FileResponse,
+    StreamingResponse,
+    JSONResponse,
+    PlainTextResponse,
+)
 from jwt import DecodeError, ExpiredSignatureError
+from starlette._utils import get_route_path
+from starlette.datastructures import MutableHeaders
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import ClientDisconnect
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
 from openai.types import CompletionUsage
 from openai.types.audio.transcription_create_response import (
@@ -17,6 +27,12 @@ from openai.types.create_embedding_response import (
     Usage as EmbeddingUsage,
 )
 from gpustack.api.exceptions import ErrorResponse, request_error_log_path
+from gpustack.observability.tracing import (
+    current_inference_span,
+    set_http_status,
+    trace_inference_http,
+    trace_log_fields,
+)
 from gpustack.routes.rerank import RerankResponse, RerankUsage
 from gpustack.schemas.images import ImageGenerationChunk, ImagesResponse
 from gpustack.schemas.model_usage import OperationEnum
@@ -33,8 +49,89 @@ from gpustack.server.metrics_collector import (
 )
 from gpustack.api.types.openai_ext import CreateEmbeddingResponseExt, CompletionExt
 
-
 logger = logging.getLogger(__name__)
+inference_access_logger = logging.getLogger("gpustack.inference.access")
+
+GPUSTACK_REQUEST_ID_HEADER = "X-GPUStack-Request-Id"
+
+
+class InferenceAccessMiddleware:
+    """Assign a request ID before authentication and log the response lifecycle."""
+
+    def __init__(self, app: ASGIApp, paths: Set[str]):
+        self.app = app
+        self.paths = paths
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or scope["method"] != "POST":
+            await self.app(scope, receive, send)
+            return
+        path = get_route_path(scope)
+        if path not in self.paths:
+            await self.app(scope, receive, send)
+            return
+
+        request_id = str(uuid4())
+        headers = MutableHeaders(scope=scope)
+        headers["X-Request-Id"] = request_id
+        del headers[GPUSTACK_REQUEST_ID_HEADER]
+        access = {"request_id": request_id, "method": "POST", "path": path}
+        scope.setdefault("state", {})["inference_access"] = access
+        start = time.monotonic()
+
+        async def send_with_request_id(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                access["response_code"] = message["status"]
+                MutableHeaders(scope=message)[GPUSTACK_REQUEST_ID_HEADER] = request_id
+            await send(message)
+
+        async def record_access(scope: Scope, receive: Receive, send: Send) -> None:
+            try:
+                await self.app(scope, receive, send)
+            except ClientDisconnect:
+                raise
+            except Exception:
+                if "response_code" not in access:
+                    access["response_code"] = status.HTTP_500_INTERNAL_SERVER_ERROR
+                    set_http_status(current_inference_span(), access["response_code"])
+                raise
+            finally:
+                access["duration"] = round((time.monotonic() - start) * 1000)
+                inference_access_logger.info(
+                    "POST %s %s request_id=%s",
+                    path,
+                    access.get("response_code", "-"),
+                    request_id,
+                    extra={**access, **trace_log_fields()},
+                )
+
+        tracer = getattr(scope["app"].state, "inference_tracer", None)
+        if tracer is None:
+            await record_access(scope, receive, send_with_request_id)
+        else:
+            await trace_inference_http(
+                record_access,
+                scope,
+                receive,
+                send_with_request_id,
+                tracer,
+                f"POST {path}",
+                {
+                    "http.request.method": "POST",
+                    "http.route": path,
+                    "gpustack.request_id": request_id,
+                },
+            )
+
+
+async def inference_server_error(request: Request, _exc: Exception) -> Response:
+    """Attach the request ID to the outer middleware's fallback 500."""
+    access = getattr(request.state, "inference_access", None)
+    return PlainTextResponse(
+        "Internal Server Error",
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        headers={GPUSTACK_REQUEST_ID_HEADER: access["request_id"]} if access else None,
+    )
 
 
 @functools.lru_cache(maxsize=1)
@@ -274,6 +371,11 @@ async def record_model_usage(
     # flusher uses ``completed_at`` to choose the billing period.
     now = datetime.now(timezone.utc)
     started_at = getattr(request.state, "start_time", None)
+    first_response_at = getattr(request.state, "first_token_time", None)
+    ttft_ms = None
+    if started_at is not None and first_response_at is not None:
+        ttft_ms = max(0, int((first_response_at - started_at).total_seconds() * 1000))
+    access = getattr(request.state, "inference_access", None)
     if started_at is None:
         # Falling back to ``now`` means request duration collapses to ~0,
         # which silently breaks SLO/latency analytics built off of
@@ -291,6 +393,8 @@ async def record_model_usage(
         completed=True,
         started_at=int(started_at.timestamp() * 1000),
         completed_at=int(now.timestamp() * 1000),
+        ttft_ms=ttft_ms,
+        request_id=access["request_id"] if access is not None else None,
         user_id=user.id if user is not None else None,
         model_id=model.id,
         model_route_id=getattr(request.state, "model_route_id", None),
@@ -352,11 +456,7 @@ async def process_chunk(
             continue
 
         if '"usage":' in data:
-            response_dict = None
-            try:
-                response_dict = json.loads(data.strip())
-            except Exception as e:
-                raise e
+            response_dict = json.loads(data)
             response_chunk = response_class(**response_dict)
 
             if is_usage_chunk(response_chunk):

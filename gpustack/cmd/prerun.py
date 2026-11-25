@@ -9,7 +9,7 @@ import re
 from shutil import move
 from string import Template
 from tempfile import NamedTemporaryFile
-from typing import List, Dict
+from typing import List, Dict, Optional
 from urllib.parse import urlsplit
 
 import yaml
@@ -22,6 +22,7 @@ from gpustack.gateway.client.networking_istio_io_v1alpha3_api import (
     HIGRESS_CONFIGMAP,
     HIGRESS_DEFAULT_CONFIG,
     configure_higress_access_log_context,
+    get_ingress_tracing_envoyfilter,
 )
 from gpustack.cmd.start import (
     start_cmd_options,
@@ -50,6 +51,7 @@ logger = logging.getLogger(__name__)
 ALLOY_LOG_TEMPLATE = Path("/etc/gpustack/logging/docker.alloy.tmpl")
 _DOCKER_MOUNTINFO = Path("/proc/self/mountinfo")
 _DOCKER_CONTAINER_MOUNT = re.compile(r"/containers/([0-9a-f]{64})/[^/]+$")
+_HIGRESS_TRACING_FILTER = "gpustack-otel-tracing"
 
 
 def setup_prerun_cmd(subparsers: argparse._SubParsersAction):
@@ -270,6 +272,7 @@ def prepare_gateway_config(cfg: Config):
     if cfg.gateway_mode == GatewayModeEnum.embedded:
         _prepare_higress_observability(
             higress_embedded_kubeconfig.parent / "apiserver",
+            cfg.effective_trace_otlp_endpoint,
             log_enabled=bool(cfg.log_otlp_endpoint),
         )
         with open(config_path, "w") as f:
@@ -354,15 +357,28 @@ def _supports_higress_log_collection(mesh: dict) -> bool:
     )
 
 
-def _prepare_higress_observability(apiserver_dir: Path, *, log_enabled: bool) -> None:
+def _prepare_higress_observability(
+    apiserver_dir: Path, endpoint: Optional[str], *, log_enabled: bool
+) -> None:
     """Configure the embedded gateway before the file-backed API server starts."""
     configmap_path = apiserver_dir / HIGRESS_CONFIGMAP
-    if not log_enabled and not configmap_path.exists():
-        return
+    filter_path = apiserver_dir / "envoyfilters" / f"{_HIGRESS_TRACING_FILTER}.yaml"
+    enabled = bool(endpoint) or log_enabled
+    if not enabled:
+        filter_path.unlink(missing_ok=True)
+        if not configmap_path.exists():
+            return
 
     template = yaml.safe_load((HIGRESS_DEFAULT_CONFIG / HIGRESS_CONFIGMAP).read_text())
+    if enabled:
+        resource = get_ingress_tracing_envoyfilter(
+            _HIGRESS_TRACING_FILTER, template["metadata"]["namespace"], endpoint
+        )
+        _write_yaml_atomically(
+            filter_path, resource.model_dump(mode="json", exclude_none=True)
+        )
     _set_higress_access_log_context(
-        configmap_path, template, trace_enabled=False, log_enabled=log_enabled
+        configmap_path, template, trace_enabled=bool(endpoint), log_enabled=log_enabled
     )
 
 

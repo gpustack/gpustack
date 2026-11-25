@@ -23,6 +23,9 @@ import pytest
 import yaml
 
 from gpustack import __operator_version__
+from gpustack.gateway.client.networking_istio_io_v1alpha3_api import (
+    get_ingress_tracing_envoyfilter,
+)
 
 HELM = shutil.which("helm")
 SAFE_YAML_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
@@ -173,6 +176,75 @@ def container_env(docs: list[dict], kind: str, name: str) -> dict[str, str]:
                 if "value" in e
             }
     pytest.fail(f"{kind}/{name} not rendered")
+
+
+@pytest.mark.parametrize("trace_mode", ["builtin", "external", "disabled"])
+@pytest.mark.parametrize("logs", [False, True])
+def test_observability_endpoints_reach_server_and_workers(logs, trace_mode):
+    log_endpoint = "https://logs.test:4318/v1/logs"
+    external_endpoint = "collector.monitoring.svc:4317"
+    trace_endpoint = {
+        "builtin": "gpustack-tempo.inference.svc.tenant.test:4317",
+        "external": external_endpoint,
+        "disabled": None,
+    }[trace_mode]
+    docs = render(
+        "--namespace",
+        "inference",
+        "--set",
+        "worker.enabled=true,worker.gpuVendors={nvidia,amd},clusterDomain=tenant.test",
+        "--set",
+        f"tracing.enabled={str(trace_mode != 'disabled').lower()}",
+        "--set-string",
+        f"logging.endpoint={log_endpoint if logs else ''}",
+        "--set-string",
+        f"tracing.endpoint={external_endpoint if trace_mode != 'builtin' else ''}",
+        "--set-string",
+        f"tracing.queryURL={'https://tempo.example' if trace_mode != 'builtin' else ''}",
+    )
+    for kind, name in (
+        ("StatefulSet", "gpustack-server"),
+        ("DaemonSet", "gpustack-worker"),
+        ("DaemonSet", "gpustack-worker-nvidia"),
+        ("DaemonSet", "gpustack-worker-amd"),
+    ):
+        env = container_env(docs, kind, name)
+        assert env.get("GPUSTACK_LOG_OTLP_ENDPOINT") == (log_endpoint if logs else None)
+        assert env.get("GPUSTACK_TRACE_OTLP_ENDPOINT") == trace_endpoint
+        assert env.get("GPUSTACK_DISABLE_TRACING") == (
+            "true" if trace_mode == "disabled" else None
+        )
+    server = container_env(docs, "StatefulSet", "gpustack-server")
+    assert (
+        server.get("GPUSTACK_TRACE_QUERY_URL")
+        == {
+            "builtin": "http://127.0.0.1:3200",
+            "external": "https://tempo.example",
+            "disabled": None,
+        }[trace_mode]
+    )
+    assert server.get("GPUSTACK_BUILTIN_TEMPO_POD") == (
+        "gpustack-server-0" if trace_mode == "builtin" else None
+    )
+    assert server.get("GPUSTACK_BUILTIN_TEMPO_MAX_RETAINED_BYTES") == (
+        "30000000000" if trace_mode == "builtin" else None
+    )
+    assert "GPUSTACK_BUILTIN_TEMPO_POD" not in container_env(
+        docs, "DaemonSet", "gpustack-worker"
+    )
+    assert ("gpustack-tempo" in names(docs, "Service")) is (trace_mode == "builtin")
+    assert "gpustack-tempo-query-tls" not in names(docs, "Secret")
+    if trace_mode == "builtin":
+        tempo = next(
+            resource
+            for resource in docs
+            if resource["metadata"]["name"] == "gpustack-tempo"
+        )
+        assert [port["port"] for port in tempo["spec"]["ports"]] == [4317]
+    assert "gpustack-higress-log-collector" not in names(docs, "DaemonSet")
+    assert ("gpustack-otel-tracing" in names(docs, "EnvoyFilter")) is (
+        logs or trace_mode != "disabled"
+    )
 
 
 @pytest.mark.parametrize("host_path", [None, "/srv/gpustack"])
@@ -407,6 +479,79 @@ def test_legacy_higress_log_collection_values_do_not_mount_host_logs():
             )
 
 
+@pytest.mark.parametrize("kind", ["Deployment", "DaemonSet"])
+@pytest.mark.parametrize(
+    "logs,traces", [(False, False), (False, True), (True, False), (True, True)]
+)
+def test_bundled_higress_uses_stdout_and_shared_alloy(kind, logs, traces):
+    docs = render(
+        "--namespace",
+        "inference",
+        "--set",
+        f"higress-core.gateway.kind={kind},higress-core.gateway.name=edge",
+        "--set",
+        f"tracing.enabled={str(traces).lower()}",
+        "--set-string",
+        f"logging.endpoint={'https://otel:4318/v1/logs' if logs else ''}",
+    )
+    (gateway,) = (
+        doc for doc in docs if doc["kind"] == kind and doc["metadata"]["name"] == "edge"
+    )
+    template = gateway["spec"]["template"]
+    assert [entry["name"] for entry in template["spec"]["containers"]] == [
+        "higress-gateway"
+    ]
+    labels = template["metadata"]["labels"]
+    assert labels.get("gpustack.ai/log-source") == "higress"
+    assert "gpustack.ai/log-release" not in labels
+
+    (higress_config,) = (
+        doc for doc in docs if doc["metadata"]["name"] == "higress-config"
+    )
+    mesh = yaml.safe_load(higress_config["data"]["mesh"])
+    assert mesh["accessLogFile"] == "/dev/stdout"
+    assert mesh["accessLogEncoding"] == "JSON"
+    fields = json.loads(mesh["accessLogFormat"])
+    assert fields["trace_id"] == "%REQ(X-B3-TRACEID)%"
+    assert fields["traceparent"] == "%REQ(TRACEPARENT):55%"
+    assert fields["path"] == "%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%"
+    assert fields["request_id"] == "%REQ(X-REQUEST-ID)%"
+    assert "GPUSTACK_HELM_HIGRESS_LOG_FORMAT" not in container_env(
+        docs, "StatefulSet", "gpustack-server"
+    )
+    assert "gpustack-higress-file-log" not in names(docs, "EnvoyFilter")
+    assert ("gpustack-alloy" in names(docs, "Deployment")) is logs
+    if not logs:
+        return
+    alloy = next(
+        doc
+        for doc in docs
+        if doc["kind"] == "Deployment" and doc["metadata"]["name"] == "gpustack-alloy"
+    )
+    assert alloy["spec"]["replicas"] == 1
+    assert alloy["spec"]["strategy"]["type"] == "Recreate"
+    alloy_pod = alloy["spec"]["template"]["spec"]
+    assert alloy_pod["serviceAccountName"] == "gpustack-alloy"
+    assert (
+        container_env(docs, "Deployment", "gpustack-alloy")[
+            "GPUSTACK_LOG_HIGRESS_SELECTOR"
+        ]
+        == "edge;inference-edge"
+    )
+    assert all("hostPath" not in volume for volume in alloy_pod["volumes"])
+    role = next(
+        doc
+        for doc in docs
+        if doc["kind"] == "Role" and doc["metadata"]["name"] == "gpustack-alloy"
+    )
+    assert role["metadata"]["namespace"] == "inference"
+    assert {resource for rule in role["rules"] for resource in rule["resources"]} == {
+        "pods",
+        "pods/log",
+    }
+    assert "gpustack-alloy" not in names(docs, "ClusterRole")
+
+
 def test_bundled_higress_log_format_survives_worker_values_upgrade():
     def get_mesh(docs):
         return next(
@@ -437,6 +582,25 @@ def test_existing_gateway_agent_can_disable_only_gateway_collection():
         ("DaemonSet", "gpustack-worker"),
     ):
         assert container_env(docs, kind, name)["GPUSTACK_LOG_POD_RELEASE"] == "gpustack"
+
+
+def test_bundled_higress_tracing_preserves_custom_stdout_format():
+    docs = render(
+        "--set",
+        "tracing.endpoint=otel:4317,logging.endpoint=http://otel:4318/v1/logs,"
+        "logging.higress.enabled=false,higress-core.meshConfig.accessLogEncoding=TEXT",
+        "--set-string",
+        "higress-core.meshConfig.accessLogFormat=%REQ(:METHOD)%",
+    )
+    higress_config = next(
+        doc for doc in docs if doc["metadata"]["name"] == "higress-config"
+    )
+    mesh = yaml.safe_load(higress_config["data"]["mesh"])
+    assert mesh["accessLogFormat"] == "%REQ(:METHOD)%"
+    assert mesh["accessLogEncoding"] == "TEXT"
+    assert "GPUSTACK_HELM_HIGRESS_LOG_FORMAT" not in container_env(
+        docs, "StatefulSet", "gpustack-server"
+    )
 
 
 @pytest.mark.parametrize(
@@ -499,11 +663,105 @@ def test_higress_logs_keep_existing_gateway_pod_layout(setting, containers):
     )
 
 
+@pytest.mark.parametrize(
+    "endpoint",
+    ["collector.monitoring.svc:4317", "10.32.1.2:4317", "[fd00::7]:4317", None, ""],
+)
+def test_bundled_higress_tracing_matches_embedded_settings(endpoint):
+    setting = (
+        f"tracing.endpoint={endpoint}"
+        if endpoint is not None
+        else "logging.endpoint=http://collector:4318/v1/logs"
+    )
+    docs = render(
+        "--namespace",
+        "inference",
+        "--set",
+        f"higress-core.gateway.name=edge,tracing.enabled={str(endpoint is not None).lower()}",
+        "--set-string",
+        setting,
+    )
+    effective_endpoint = (
+        "gpustack-tempo.inference.svc.cluster.local:4317"
+        if endpoint == ""
+        else endpoint
+    )
+    expected = get_ingress_tracing_envoyfilter(
+        "gpustack-otel-tracing", "inference", effective_endpoint
+    )
+    tracing = next(
+        doc
+        for doc in docs
+        if doc["kind"] == "EnvoyFilter"
+        and doc["metadata"]["name"] == "gpustack-otel-tracing"
+    )
+    assert (
+        tracing["spec"]["configPatches"]
+        == expected.model_dump(by_alias=True, mode="json", exclude_none=True)["spec"][
+            "configPatches"
+        ]
+    )
+    gateway = next(
+        doc
+        for doc in docs
+        if doc["kind"] == "Deployment" and doc["metadata"]["name"] == "edge"
+    )
+    assert (
+        tracing["spec"]["workloadSelector"]["labels"]
+        == gateway["spec"]["selector"]["matchLabels"]
+    )
+
+
+def test_existing_gateway_and_worker_only_telemetry():
+    endpoint = "collector.monitoring.svc:4317"
+    settings = (
+        "--set-string",
+        "logging.endpoint=http://collector:4318/v1/logs",
+        "--set-string",
+        f"tracing.endpoint={endpoint}",
+    )
+    docs = render(
+        "--set", "higress-core.enabled=false,gateway.namespace=gateway", *settings
+    )
+    server = container_env(docs, "StatefulSet", "gpustack-server")
+    assert server["GPUSTACK_TRACE_OTLP_ENDPOINT"] == endpoint
+    assert server["GPUSTACK_GATEWAY_NAMESPACE"] == "gateway"
+    assert "gpustack-otel-tracing" not in names(docs, "EnvoyFilter")
+    assert "GPUSTACK_LOG_HIGRESS_SELECTOR" not in container_env(
+        docs, "Deployment", "gpustack-alloy"
+    )
+    assert "gpustack-higress-file-log" not in names(docs, "EnvoyFilter")
+    assert "gpustack-higress-collector" not in names(docs, "ConfigMap")
+    assert "gpustack-tempo" not in names(docs, "Service")
+    docs = render(*WORKER_ONLY, *SERVER_AND_TOKEN, *settings)
+    assert (
+        container_env(docs, "DaemonSet", "gpustack-worker")[
+            "GPUSTACK_TRACE_OTLP_ENDPOINT"
+        ]
+        == endpoint
+    )
+    assert "gpustack-otel-tracing" not in names(docs, "EnvoyFilter")
+    assert "gpustack-higress-log-collector" not in names(docs, "DaemonSet")
+    assert "gpustack-higress-file-log" not in names(docs, "EnvoyFilter")
+    assert "gpustack-higress-collector" not in names(docs, "ConfigMap")
+    assert "gpustack-tempo" not in names(docs, "Service")
+
+
 def test_worker_only_without_a_trace_endpoint_has_no_tempo():
     docs = render(*WORKER_ONLY, *SERVER_AND_TOKEN)
     worker = container_env(docs, "DaemonSet", "gpustack-worker")
     assert "GPUSTACK_TRACE_OTLP_ENDPOINT" not in worker
     assert "gpustack-tempo" not in names(docs, "Service")
+
+
+def test_builtin_tracing_does_not_require_the_higress_istio_api():
+    docs = render("--set", "higress-core.global.enableIstioAPI=false")
+    assert "gpustack-otel-tracing" not in names(docs, "EnvoyFilter")
+    assert "gpustack-tempo" in names(docs, "Service")
+    server = container_env(docs, "StatefulSet", "gpustack-server")
+    assert server["GPUSTACK_TRACE_OTLP_ENDPOINT"] == (
+        "gpustack-tempo.default.svc.cluster.local:4317"
+    )
 
 
 @pytest.mark.parametrize(

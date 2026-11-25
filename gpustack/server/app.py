@@ -11,8 +11,10 @@ from gpustack.api import exceptions, middlewares
 from gpustack.api.auth import BearerTokenAuthenticator
 from gpustack.config.config import Config
 from gpustack import envs
+from gpustack.observability.tracing import inference_tracing
 from gpustack.routes import ui
-from gpustack.routes.routes import api_router
+from gpustack.routes.routes import api_router, inference_router
+from gpustack.schemas.config import GatewayModeEnum
 from gpustack.utils.forwarded import ForwardedHostPortMiddleware
 from gpustack.security import JWTManager
 from gpustack.gateway.utils import worker_websocket_connect_callback
@@ -31,6 +33,8 @@ logger = logging.getLogger(__name__)
 
 
 def create_app(cfg: Config) -> FastAPI:
+    native_inference = cfg.gateway_mode == GatewayModeEnum.disabled
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.server_config = cfg
@@ -42,9 +46,17 @@ def create_app(cfg: Config) -> FastAPI:
             connector=connector, trust_env=True
         )
         app.state.http_client_no_proxy = aiohttp.ClientSession(connector=connector)
-        yield
-        await app.state.http_client.close()
-        await app.state.http_client_no_proxy.close()
+        try:
+            async with inference_tracing(
+                cfg.effective_trace_otlp_endpoint if native_inference else None,
+                "server",
+            ) as tracer:
+                app.state.inference_tracer = tracer
+                yield
+        finally:
+            app.state.inference_tracer = None
+            await app.state.http_client.close()
+            await app.state.http_client_no_proxy.close()
 
     app = FastAPI(
         title="GPUStack",
@@ -76,6 +88,19 @@ def create_app(cfg: Config) -> FastAPI:
             allow_credentials=cfg.allow_credentials,
             allow_methods=cfg.allow_methods,
             allow_headers=cfg.allow_headers,
+            expose_headers=(
+                [middlewares.GPUSTACK_REQUEST_ID_HEADER] if native_inference else []
+            ),
+        )
+    if native_inference:
+        app.add_exception_handler(Exception, middlewares.inference_server_error)
+        app.add_middleware(
+            middlewares.InferenceAccessMiddleware,
+            paths={
+                route.path
+                for route in inference_router.routes
+                if "POST" in route.methods
+            },
         )
     app.include_router(api_router)
     _load_extension_plugins(app, cfg)

@@ -44,6 +44,7 @@ from gpustack.utils.network import (
 )
 from gpustack.client import ClientSet
 from gpustack.logging import set_worker_log_identity, setup_logging, uvicorn_log_config
+from gpustack.observability.tracing import inference_tracing
 from gpustack.utils.process import add_signal_handlers_in_loop
 from gpustack.utils.system_check import check_glibc_version
 from gpustack.utils.task import run_periodically_in_thread
@@ -378,12 +379,19 @@ class Worker:
                 connector=connector, trust_env=True
             )
             app.state.http_client_no_proxy = aiohttp.ClientSession(connector=connector)
-            yield
-            await app.state.http_client.close()
-            await app.state.http_client_no_proxy.close()
-            kube_session = getattr(app.state, "kube_api_session", None)
-            if kube_session is not None and not kube_session.closed:
-                await kube_session.close()
+            try:
+                async with inference_tracing(
+                    self._config.effective_trace_otlp_endpoint, "worker"
+                ) as tracer:
+                    app.state.inference_tracer = tracer
+                    yield
+            finally:
+                app.state.inference_tracer = None
+                await app.state.http_client.close()
+                await app.state.http_client_no_proxy.close()
+                kube_session = getattr(app.state, "kube_api_session", None)
+                if kube_session is not None and not kube_session.closed:
+                    await kube_session.close()
 
         app = FastAPI(
             title="GPUStack Worker",
@@ -404,6 +412,8 @@ class Worker:
             self._serve_manager.record_successful_inference
         )
         app.add_middleware(BaseHTTPMiddleware, dispatch=proxy.set_port_from_model_name)
+        if self._config.effective_trace_otlp_endpoint:
+            app.add_middleware(proxy.WorkerProxyTracingMiddleware)
         app.include_router(
             route_config.router,
             prefix=default_versioned_prefix,

@@ -15,6 +15,10 @@ from typing import (
 
 import aiohttp
 
+from gpustack.observability.tracing import (
+    set_http_status,
+    worker_request_span,
+)
 from gpustack.schemas.workers import Worker
 from gpustack.utils.network import use_proxy_env_for_url
 
@@ -104,11 +108,10 @@ async def _request_to_worker(
     url = _build_url(worker, path)
     params = _convert_params(params)
 
+    proxy_address = worker.get_proxy_address()
     use_env_proxy = use_proxy_env_for_url(url)
     client = (
-        proxy_client
-        if use_env_proxy and worker.get_proxy_address() is None
-        else no_proxy_client
+        proxy_client if use_env_proxy and proxy_address is None else no_proxy_client
     )
 
     if client is None:
@@ -122,32 +125,36 @@ async def _request_to_worker(
 
     if timeout is None:
         timeout = aiohttp.ClientTimeout(total=_TIMEOUT, sock_connect=5)
-    resp = None
-    try:
-        resp = await client.request(
-            method=method,
-            url=url,
-            params=params,
-            data=data,
-            headers=req_headers,
-            timeout=timeout,
-            proxy=worker.get_proxy_address(),
-        )
-        if resp.status >= 400 and raise_on_error:
-            error_text = await resp.text()
-            raise aiohttp.ClientError(
-                f"Worker request failed: {worker.id} {method} {url} "
-                f"status={resp.status}, error={error_text}"
+    with worker_request_span(
+        req_headers, method, worker.id, proxy_address is not None
+    ) as span:
+        resp = None
+        try:
+            resp = await client.request(
+                method=method,
+                url=url,
+                params=params,
+                data=data,
+                headers=req_headers,
+                timeout=timeout,
+                proxy=proxy_address,
             )
-        yield resp
-    except aiohttp.ClientError:
-        raise
-    except Exception as e:
-        logger.error(f"Worker request failed: {worker.id} {method} {url}: {e}")
-        raise
-    finally:
-        if resp is not None:
-            resp.close()
+            set_http_status(span, resp.status, client=True)
+            if resp.status >= 400 and raise_on_error:
+                error_text = await resp.text()
+                raise aiohttp.ClientError(
+                    f"Worker request failed: {worker.id} {method} {url} "
+                    f"status={resp.status}, error={error_text}"
+                )
+            yield resp
+        except aiohttp.ClientError:
+            raise
+        except Exception as e:
+            logger.error(f"Worker request failed: {worker.id} {method} {url}: {e}")
+            raise
+        finally:
+            if resp is not None:
+                resp.close()
 
 
 async def request_to_worker(
