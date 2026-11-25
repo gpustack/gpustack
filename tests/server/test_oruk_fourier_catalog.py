@@ -133,11 +133,13 @@ def test_oruk_fourier_2b_catalog_metadata_and_icon():
     assert spec.backend == "vLLM"
     assert spec.backend_version == "0.34.0"
     assert spec.categories == [CategoryEnum.SPEECH_TO_TEXT]
+    assert spec.meta == {"languages": ["en"]}
 
     model_create = ModelCreate(**{**spec.model_dump(), "name": "oruk-fourier-2b"})
     assert model_create.huggingface_repo_id == "oruk/oruk-fourier-2b"
     assert model_create.backend == "vLLM"
     assert model_create.backend_version == "0.34.0"
+    assert model_create.meta == {"languages": ["en"]}
 
 
 @pytest.mark.parametrize(
@@ -177,6 +179,7 @@ async def test_oruk_fourier_2b_flat_config_evaluation_and_candidate_selection(
 
     await scheduler.evaluate_pretrained_config(model)
     assert model.categories == [CategoryEnum.SPEECH_TO_TEXT]
+    assert model.meta == {"languages": ["en"]}
 
     parsed = await calculator.get_pretrained_config_with_workers(model)
     assert parsed.architectures == ["Qwen3ASRForConditionalGeneration"]
@@ -214,6 +217,7 @@ async def test_oruk_fourier_2b_flat_config_evaluation_and_candidate_selection(
     [
         ("0.33.0", False),
         ("0.34.0", True),
+        ("0.35.0", False),
     ],
 )
 async def test_oruk_fourier_2b_requires_vllm_0_34_0(available_version, expect_match):
@@ -264,6 +268,6 @@ async def test_oruk_fourier_2b_requires_vllm_0_34_0(available_version, expect_ma
     ):
         filtered, messages = await BackendFrameworkFilter(model).filter([worker])
 
-    assert (len(filtered) == 1) is expect_match
+    assert len(filtered) == (1 if expect_match else 0)
     if not expect_match:
         assert any("0.34.0" in m for m in messages)
