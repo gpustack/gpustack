@@ -36,6 +36,10 @@ docker run -d --name gpustack-worker \
 
     GPUStack kullanıcı arayüzünden hedef sürüm için güncel bir `docker run` komutu alabilirsiniz: `Clusters` sayfasında kümenin `Add Worker` adımını açın ve oluşturulan `Run command`'i kopyalayın.
 
+### Mevcut Docker Worker'larında İzlemeyi Etkinleştirme { #enable-tracing-on-existing-docker-workers }
+
+Mevcut bir Worker izleme uç noktası olmadan başlatıldıysa, kapsayıcısını yeniden oluştururken `-e GPUSTACK_TRACE_OTLP_ENDPOINT=<worker-reachable-host>:<port>` seçeneğini ekleyin. Kimliğini korumak için mevcut Worker adını ve veri birimini saklayın. Docker köprü ağı kullanan yerleşik Tempo için, Sunucunun alım portunu Worker'ların güvenilir ağından erişilebilen bir arayüzde yayımlayın. Varsayılan portlarla Sunucu kapsayıcısının Docker seçeneklerine `-p <private-server-ip>:4317:4317` ekleyin. Worker'lar farklı bir adres veya yayımlanmış port kullanıyorsa, yeni oluşturulan Worker komutlarının bu adresi kullanması için Sunucuda `GPUSTACK_TRACE_ADVERTISE_ENDPOINT` değişkenini ayarlayın.
+
 ## Kubernetes Kümesi { #kubernetes-cluster }
 
 Kubernetes kümesindeki çalışanlar, küme kaydı sırasında uygulanan bildirimlerden GPUStack Operatörü tarafından yönetilen DaemonSet'ler olarak dağıtılır. Yükseltmek için yeni sürüm için oluşturulan bildirimleri yeniden uygulayın:
@@ -46,6 +50,8 @@ Kubernetes kümesindeki çalışanlar, küme kaydı sırasında uygulanan bildir
 4. Komutu, hedef küme için `kubectl`'in kurulu olduğu ve `kubeconfig`'in yapılandırıldığı bir ortamda çalıştırın. Bu, güncellenen bildirimleri yeniden uygular ve Operatör, çalışan DaemonSets'i yeni sürüme aktarır.
 
 Çalışan bölmeleri `Ready`'e ulaştığında küme yeni sürümü çalıştırır.
+
+Yalnızca Worker içeren bir Helm sürümü için oluşturulan kayıt yapılandırmasını yeniden uygulayın veya `tracing.endpoint` değerini Worker'ların ve çıkarım kapsayıcılarının erişebileceği alıcı adresine ayarlayın. Günlük dışa aktarımını `logging.endpoint` üzerinden ayrı olarak yapılandırın. Bkz. [Helm'i Yapılandırma](../user-guide/observability.md#configure-helm).
 
 ## Bulut Sağlayıcı Kümesi { #cloud-provider-cluster }
 

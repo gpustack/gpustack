@@ -56,7 +56,7 @@ COPY pack/tempo/retained-bytes.patch /tmp/retained-bytes.patch
 RUN curl --retry 3 -fsSL "https://codeload.github.com/grafana/tempo/tar.gz/refs/tags/v${TEMPO_VERSION}" -o /tmp/tempo.tar.gz \
     && printf '%s  /tmp/tempo.tar.gz\n' "${TEMPO_SOURCE_SHA256}" | sha256sum --check \
     && tar -xzf /tmp/tempo.tar.gz --strip-components=1 \
-    && patch -p1 < /tmp/retained-bytes.patch \
+    && git apply --unidiff-zero /tmp/retained-bytes.patch \
     && CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" go build -mod=vendor -trimpath \
         -ldflags="-s -w -X main.Version=${TEMPO_VERSION}" -o /tempo ./cmd/tempo
 

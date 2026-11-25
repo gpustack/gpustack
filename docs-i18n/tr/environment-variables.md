@@ -106,6 +106,12 @@ Bir ağ geçidi eklentisinin **inside** yapılandırmasıyla sonuçlanan ayarlar
 | `GPUSTACK_HIGRESS_EXT_AUTH_TIMEOUT_MS`                | Ağ geçidi kimlik doğrulama çağrısı zaman aşımı, milisaniye cinsinden. | `gateway_plugin.gpustack-ext-auth.config.authz.timeout`    | `30000`                              | Sunucu |
 | `GPUSTACK_GATEWAY_AI_STATISTICS_PLUGIN_CONTENT_TYPES` | Belirteç kullanımı için ölçülen virgülle ayrılmış içerik türleri. | `gateway_plugin.ai-statistics.config.enable_content_types` | `application/json,text/event-stream` | Sunucu |
 
+### İz Depolama Yapılandırması { #trace-storage-configuration }
+
+| Değişken | Açıklama | Varsayılan | Şunlar için geçerlidir: |
+| --- | --- | --- | --- |
+| `GPUSTACK_BUILTIN_TEMPO_MAX_RETAINED_BYTES` | Yerleşik Tempo'da aranabilir blokların kapasitesi. Bayt cinsinden pozitif bir tam sayı belirtin. Geçersiz değerler uyarı günlüğüne yazılır ve varsayılan değer kullanılır. Bkz. [Çıkarım Günlükleri ve İzler](user-guide/observability.md#inference-logs-and-traces). | `30000000000` | Sunucu |
+
 ### Kullanım Takibi Yapılandırması { #usage-tracking-configuration }
 
 | Değişken | Açıklama | Varsayılan | Şunlar için geçerlidir: |

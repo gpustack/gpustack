@@ -106,6 +106,12 @@ GPUStack поддерживает различные переменные сре
 | `GPUSTACK_HIGRESS_EXT_AUTH_TIMEOUT_MS`                | Тайм-аут вызова аутентификации шлюза в миллисекундах. | `gateway_plugin.gpustack-ext-auth.config.authz.timeout`    | `30000`                              | Сервер |
 | `GPUSTACK_GATEWAY_AI_STATISTICS_PLUGIN_CONTENT_TYPES` | Типы контента, разделенные запятыми, с учетом использования токенов. | `gateway_plugin.ai-statistics.config.enable_content_types` | `application/json,text/event-stream` | Сервер |
 
+### Конфигурация хранилища трассировок { #trace-storage-configuration }
+
+| Переменная | Описание | По умолчанию | Применяется к |
+| --- | --- | --- | --- |
+| `GPUSTACK_BUILTIN_TEMPO_MAX_RETAINED_BYTES` | Максимальный объём доступных для поиска блоков во встроенном Tempo. Укажите положительное целое число в байтах. При недопустимом значении записывается предупреждение и используется значение по умолчанию. См. [Журналы и трассировки инференса](user-guide/observability.md#inference-logs-and-traces). | `30000000000` | Сервер |
+
 ### Конфигурация отслеживания использования { #usage-tracking-configuration }
 
 | Переменная | Описание | По умолчанию | Применяется к |

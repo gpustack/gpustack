@@ -55,6 +55,9 @@ gpustack start [OPTIONS]
 | `--trusted-proxy-cidrs` değer               | (empty)                                | Ağ geçidinin önünde dağıtılan proxy'lerin CIDR ağları (birden çok ağ için bayrağı yineleyin). İstemci IP çözümlemesi `X-Forwarded-For` listesini bu proxy'ler üzerinden sağdan sola tarar; ayarlanmadığında yalnızca ağ geçidinin kendi gözlemlediği adres kullanılır, böylece istemcinin gönderdiği yönlendirme başlıkları kaynak adresi taklit edemez. Yalnızca öndeki proxy `X-Forwarded-For` başlığını kendisi ekliyorsa alt ağı belirtin. |
 | `--service-discovery-name` değer            | (boş)                                | DNS'teki servis keşfi servisinin adı. Yalnızca servis keşfi kullanılan Kubernetes dağıtımlarında geçerlidir. |
 | `--namespace` değer                         | (boş)                                | GPUStack'in ağ geçidi yönlendirme kurallarını ve model örneklerini dağıtacağı Kubernetes ad alanı. |
+| `--disable-tracing`                         | `False`                              | GPUStack tarafından yönetilen iz dışa aktarımını ve gömülü Tempo'yu devre dışı bırakır. |
+| `--trace-otlp-endpoint` değer               | (boş)                                | İzleri harici bir alıcıya aktarmak için OTLP/gRPC `host:port` adresi. Ayarlandığında gömülü Tempo'yu geçersiz kılar. |
+| `--log-otlp-endpoint` değer                 | (boş)                                | Yapılandırılmış günlük toplama ve dışa aktarmayı etkinleştirmek için tam OTLP/HTTP günlük URL'si (ör. `http://<collector-host>:4318/v1/logs`). |
 
 ### Sunucu seçenekleri { #server-options }
 
