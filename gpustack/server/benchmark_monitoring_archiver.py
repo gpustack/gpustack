@@ -22,6 +22,7 @@ from gpustack.monitoring.benchmark_payload import (
     encode_payload,
 )
 from gpustack.monitoring.time_range import MonitoringInterval
+from gpustack.routes.benchmarks import MAX_BENCHMARK_RESULT_POINTS
 from gpustack.schemas.benchmark import Benchmark
 from gpustack.schemas.benchmark_monitoring import (
     BenchmarkModelMetrics,
@@ -43,7 +44,9 @@ logger = logging.getLogger(__name__)
 _TERMINAL = {'completed', 'stopped', 'error', 'unreachable'}
 _LEASE_SECONDS = 30
 _POLL_SECONDS = 5
-_MAX_SCOPES = 2048
+# Budget enough scopes for MAX_BENCHMARK_RESULT_POINTS (500) stages,
+# where each stage captures up to 9 scopes plus 9 for the run window.
+_MAX_SCOPES = max(2048, 9 * (1 + MAX_BENCHMARK_RESULT_POINTS))
 # Keep each range query below Prometheus' evaluation limit.
 _MAX_RANGE_POINTS = 10000
 
@@ -443,7 +446,12 @@ class BenchmarkMonitoringArchiver:
                 reason,
             )
             try:
-                await self.store.fail(lease, reason, retry_seconds=self.flush_interval)
+                retry_seconds = (
+                    None
+                    if reason == 'archive_scope_budget_exceeded'
+                    else self.flush_interval
+                )
+                await self.store.fail(lease, reason, retry_seconds=retry_seconds)
             except Exception as exc:
                 logger.warning(
                     'Benchmark monitoring failure could not be recorded for %s (%s)',

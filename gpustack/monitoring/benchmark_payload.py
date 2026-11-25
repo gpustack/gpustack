@@ -266,7 +266,7 @@ class BenchmarkPayloadStore:
             record.retry_at = now + retry_seconds
             return True
 
-    async def fail(self, lease, reason: str, *, retry_seconds: float = 60) -> bool:
+    async def fail(self, lease, reason: str, *, retry_seconds: float | None = 60) -> bool:
         """Record a writer failure without replacing data or unsealing an archive."""
         async with self.sessions() as session, session.begin():
             record = await locked_payload(session, lease.benchmark_id)
@@ -278,7 +278,12 @@ class BenchmarkPayloadStore:
             )
             record.last_error = code
             record.lease_owner, record.lease_until = None, 0
-            record.retry_at = now + retry_seconds
+            if retry_seconds is None:
+                record.retry_at = float('inf')
+                if lease.finalize_requested_at is not None:
+                    record.sealed = True
+            else:
+                record.retry_at = now + retry_seconds
             return True
 
     async def publish(
@@ -343,6 +348,8 @@ class BenchmarkPayloadStore:
         if record.repair_requested:
             return True
         if not record.sealed and not record.last_error:
+            return False
+        if record.last_error == 'archive_scope_budget_exceeded':
             return False
         record.repair_requested = record.sealed
         if not record.sealed:

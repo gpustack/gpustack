@@ -207,7 +207,8 @@ def _storage(row, ctx):
         'data_coverage': row.data_coverage,
         'capture_complete': row.capture_complete,
         'retryable': not row.repair_requested
-        and state in ('failed', 'partial', 'no_data'),
+        and state in ('failed', 'partial', 'no_data')
+        and row.last_error != 'archive_scope_budget_exceeded',
     }
 
 

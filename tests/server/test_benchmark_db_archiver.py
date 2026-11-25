@@ -270,3 +270,67 @@ def test_restricted_metric_does_not_restore_old_values():
     output = worker._merge_scope(response, previous, 1000, 1015).metrics['ttft']
     assert output.status == 'restricted'
     assert not output.series and not output.summaries
+
+
+def test_max_scopes_accommodates_max_benchmark_result_points():
+    from gpustack.routes.benchmarks import MAX_BENCHMARK_RESULT_POINTS
+
+    assert worker._MAX_SCOPES >= 9 * (1 + MAX_BENCHMARK_RESULT_POINTS)
+    # Check that 227 stages (and up to 500) fit cleanly within _MAX_SCOPES
+    assert 9 * (1 + 227) <= worker._MAX_SCOPES
+    assert 9 * (1 + 500) <= worker._MAX_SCOPES
+
+
+@pytest.mark.asyncio
+async def test_archive_scope_budget_exceeded_fails_without_infinite_retry(monkeypatch):
+    job = worker.BenchmarkMonitoringArchiver(SimpleNamespace())
+    lease = SimpleNamespace(
+        benchmark_id=1,
+        run_id='run-1',
+        worker_id='w-1',
+        fencing_token=1,
+        write_seq=0,
+        snapshot_seq=0,
+        repair_requested=False,
+        finalize_requested_at=1000,
+    )
+
+    async def mock_capture_scope_failure(_lease):
+        raise worker.BenchmarkPayloadError('archive_scope_budget_exceeded')
+
+    fail_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(job.store, 'claim', AsyncMock(return_value=lease))
+    monkeypatch.setattr(job, '_capture', mock_capture_scope_failure)
+    monkeypatch.setattr(job.store, 'fail', fail_mock)
+
+    await job._execute(1)
+
+    fail_mock.assert_awaited_once()
+    assert fail_mock.await_args.args[1] == 'archive_scope_budget_exceeded'
+    assert fail_mock.await_args.kwargs.get('retry_seconds') is None
+
+
+@pytest.mark.asyncio
+async def test_archive_scope_budget_exceeded_rejects_repair(monkeypatch):
+    store = worker.BenchmarkPayloadStore()
+    record = SimpleNamespace(
+        benchmark_id=1,
+        run_id='run-1',
+        sealed=True,
+        last_error='archive_scope_budget_exceeded',
+        repair_requested=False,
+    )
+
+    async def mock_locked_payload(session, benchmark_id):
+        return record
+
+    async def mock_database_now(session):
+        return 1000.0
+
+    monkeypatch.setattr('gpustack.monitoring.benchmark_payload.locked_payload', mock_locked_payload)
+    monkeypatch.setattr('gpustack.monitoring.benchmark_payload.database_now', mock_database_now)
+    monkeypatch.setattr('gpustack.monitoring.benchmark_payload._available', lambda rec, now: True)
+
+    session = SimpleNamespace()
+    eligible = await store.request_repair(session, 1, 'run-1')
+    assert eligible is False
