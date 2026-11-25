@@ -4,6 +4,7 @@
 from typing import Optional
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 
 from gpustack.api.exceptions import ConflictException, UnauthorizedException
@@ -24,8 +25,6 @@ class _Response:
         if self.status_code >= 400:
             # Mirror httpx's raise_for_status shape just enough for the
             # caller's except branch to match.
-            import httpx
-
             request = httpx.Request("GET", "http://example/")
             response = httpx.Response(self.status_code, request=request)
             raise httpx.HTTPStatusError("error", request=request, response=response)
@@ -75,7 +74,7 @@ _SUCCESS_WITHOUT_NS = """<?xml version="1.0" encoding="UTF-8"?>
 _FAILURE = """<?xml version="1.0" encoding="UTF-8"?>
 <cas:serviceResponse xmlns:cas="http://www.yale.edu/tp/cas">
   <cas:authenticationFailure code="INVALID_TICKET">
-    Ticket not recognised
+    Ticket ST-bad not recognised
   </cas:authenticationFailure>
 </cas:serviceResponse>
 """
@@ -92,7 +91,8 @@ _SUCCESS_WITHOUT_USER = """<?xml version="1.0" encoding="UTF-8"?>
 
 
 @pytest.mark.asyncio
-async def test_validate_cas_ticket_parses_namespaced_success():
+async def test_validate_cas_ticket_parses_namespaced_success(caplog):
+    caplog.set_level("DEBUG", logger=auth_route.__name__)
     data = await auth_route.validate_cas_ticket(
         _client(_SUCCESS_WITH_NS),
         ticket="ST-123",
@@ -102,6 +102,7 @@ async def test_validate_cas_ticket_parses_namespaced_success():
     assert data["username"] == "alice"
     assert data["displayName"] == "Alice Smith"
     assert data["email"] == "alice@example.com"
+    assert "ST-123" not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -117,17 +118,22 @@ async def test_validate_cas_ticket_parses_unnamespaced_success():
 
 
 @pytest.mark.asyncio
-async def test_validate_cas_ticket_surfaces_authentication_failure():
+@pytest.mark.parametrize(
+    "code, expected_code", [("INVALID_TICKET", "INVALID_TICKET"), ("ST-bad", "UNKNOWN")]
+)
+async def test_validate_cas_ticket_surfaces_safe_authentication_failure(
+    code, expected_code
+):
     with pytest.raises(UnauthorizedException) as exc:
         await auth_route.validate_cas_ticket(
-            _client(_FAILURE),
+            _client(_FAILURE.replace('code="INVALID_TICKET"', f'code="{code}"')),
             ticket="ST-bad",
             service="https://gpustack.example.com/auth/cas/callback",
             config=_config(),
         )
     msg = str(exc.value.message)
-    assert "INVALID_TICKET" in msg
-    assert "Ticket not recognised" in msg
+    assert expected_code in msg
+    assert "ST-bad" not in msg
 
 
 @pytest.mark.asyncio
@@ -164,6 +170,37 @@ async def test_validate_cas_ticket_surfaces_http_error():
             config=_config(),
         )
     assert "503" in str(exc.value.message)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("connect_error", [False, True])
+async def test_cas_validation_does_not_log_the_ticket_on_http_error(
+    caplog, connect_error
+):
+    ticket = "ST-regression-test"
+    client = MagicMock()
+
+    async def get(url):
+        request = httpx.Request("GET", url)
+        assert request.url.params["ticket"] == ticket
+        if connect_error:
+            raise httpx.ConnectError(f"Unable to reach {url}", request=request)
+        return httpx.Response(503, request=request)
+
+    client.get = AsyncMock(side_effect=get)
+
+    @auth_route._sso_callback_errors_to_redirect
+    async def callback():
+        await auth_route.validate_cas_ticket(
+            client, ticket, "https://gpustack.example.com/auth/cas/callback", _config()
+        )
+
+    caplog.set_level("DEBUG", logger=auth_route.__name__)
+    response = await callback()
+
+    assert response.headers["location"] == auth_route.AUTH_FAILED_LOGIN_URL
+    assert ("ConnectError" if connect_error else "503") in caplog.text
+    assert ticket not in caplog.text
 
 
 _SUCCESS_WITH_COMMENT = """<?xml version="1.0" encoding="UTF-8"?>
