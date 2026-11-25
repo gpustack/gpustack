@@ -431,6 +431,7 @@ class RefreshTokenMiddleware(BaseHTTPMiddleware):
                             httponly=True,
                             max_age=jwt_manager.expires_in_seconds,
                             expires=jwt_manager.expires_in_seconds,
+                            samesite="lax",
                             secure=request.url.scheme == "https",
                         )
             except (ExpiredSignatureError, DecodeError):
