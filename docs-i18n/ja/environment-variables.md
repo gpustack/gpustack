@@ -119,6 +119,12 @@ TLS バージョンの設定は `GPUSTACK_GATEWAY_MIRROR_INGRESS_NAME` で
 | `GPUSTACK_HIGRESS_EXT_AUTH_TIMEOUT_MS`                | ゲートウェイの認証呼び出しタイムアウト（ミリ秒）。 | `gateway_plugin.gpustack-ext-auth.config.authz.timeout`    | `30000`                              | サーバー |
 | `GPUSTACK_GATEWAY_AI_STATISTICS_PLUGIN_CONTENT_TYPES` | トークン使用量を計測するコンテンツタイプのコンマ区切り一覧。 | `gateway_plugin.ai-statistics.config.enable_content_types` | `application/json,text/event-stream` | サーバー |
 
+### トレースストレージの設定 { #trace-storage-configuration }
+
+| 変数 | 説明 | デフォルト | 適用先 |
+| --- | --- | --- | --- |
+| `GPUSTACK_BUILTIN_TEMPO_MAX_RETAINED_BYTES` | 組み込み Tempo の検索可能なブロックの容量です。バイト単位の正の整数を指定します。無効な値の場合は警告が記録され、デフォルト値が使われます。[推論ログとトレース](user-guide/observability.md#inference-logs-and-traces)を参照してください。 | `30000000000` | サーバー |
+
 ### 使用量追跡の設定 { #usage-tracking-configuration }
 
 | 変数 | 説明 | デフォルト | 適用先 |

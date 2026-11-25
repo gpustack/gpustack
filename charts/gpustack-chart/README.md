@@ -18,7 +18,7 @@ Please note the following limitations when deploying GPUStack on Kubernetes:
 
 - GPUStack Server is deployed as a StatefulSet and currently does not support more than one replica.
 - By default, the built-in `Postgres` database is used at startup. It is recommended to specify an external database using the `server.externalDatabaseURL` parameter.
-- By default, the StatefulSet uses `volumeClaimTemplates` (10Gi PVC), which requires a default `StorageClass` to be configured in your cluster (in k3s, the default is `local-path`). Alternatively, set `server.dataVolume.hostPath` to use a host path volume instead of a PVC.
+- By default, the Server StatefulSet requests a `100Gi` PVC per replica using the cluster's default `StorageClass` (`local-path` in k3s). Set `server.dataVolume.size` to request a different capacity, or set `server.dataVolume.hostPath` to use a host path volume.
 - Higress plugins are served by a dedicated Deployment installed alongside GPUStack. It runs on the gpustack server image by default, so its plugin modules stay version-locked to the server. When the Higress gateway restarts, it will attempt to download the plugins from this service. If the service is unavailable, the gateway's startup will be blocked until the plugins are accessible.
 - The bundled `higress-core` sub-chart deploys Higress as the cluster's ingress controller. If another ingress controller is already running in the cluster, set `higress-core.enabled=false` and configure `gateway.ingressClassname` to use the existing Higress instance instead.
 
@@ -52,6 +52,9 @@ To install a specific chart version, append `--version <chart-version>`:
 helm install -n gpustack-system gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart --create-namespace \
   --version <chart-version>
 ```
+
+For a source checkout, run `helm dependency update charts/gpustack-chart`
+before rendering or packaging the chart.
 
 By default, the `higress-core` sub-chart is enabled and deployed alongside GPUStack. If you already have Higress installed in your cluster, disable the bundled Higress and point GPUStack to your existing instance:
 
@@ -109,7 +112,10 @@ If you need to customize Higress parameters, refer to the [Higress documentation
 | server.ingress.tls.key                   | null                              | Ingress TLS private key content                                           |
 | server.externalDatabaseURL               | null                              | External database connection string                                       |
 | server.dataVolume.hostPath               | null                              | Host path for data volume; if set, uses hostPath instead of PVC           |
-| server.dataVolume.size                   | 10Gi                              | Server data volume size (PVC)                                             |
+| server.dataVolume.size                   | `100Gi`                           | PVC storage request per Server replica. An explicit empty value falls back to `10Gi`. |
+| tracing.tempo.retention                  | `168h`                            | Maximum age of searchable blocks in built-in Tempo                        |
+| tracing.tempo.maxRetainedBytes           | `30000000000`                     | Total capacity of searchable blocks in built-in Tempo, in bytes. Tempo evicts the oldest blocks when this limit is exceeded, even if they have not expired. |
+| tracing.tempo.queryTLSSecretName          | `""`                              | Existing built-in Tempo query mTLS Secret for a multi-replica Server release. |
 | server.apiPort                           | 30080                             | API service port                                                          |
 | server.metricsPort                       | 10161                             | Metrics port                                                              |
 | server.environmentConfig                 | {}                                | Extra environment variables for GPUStack server                           |

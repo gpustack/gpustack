@@ -1,6 +1,6 @@
 # Observability
 
-This document describes how to monitor GPUStack Server/Worker/LLM serving runtime metrics using Prometheus and Grafana.
+Monitor GPUStack metrics with Prometheus and Grafana, and use inference logs and traces to investigate individual requests.
 
 ## Overview
 
@@ -102,6 +102,114 @@ If you already have an external Prometheus/Grafana stack, you can configure it m
   Access Prometheus at `http://<host>:19090` by default, or the port configured by `--builtin-prometheus-port` / `GPUSTACK_BUILTIN_PROMETHEUS_PORT`.
 - **Grafana UI**:  
   Access Grafana at `http://<host>:13000` by default, or the port configured by `--builtin-grafana-port` / `GPUSTACK_BUILTIN_GRAFANA_PORT`. Built-in Grafana is configured for anonymous Viewer access with the login form disabled. The admin credentials remain `admin` / `grafana` by default.
+
+## Inference Logs and Traces
+
+Use the `X-GPUStack-Request-Id` response header to look up inference logs and traces. The bundled gateway adds this header when logging or tracing is configured. Docker servers and Helm server releases export traces to built-in Tempo by default. Log export is independent and requires a log endpoint.
+
+| Trace destination | Docker | Helm |
+| --- | --- | --- |
+| Built-in Tempo | Default on the Server | Default in a Server release |
+| External OTLP/gRPC receiver | Set `GPUSTACK_TRACE_OTLP_ENDPOINT` | Set `tracing.endpoint` |
+| Built-in Tempo retention age (default `168h`) | Set `GPUSTACK_BUILTIN_TEMPO_RETENTION` | Set `tracing.tempo.retention` |
+| Built-in Tempo capacity (default 30 GB) | Set `GPUSTACK_BUILTIN_TEMPO_MAX_RETAINED_BYTES` | Set `tracing.tempo.maxRetainedBytes` |
+| Disabled | Set `GPUSTACK_DISABLE_TRACING=true` | Set `tracing.enabled=false` |
+
+Built-in Tempo evicts data when either limit is reached first. During periodic cleanup, it removes blocks older than seven days by default. If searchable blocks exceed the configured capacity, it evicts the oldest blocks until their total size is within the limit. Set the capacity as a positive integer in bytes, such as `12000000000` for 12 GB. Allow additional disk space for the write-ahead log (WAL), compaction, and blocks pending deletion.
+
+The `Request Tracing` tab in deployment details initially searches the last 24 hours. Page through the results or paste the Request ID or Trace ID as it appears in GPUStack or Tempo. When log export is configured, copy the Request ID from the request detail and search for it in your log backend. For external Tempo, set the query endpoint using `GPUSTACK_TRACE_QUERY_URL` or `tracing.queryURL`.
+
+When log export is enabled, the Server and Workers write one JSON stream to the container console. Alloy reads that stream alongside supported engine log formats. To check for discarded records, use Alloy's `otelcol_processor_filter_logs_filtered_total` metric with the `engine_format` or `higress_format` component. The engine filter rejects standalone plain-text lines without a recognized log prefix.
+
+Each tracing component sends spans directly to the selected receiver. The log endpoint must be reachable from the GPUStack containers that export logs. The trace endpoint must be reachable from the Server, Workers, gateways, and inference containers that export traces. The tracing connection uses plaintext gRPC, so use an address on a trusted network. Switching to an external receiver or disabling tracing stops the built-in instance. Existing trace files follow the lifecycle of the Server data volume.
+
+### Configure Docker
+
+1. To enable log export, set `GPUSTACK_LOG_OTLP_ENDPOINT=http://<collector-host>:4318/v1/logs` on the Server and each separate Worker that exports logs. Mount `/var/run/docker.sock:/var/run/docker.sock` and use a logging driver that supports `docker logs`.
+2. To export traces to an external receiver, set `GPUSTACK_TRACE_OTLP_ENDPOINT=<collector-host>:4317` on the Server and each separate Worker. To use built-in Tempo with remote Workers, see [Enable Tracing on Existing Docker Workers](../upgrade/cluster.md#enable-tracing-on-existing-docker-workers).
+3. Replace `<collector-host>` with a name or address reachable from those containers. Pass the variables with `docker run -e` or under `environment` in your Compose file, then recreate the containers.
+
+To change the built-in Tempo capacity, set `GPUSTACK_BUILTIN_TEMPO_MAX_RETAINED_BYTES` on the Server and recreate its container.
+
+### Configure Helm
+
+1. Configure the endpoints in the Helm values of each GPUStack release. Set `logging.endpoint` to enable log export and `tracing.endpoint` to use an external trace receiver. Worker-only releases can use the Server's receiver by setting `tracing.endpoint`.
+
+   ```yaml
+   logging:
+     endpoint: "http://<collector-host>:4318/v1/logs"
+   tracing:
+     endpoint: "<collector-host>:4317"
+   ```
+
+2. Replace `<collector-host>` with the receiver address and upgrade the Helm release. Use a namespace-qualified Service DNS name for a Collector in another namespace.
+
+The bundled Higress gateway writes JSON access logs by default. To change its format, set `higress-core.meshConfig.accessLogEncoding` and `higress-core.meshConfig.accessLogFormat` in the Helm values.
+
+The Chart requests a `100Gi` data PVC per Server replica by default. Built-in Tempo uses the first Server replica's data volume, which also holds other Server data, including PostgreSQL when enabled. The `30 GB` retention threshold counts only searchable Tempo blocks. When choosing `server.dataVolume.size` or using `server.dataVolume.hostPath`, allow space for all data on the volume, including Tempo's WAL and compaction files. To change the threshold, set `tracing.tempo.maxRetainedBytes` in the Server release's Helm values and upgrade the release.
+
+With a single Server replica, built-in Tempo accepts queries only on the loopback interface. In a multi-replica release, the Chart provisions a Secret for mutual TLS on the query service, and the Server Pods use it to query Tempo. Workers and inference engines continue to send traces over the OTLP port.
+
+For multi-replica GitOps deployments, create a Secret in the Server release's namespace and set `tracing.tempo.queryTLSSecretName` to its name. Include `ca.crt`, `server.crt`, `server.key`, `client.crt`, and `client.key`. The server certificate must cover `<release>-tempo.<namespace>.svc.<cluster-domain>`. Use the same CA when renewing the server and client certificates. Create a new Secret and update its name in the Helm values to roll the Server Pods with the renewed certificates.
+
+Restart or redeploy running model instances after changing their trace export endpoint.
+
+### Redact Exported Logs
+
+Alloy can replace matches in the log body, exception stack trace, and `path` with `***` before exporting logs. Use a list of non-empty RE2 regular expressions. An empty list disables redaction. Request, trace, and span IDs remain available for correlation.
+
+For Docker, pass `GPUSTACK_LOG_REDACT_PATTERNS` as a JSON array of strings on each container that exports logs. This example masks email addresses and mainland Chinese mobile numbers:
+
+```bash
+GPUSTACK_LOG_REDACT_PATTERNS='["(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+[.][A-Z]{2,}","\\b1[3-9][0-9]{9}\\b"]'
+```
+
+For Helm, set the equivalent YAML list in each release that exports logs:
+
+```yaml
+logging:
+  redactPatterns:
+    - '(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+[.][A-Z]{2,}'
+    - '\b1[3-9][0-9]{9}\b'
+```
+
+Recreate the Docker containers or upgrade the Helm release to apply the rules. Check the exported records in your log backend by `request_id`. The rules affect new exports from the GPUStack-managed Alloy. Original records remain available through `docker logs`, `kubectl logs`, or the runtime's log files. Previously exported records and traces are outside these rules. Invalid rules can prevent Alloy from exporting logs while GPUStack continues serving requests.
+
+### Look Up a Request
+
+1. Send a request to a running chat model and keep the response headers. Replace `<gpustack-host>`, `<api-key>`, and `<model-name>` with your deployment values. See [API Key Management](api-key-management.md) for inference permissions.
+
+   ```bash
+   curl --silent --show-error --no-buffer \
+     --dump-header response-headers.txt \
+     'http://<gpustack-host>/v1/chat/completions' \
+     --header 'Authorization: Bearer <api-key>' \
+     --header 'Content-Type: application/json' \
+     --data '{"model":"<model-name>","messages":[{"role":"user","content":"Reply with one word."}],"max_tokens":8,"stream":true}'
+
+   grep -i '^X-GPUStack-Request-Id:' response-headers.txt
+   ```
+
+2. In your log backend, set the time range around the request and filter on the `request_id` log attribute. Use the OTLP resource attribute `service.name` to select a source such as `higress`, `gpustack.server`, or `gpustack.engine`. Where present, `worker_id`, `model_instance_id`, and `role` can narrow the results.
+3. If a log record carries an OTLP trace ID, use that ID to retrieve the trace from your trace backend. With tracing enabled, you can also search for the platform request ID using the `gpustack.request_id` span attribute, including when log export is off.
+
+### Example with Loki and Grafana
+
+1. For a Loki deployment with [OTLP ingestion and structured metadata enabled](https://grafana.com/docs/loki/latest/send-data/otel/), set `GPUSTACK_LOG_OTLP_ENDPOINT` or `logging.endpoint` to its full ingest URL, such as `http://<loki-host>:3100/otlp/v1/logs`. For traces, configure `GPUSTACK_TRACE_OTLP_ENDPOINT` or `tracing.endpoint` with a Tempo OTLP/gRPC address reachable by the span producers. Configure Grafana data sources with the Loki and Tempo HTTP query URLs.
+2. In Grafana `Explore`, select Loki, set the request's time range, and replace `<request-id>` with the `X-GPUStack-Request-Id` response header value. With Loki's default OTLP mapping, `service.name` becomes the `service_name` stream label, and `request_id` is structured metadata.
+
+   ```logql
+   {service_name=~"higress|gpustack[.](server|worker|engine)"} | request_id="<request-id>"
+   ```
+
+   To narrow the results, append `| worker_id="<worker-id>"` or `| model_instance_id="<instance-id>"` for records that carry those fields.
+3. If a result carries `trace_id`, copy it into the Tempo data source's `TraceQL` query field. To open the trace directly from a log result, configure a Loki [derived field](https://grafana.com/docs/grafana/latest/datasources/loki/configure/#derived-fields) of type `Label` matching `^trace_id$`, with an internal link to the Tempo data source and `${__value.raw}` as the query.
+
+Manage retention and access in the external platform. If tenant users can query the data, enforce tenant isolation there.
+
+!!! tip "Find PD engine logs"
+
+    For SGLang Mooncake, use `request_id` to find both engine logs and `pd_attempt_id` to distinguish dispatch attempts. For vLLM NIXL, find the entry log by `request_id`, then search for its `pd_coordinator_id` across both engine logs. If the entry log lacks that field, narrow the Prefill logs by request time and instance, and copy `pd_coordinator_id` from a confirmed match.
 
 ## Migration from Older Compose Setups
 

@@ -32,6 +32,10 @@ docker run -d --name gpustack-worker \
 
     You can obtain an up-to-date `docker run` command for the target version from the GPUStack UI: on the `Clusters` page, open the cluster's `Add Worker` step and copy the generated `Run command`.
 
+### Enable Tracing on Existing Docker Workers
+
+If an existing Worker was started without a trace endpoint, add `-e GPUSTACK_TRACE_OTLP_ENDPOINT=<worker-reachable-host>:<port>` when recreating its container. Keep its existing Worker name and data volume to preserve its identity. For built-in Tempo with a Docker bridge network, publish the Server's ingest port on an interface reachable from the Workers' trusted network. With default ports, add `-p <private-server-ip>:4317:4317` to the Server container's Docker options. If Workers use a different address or published port, set `GPUSTACK_TRACE_ADVERTISE_ENDPOINT` on the Server so newly generated Worker commands use that address.
+
 ## Kubernetes Cluster
 
 Workers in a Kubernetes cluster are deployed as DaemonSets, managed by the GPUStack Operator, from the manifests applied during cluster registration. To upgrade, re-apply the manifests generated for the new version:
@@ -42,6 +46,8 @@ Workers in a Kubernetes cluster are deployed as DaemonSets, managed by the GPUSt
 4. Run the command in an environment where `kubectl` is installed and `kubeconfig` is configured for the target cluster. This re-applies the updated manifests, and the Operator rolls the worker DaemonSets to the new version.
 
 Once the worker pods reach `Ready`, the cluster is running the new version.
+
+For a Worker-only Helm release, reapply the generated registration configuration or set `tracing.endpoint` to the receiver address that the Workers and inference containers can reach. Configure log export separately through `logging.endpoint`. See [Configure Helm](../user-guide/observability.md#configure-helm).
 
 ## Cloud Provider Cluster
 

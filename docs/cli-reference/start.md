@@ -54,6 +54,9 @@ gpustack start [OPTIONS]
 | `--trusted-proxy-cidrs` value               | (empty)                                | CIDR networks of proxies deployed in front of the gateway (repeat the flag for multiple networks). The client IP resolution walks `X-Forwarded-For` from the right through these proxies; when unset, only the address the gateway itself observed is used, so client-supplied forwarding headers cannot spoof the source address. List a subnet only when the proxy in front appends `X-Forwarded-For` itself. |
 | `--service-discovery-name` value            | (empty)                                | The name of the service discovery service in DNS. Only useful when deployed in Kubernetes with service discovery.                     |
 | `--namespace` value                         | (empty)                                | Kubernetes namespace for GPUStack to deploy gateway routing rules and model instances.                                                |
+| `--disable-tracing`                         | `False`                                | Disable GPUStack-managed trace export and embedded Tempo.                                                                             |
+| `--trace-otlp-endpoint` value               | (empty)                                | OTLP/gRPC `host:port` for exporting traces to an external receiver. Overrides embedded Tempo when set.                                |
+| `--log-otlp-endpoint` value                 | (empty)                                | Full OTLP/HTTP logs URL (e.g., `http://<collector-host>:4318/v1/logs`) to enable structured log collection and export.                |
 
 ### Server Options
 

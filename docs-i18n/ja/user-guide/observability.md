@@ -1,6 +1,6 @@
 # 可観測性 { #observability }
 
-本ドキュメントでは、Prometheus と Grafana を使って、GPUStack Server、Worker、LLM 提供ランタイムのメトリクスを監視する方法を説明します。
+Prometheus と Grafana で GPUStack のメトリクスを監視し、推論ログとトレースで個々のリクエストを調べる方法を説明します。
 
 ## 概要 { #overview }
 
@@ -102,6 +102,114 @@ sudo docker compose -f docker-compose.external-observability.yaml up -d
   既定では `http://<host>:19090`、または `--builtin-prometheus-port` / `GPUSTACK_BUILTIN_PROMETHEUS_PORT` で設定したポートにアクセスします。
 - **Grafana UI**：  
   既定では `http://<host>:13000`、または `--builtin-grafana-port` / `GPUSTACK_BUILTIN_GRAFANA_PORT` で設定したポートにアクセスします。組み込み Grafana は匿名の Viewer アクセスを許可し、ログインフォームは無効です。管理者の認証情報の既定値は、引き続き `admin` / `grafana` です。
+
+## 推論ログとトレース { #inference-logs-and-traces }
+
+レスポンスヘッダーの `X-GPUStack-Request-Id` を使って、推論ログとトレースを検索できます。ログまたはトレースを構成すると、組み込みゲートウェイがこのヘッダーを追加します。Docker のサーバーと Helm のサーバーリリースは、デフォルトで組み込み Tempo にトレースをエクスポートします。ログは別途設定し、ログ用エンドポイントを指定します。
+
+| トレースの送信先・設定 | Docker | Helm |
+| --- | --- | --- |
+| 組み込み Tempo | サーバーでデフォルト | サーバーリリースでデフォルト |
+| 外部の OTLP/gRPC レシーバー | `GPUSTACK_TRACE_OTLP_ENDPOINT` を設定 | `tracing.endpoint` を設定 |
+| 組み込み Tempo の保持期間（デフォルトは `168h`） | `GPUSTACK_BUILTIN_TEMPO_RETENTION` を設定 | `tracing.tempo.retention` を設定 |
+| 組み込み Tempo の容量（デフォルトは 30 GB） | `GPUSTACK_BUILTIN_TEMPO_MAX_RETAINED_BYTES` を設定 | `tracing.tempo.maxRetainedBytes` を設定 |
+| 無効 | `GPUSTACK_DISABLE_TRACING=true` を設定 | `tracing.enabled=false` を設定 |
+
+組み込み Tempo は、保持期間と容量のうち先に達した上限に従ってデータを削除します。定期クリーンアップでは、デフォルトで 7 日より古いブロックを削除します。検索可能なブロックが設定容量を超えた場合は、合計サイズが上限内に収まるまで古いブロックから削除します。容量はバイト単位の正の整数で指定します。例えば、12 GB なら `12000000000` を設定します。書き込み先行ログ（WAL）、コンパクション、削除待ちのブロックに必要なディスク容量も確保してください。
+
+デプロイの詳細画面にある `Request Tracing` タブでは、最初に直近 24 時間を検索します。結果をページ単位で確認するか、GPUStack や Tempo に表示される Request ID または Trace ID をそのまま貼り付けて検索できます。ログのエクスポートを設定している場合は、リクエスト詳細から Request ID をコピーし、ログ基盤で検索してください。外部 Tempo を使う場合は、`GPUSTACK_TRACE_QUERY_URL` または `tracing.queryURL` でクエリーエンドポイントを設定します。
+
+ログのエクスポートを有効にすると、サーバーとワーカーは JSON 形式のログをコンテナーのコンソールに出力します。Alloy はこのログと、対応する形式のエンジンログを読み取ります。破棄されたレコードを確認するには、Alloy の `otelcol_processor_filter_logs_filtered_total` メトリクスを `engine_format` または `higress_format` コンポーネントで確認します。エンジンのフィルターは、認識できるログプレフィックスを持たない単独のプレーンテキスト行を除外します。
+
+各トレースコンポーネントは、選択したレシーバーにスパンを直接送信します。ログエンドポイントには、ログをエクスポートする GPUStack コンテナーから到達できる必要があります。トレースエンドポイントには、トレースをエクスポートするサーバー、ワーカー、ゲートウェイ、推論コンテナーから到達できる必要があります。トレースの接続には平文の gRPC を使うため、信頼できるネットワークのアドレスを指定してください。外部レシーバーに切り替えたりトレースを無効にしたりすると、組み込み Tempo は停止します。既存のトレースファイルは、サーバーのデータボリュームのライフサイクルに従います。
+
+### Docker の設定 { #configure-docker }
+
+1. ログのエクスポートを有効にするには、サーバーとログをエクスポートする各ワーカーに `GPUSTACK_LOG_OTLP_ENDPOINT=http://<collector-host>:4318/v1/logs` を設定します。`/var/run/docker.sock:/var/run/docker.sock` をマウントし、`docker logs` に対応するロギングドライバーを使用します。
+2. 外部レシーバーにトレースを送る場合は、サーバーと個別に起動する各ワーカーに `GPUSTACK_TRACE_OTLP_ENDPOINT=<collector-host>:4317` を設定します。リモートワーカーで組み込み Tempo を使う場合は、[既存の Docker ワーカーでトレースを有効にする](../upgrade/cluster.md#enable-tracing-on-existing-docker-workers)を参照してください。
+3. `<collector-host>` をコンテナーから到達できる名前またはアドレスに置き換えます。`docker run -e` または Compose ファイルの `environment` で変数を渡し、コンテナーを再作成します。
+
+組み込み Tempo の容量を変更するには、サーバーに `GPUSTACK_BUILTIN_TEMPO_MAX_RETAINED_BYTES` を設定し、コンテナーを再作成します。
+
+### Helm の設定 { #configure-helm }
+
+1. 各 GPUStack リリースの Helm values にエンドポイントを設定します。`logging.endpoint` はログのエクスポートを有効にし、`tracing.endpoint` は外部のトレースレシーバーを指定します。ワーカー専用リリースでは、`tracing.endpoint` にサーバーのレシーバーを指定できます。
+
+   ```yaml
+   logging:
+     endpoint: "http://<collector-host>:4318/v1/logs"
+   tracing:
+     endpoint: "<collector-host>:4317"
+   ```
+
+2. `<collector-host>` をレシーバーのアドレスに置き換え、Helm リリースをアップグレードします。別の名前空間にある Collector には、名前空間を含む Service の DNS 名を使います。
+
+組み込み Higress ゲートウェイは、デフォルトで JSON 形式のアクセスログを書き込みます。形式を変えるには、Helm values の `higress-core.meshConfig.accessLogEncoding` と `higress-core.meshConfig.accessLogFormat` を設定します。
+
+Chart は、デフォルトでサーバーレプリカごとに `100Gi` のデータ PVC を要求します。組み込み Tempo は最初のサーバーレプリカのデータボリュームを使います。このボリュームには、有効な場合の PostgreSQL を含め、ほかのサーバーデータも保存されます。`30 GB` の保持上限が対象とするのは、検索可能な Tempo ブロックです。`server.dataVolume.size` を選んだり `server.dataVolume.hostPath` を使ったりする場合は、Tempo の WAL とコンパクション用ファイルを含め、ボリューム上の全データに必要な容量を確保してください。上限を変えるには、サーバーリリースの Helm values に `tracing.tempo.maxRetainedBytes` を設定し、リリースをアップグレードします。
+
+サーバーレプリカが 1 つの場合、組み込み Tempo はループバックインターフェースでのみクエリーを受け付けます。複数レプリカでは、Chart がクエリーサービスの相互 TLS 用 Secret を用意し、サーバー Pod がその Secret を使って Tempo に問い合わせます。ワーカーと推論エンジンは引き続き OTLP ポートからトレースを送信します。
+
+複数レプリカの GitOps デプロイでは、サーバーリリースの名前空間に Secret を作成し、その名前を `tracing.tempo.queryTLSSecretName` に設定します。Secret には `ca.crt`、`server.crt`、`server.key`、`client.crt`、`client.key` を含めます。サーバー証明書は `<release>-tempo.<namespace>.svc.<cluster-domain>` をカバーする必要があります。サーバー証明書とクライアント証明書の更新には同じ CA を使います。更新した証明書でサーバー Pod を順次置き換えるには、新しい Secret を作成して Helm values の名前を更新します。
+
+トレースのエクスポート先を変更した後は、稼働中のモデルインスタンスを再起動するか、再デプロイします。
+
+### エクスポートするログのマスキング { #redact-exported-logs }
+
+Alloy は、エクスポート前にログ本文、例外のスタックトレース、`path` の一致箇所を `***` に置き換えられます。空でない RE2 正規表現のリストを指定します。空のリストではマスキングを行いません。リクエスト、トレース、スパンの ID は相互参照に使えます。
+
+Docker では、ログをエクスポートする各コンテナーに `GPUSTACK_LOG_REDACT_PATTERNS` を JSON の文字列配列として渡します。次の例は、メールアドレスと中国本土の携帯電話番号をマスクします。
+
+```bash
+GPUSTACK_LOG_REDACT_PATTERNS='["(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+[.][A-Z]{2,}","\\b1[3-9][0-9]{9}\\b"]'
+```
+
+Helm では、ログをエクスポートする各リリースに同等の YAML リストを設定します。
+
+```yaml
+logging:
+  redactPatterns:
+    - '(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+[.][A-Z]{2,}'
+    - '\b1[3-9][0-9]{9}\b'
+```
+
+ルールを適用するには、Docker コンテナーを再作成するか Helm リリースをアップグレードします。ログ基盤で `request_id` を使い、エクスポートされたレコードを確認してください。ルールは、GPUStack が管理する Alloy が新たにエクスポートするログに適用されます。元のレコードは `docker logs`、`kubectl logs`、またはランタイムのログファイルで参照できます。すでにエクスポートされたレコードやトレースはルールの対象外です。無効なルールによって Alloy のログエクスポートが止まる場合も、GPUStack はリクエストの処理を続けます。
+
+### リクエストの検索 { #look-up-a-request }
+
+1. 稼働中のチャットモデルにリクエストを送り、レスポンスヘッダーを保存します。`<gpustack-host>`、`<api-key>`、`<model-name>` を実際のデプロイの値に置き換えてください。推論の権限については、[API キー管理](api-key-management.md)を参照してください。
+
+   ```bash
+   curl --silent --show-error --no-buffer \
+     --dump-header response-headers.txt \
+     'http://<gpustack-host>/v1/chat/completions' \
+     --header 'Authorization: Bearer <api-key>' \
+     --header 'Content-Type: application/json' \
+     --data '{"model":"<model-name>","messages":[{"role":"user","content":"Reply with one word."}],"max_tokens":8,"stream":true}'
+
+   grep -i '^X-GPUStack-Request-Id:' response-headers.txt
+   ```
+
+2. ログ基盤でリクエスト前後の時間範囲を指定し、ログ属性 `request_id` で絞り込みます。OTLP リソース属性 `service.name` では、`higress`、`gpustack.server`、`gpustack.engine` などの送信元を選べます。レコードに `worker_id`、`model_instance_id`、`role` がある場合は、これらでも絞り込めます。
+3. ログレコードに OTLP の Trace ID がある場合は、その ID をトレース基盤で検索します。トレースが有効なら、ログのエクスポートを無効にしていても、スパン属性 `gpustack.request_id` でプラットフォームの Request ID を検索できます。
+
+### Loki と Grafana の例 { #example-with-loki-and-grafana }
+
+1. [OTLP の取り込みと構造化メタデータを有効にした](https://grafana.com/docs/loki/latest/send-data/otel/) Loki では、`GPUSTACK_LOG_OTLP_ENDPOINT` または `logging.endpoint` に、`http://<loki-host>:3100/otlp/v1/logs` のような取り込み先の完全な URL を指定します。トレース用の `GPUSTACK_TRACE_OTLP_ENDPOINT` または `tracing.endpoint` には、スパンを送信するコンポーネントが到達できる Tempo の OTLP/gRPC アドレスを指定します。Grafana のデータソースには、Loki と Tempo の HTTP クエリー URL を設定します。
+2. Grafana の `Explore` で Loki を選択し、リクエストの時間範囲を指定します。`<request-id>` をレスポンスヘッダー `X-GPUStack-Request-Id` の値に置き換えてください。Loki のデフォルトの OTLP マッピングでは、`service.name` はストリームラベル `service_name` に変換され、`request_id` は構造化メタデータになります。
+
+   ```logql
+   {service_name=~"higress|gpustack[.](server|worker|engine)"} | request_id="<request-id>"
+   ```
+
+   レコードに該当するフィールドがある場合は、`| worker_id="<worker-id>"` または `| model_instance_id="<instance-id>"` を追加して絞り込めます。
+3. 結果に `trace_id` がある場合は、その値を Tempo データソースの `TraceQL` クエリー欄に貼り付けます。ログからトレースを直接開くには、Loki の [派生フィールド](https://grafana.com/docs/grafana/latest/datasources/loki/configure/#derived-fields)をタイプ `Label`、マッチ条件 `^trace_id$` で設定します。Tempo データソースへの内部リンクを選び、クエリーに `${__value.raw}` を指定します。
+
+保持期間とアクセス権は外部基盤で管理します。テナントユーザーに検索を許可する場合は、その基盤でテナント間を分離してください。
+
+!!! tip "PD のエンジンログを探す"
+
+    SGLang Mooncake では、`request_id` で両方のエンジンログを検索し、`pd_attempt_id` でディスパッチ試行を区別します。vLLM NIXL では、`request_id` で入口のログを見つけ、その `pd_coordinator_id` で両方のエンジンログを検索します。入口のログにこのフィールドがない場合は、リクエスト時刻とインスタンスで Prefill のログを絞り込み、該当するレコードの `pd_coordinator_id` をコピーします。
 
 ## 以前の Compose 構成からの移行 { #migration-from-older-compose-setups }
 

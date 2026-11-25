@@ -36,6 +36,10 @@ docker run -d --name gpustack-worker \
 
     対象バージョンの最新の `docker run` コマンドは GPUStack UI から取得できます。`Clusters` ページでクラスターの `Add Worker` ステップを開き、生成された `Run command` をコピーします。
 
+### 既存の Docker ワーカーでトレースを有効にする { #enable-tracing-on-existing-docker-workers }
+
+トレースエンドポイントを指定せずに起動したワーカーでは、コンテナーを再作成するときに `-e GPUSTACK_TRACE_OTLP_ENDPOINT=<worker-reachable-host>:<port>` を追加します。ワーカーの識別情報を保持するため、既存のワーカー名とデータボリュームを引き続き使用します。Docker ブリッジネットワークで組み込み Tempo を使う場合は、ワーカーの信頼できるネットワークから到達できるインターフェースで、サーバーの受信ポートを公開します。デフォルトのポートでは、サーバーコンテナーの Docker オプションに `-p <private-server-ip>:4317:4317` を追加します。ワーカーが別のアドレスや公開ポートを使う場合は、サーバーに `GPUSTACK_TRACE_ADVERTISE_ENDPOINT` を設定すると、新しく生成されるワーカーの起動コマンドにそのアドレスが使われます。
+
 ## Kubernetes クラスター { #kubernetes-cluster }
 
 Kubernetes クラスターのワーカーは、クラスター登録時に適用したマニフェストに基づき、GPUStack Operator が管理する DaemonSet としてデプロイされます。更新するには、新しいバージョン用に生成されたマニフェストを再適用します。
@@ -46,6 +50,8 @@ Kubernetes クラスターのワーカーは、クラスター登録時に適用
 4. `kubectl` がインストールされ、対象クラスター用の `kubeconfig` が設定された環境でコマンドを実行します。更新されたマニフェストが再適用され、Operator がワーカーの DaemonSet を新しいバージョンにローリング更新します。
 
 ワーカー Pod が `Ready` になれば、クラスターは新しいバージョンで稼働しています。
+
+ワーカー専用の Helm リリースでは、生成された登録構成を再適用するか、ワーカーと推論コンテナーから到達できる受信先のアドレスを `tracing.endpoint` に指定します。ログのエクスポートは `logging.endpoint` で個別に設定します。[Helm の設定](../user-guide/observability.md#configure-helm)を参照してください。
 
 ## クラウドプロバイダーのクラスター { #cloud-provider-cluster }
 

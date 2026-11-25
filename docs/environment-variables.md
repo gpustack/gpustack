@@ -115,6 +115,12 @@ warning.
 | `GPUSTACK_HIGRESS_EXT_AUTH_TIMEOUT_MS`                | Gateway authentication call timeout, in milliseconds.    | `gateway_plugin.gpustack-ext-auth.config.authz.timeout`    | `30000`                              | Server     |
 | `GPUSTACK_GATEWAY_AI_STATISTICS_PLUGIN_CONTENT_TYPES` | Comma-separated content types metered for token usage.   | `gateway_plugin.ai-statistics.config.enable_content_types` | `application/json,text/event-stream` | Server     |
 
+### Trace Storage Configuration
+
+| Variable | Description | Default | Applies to |
+| --- | --- | --- | --- |
+| `GPUSTACK_BUILTIN_TEMPO_MAX_RETAINED_BYTES` | Capacity of searchable blocks in built-in Tempo. Set a positive integer in bytes. Invalid values log a warning and use the default. See [Inference Logs and Traces](user-guide/observability.md#inference-logs-and-traces). | `30000000000` | Server |
+
 ### Usage Tracking Configuration
 
 | Variable                                           | Description                                                                                                                                                                                                                                        | Default      | Applies to |
