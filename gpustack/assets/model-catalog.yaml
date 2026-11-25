@@ -3983,7 +3983,7 @@ model_sets:
       categories:
         - speech_to_text
 - name: Oruk-Fourier-2B
-  description: Oruk-Fourier-2B is an English-only automatic speech recognition fine-tune of Qwen3-ASR-1.7B by Oruk. Released under CC BY-NC 4.0 for noncommercial use; commercial or hosted API serving requires separate permission from Oruk. Requires vLLM >= 0.34.0.
+  description: Oruk-Fourier-2B is an English-only automatic speech recognition fine-tune of Qwen3-ASR-1.7B by Oruk. Released under CC BY-NC 4.0 for noncommercial use; commercial or hosted API serving requires separate permission from Oruk. Pinned to vLLM 0.34.0.
   home: https://huggingface.co/oruk/oruk-fourier-2b
   icon: /static/catalog_icons/oruk.png
   size: 2
@@ -3994,6 +3994,9 @@ model_sets:
   release_date: "2026-11-22"
   specs:
     - mode: standard
+      meta:
+        languages:
+          - en
       gpu_filters:
         vendor:
           - nvidia
