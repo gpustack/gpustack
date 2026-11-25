@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 import functools
 import json
 import logging
+import re
 import time
 from typing import Set, Type, Union
 from uuid import uuid4
@@ -53,6 +54,11 @@ logger = logging.getLogger(__name__)
 inference_access_logger = logging.getLogger("gpustack.inference.access")
 
 GPUSTACK_REQUEST_ID_HEADER = "X-GPUStack-Request-Id"
+_VLLM_PD_RESPONSE_ID = re.compile(
+    r"(?:chatcmpl-|cmpl-)"
+    r"(___prefill_addr_[A-Za-z0-9_.:\[\]-]{1,256}"
+    r"___decode_addr_[A-Za-z0-9_.:\[\]-]{1,256}_[0-9a-fA-F]{32})"
+)
 
 
 class InferenceAccessMiddleware:
@@ -235,6 +241,26 @@ class ModelUsageMiddleware(BaseHTTPMiddleware):
         return response
 
 
+def _capture_pd_coordinator_id(request: Request, response: Union[dict, str]) -> None:
+    access = getattr(request.state, "inference_access", None)
+    if access is None or "pd_coordinator_id" in access:
+        return
+    config = getattr(request.app.state, "server_config", None)
+    if not getattr(config, "log_otlp_endpoint", None):
+        return
+    if isinstance(response, str):
+        try:
+            response = json.loads(response)
+        except (ValueError, RecursionError):
+            return
+
+    response_id = response.get("id") if isinstance(response, dict) else None
+    if isinstance(response_id, str):
+        match = _VLLM_PD_RESPONSE_ID.fullmatch(response_id)
+        if match:
+            access["pd_coordinator_id"] = match[1]
+
+
 async def process_request(
     request: Request,
     response: StreamingResponse,
@@ -270,6 +296,7 @@ async def process_request(
                 .startswith("application/json")
             ):
                 response_dict = json.loads(response_body)
+                _capture_pd_coordinator_id(request, response_dict)
                 response_instance = response_class(**response_dict)
                 if hasattr(response_instance, "usage"):
                     usage = response_instance.usage
@@ -457,6 +484,7 @@ async def process_chunk(
 
         if '"usage":' in data:
             response_dict = json.loads(data)
+            _capture_pd_coordinator_id(request, response_dict)
             response_chunk = response_class(**response_dict)
 
             if is_usage_chunk(response_chunk):
@@ -471,6 +499,8 @@ async def process_chunk(
                 "utf-8"
             )
         else:
+            if "___prefill_addr_" in line:
+                _capture_pd_coordinator_id(request, line.removeprefix("data: "))
             yield f"{line}\n\n".encode("utf-8")
 
 

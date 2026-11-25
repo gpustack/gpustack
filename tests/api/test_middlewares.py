@@ -127,6 +127,70 @@ def test_native_inference_usage_links_to_the_request_id(monkeypatch, stream):
 
 
 @pytest.mark.parametrize(
+    ("stream", "status_code", "log_export", "valid_id", "expect_link"),
+    [
+        (False, 200, True, True, True),
+        (True, 200, True, True, True),
+        (False, 502, True, True, False),
+        (True, 200, False, True, False),
+        (True, 200, True, False, False),
+    ],
+)
+def test_native_vllm_pd_log_links_response_id(
+    monkeypatch, caplog, stream, status_code, log_export, valid_id, expect_link
+):
+    async def record_usage(*args):
+        pass
+
+    monkeypatch.setattr(middlewares, "record_model_usage", record_usage)
+    app = FastAPI()
+    path = "/v1/chat/completions"
+    app.state.server_config = SimpleNamespace(
+        log_otlp_endpoint="http://collector/v1/logs" if log_export else None
+    )
+    app.add_middleware(middlewares.ModelUsageMiddleware)
+    app.add_middleware(middlewares.InferenceAccessMiddleware, paths={path})
+    coordination_id = "___prefill_addr_127.0.0.1:8000___decode_addr_[::1]:9000_78651a8e19a445a3a3ce157e1578f1d7"
+    response_id = f"chatcmpl-{coordination_id}"
+    if not valid_id:
+        response_id += "?token=private"
+    payload = {
+        "id": response_id,
+        "created": 0,
+        "model": "test",
+        "object": "chat.completion.chunk" if stream else "chat.completion",
+        "choices": [],
+    }
+    sse = f"data: {json.dumps(payload)}\n\ndata: [DONE]\n\n"
+
+    @app.post(path)
+    async def infer(request: Request):
+        request.state.stream = stream
+        if stream:
+            return StreamingResponse(iter([sse]), media_type="text/event-stream")
+        return JSONResponse(payload, status_code=status_code)
+
+    with caplog.at_level("INFO", logger="gpustack.inference.access"):
+        response = TestClient(app).post(path)
+    assert response.status_code == status_code
+    if stream:
+        assert response.text == sse
+    else:
+        assert response.json() == payload
+
+    (record,) = (
+        record
+        for record in caplog.records
+        if record.name == "gpustack.inference.access"
+    )
+    exported = json.loads(_ApplicationLogFormatter("server").format(record))
+    assert exported["request_id"] == response.headers["X-GPUStack-Request-Id"]
+    assert exported.get("pd_coordinator_id") == (
+        coordination_id if expect_link else None
+    )
+
+
+@pytest.mark.parametrize(
     ("method", "path", "has_request_id"),
     [
         ("POST", "/v1/chat/completions", True),

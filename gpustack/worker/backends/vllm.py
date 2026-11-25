@@ -19,6 +19,10 @@ from gpustack_runtime.deployer import (
 )
 from gpustack_runtime.deployer.__utils__ import compare_versions
 from gpustack_runtime.detector import ManufacturerEnum, manufacturer_to_backend
+from gpustack.observability.tracing import (
+    set_engine_trace_instance,
+    set_engine_trace_service_name,
+)
 from gpustack.schemas.models import (
     BackendEnum,
     ModelInstance,
@@ -252,6 +256,8 @@ class VLLMServer(InferenceServer):
             ),
             entrypoint=command,
             deployment_metadata=deployment_metadata,
+            image=image,
+            env=env,
         )
 
         try:
@@ -1515,6 +1521,9 @@ class VLLMServer(InferenceServer):
         is_distributed: bool,
         entrypoint: Optional[List[str]] = None,
         deployment_metadata: Optional[ModelInstanceDeploymentMetadata] = None,
+        *,
+        image: Optional[str] = None,
+        env: Optional[Dict[str, str]] = None,
     ) -> Tuple[List[str], List[str]]:
         """
         Build vLLM command arguments for container execution.
@@ -1529,8 +1538,8 @@ class VLLMServer(InferenceServer):
             port, is_distributed, entrypoint, deployment_metadata
         )
 
-        arguments: List[str] = [self._model_path]
-        arguments = self.build_versioned_command_args(arguments)
+        default_arguments: List[str] = [self._model_path]
+        arguments = self.build_versioned_command_args(default_arguments)
 
         arguments.extend(self._build_omni_arguments(ctx))
         arguments.extend(self._build_max_model_len_arguments(ctx))
@@ -1572,6 +1581,17 @@ class VLLMServer(InferenceServer):
 
         # Inject user-defined backend parameters
         user_backend_parameters = self._flatten_backend_param()
+        if (
+            image
+            and env is not None
+            and entrypoint == ["vllm", "serve"]
+            and arguments is default_arguments
+            and not self._model.run_command
+            and not ctx.is_omni
+        ):
+            arguments.extend(
+                self._get_observability_arguments(image, user_backend_parameters, env)
+            )
         arguments.extend(user_backend_parameters)
 
         extend_args_no_exist(
@@ -1596,6 +1616,59 @@ class VLLMServer(InferenceServer):
             arguments, user_backend_parameters, entrypoint
         )
         return arguments, injected
+
+    def _get_observability_arguments(
+        self, image: str, user_args: List[str], env: Dict[str, str]
+    ) -> List[str]:
+        config = self._config
+        trace_endpoint = config.effective_trace_otlp_endpoint
+        dependencies = self._resolved_image_dependencies or {}
+        if (
+            not (config.log_otlp_endpoint or trace_endpoint)
+            or dependencies.get("vllm") != "0.32.0"
+            or image.rsplit("/", 1)[-1] != "runner:cuda13.0-vllm0.32.0"
+            or env.get("PYPI_PACKAGES_INSTALL")
+        ):
+            return []
+
+        options = {
+            argument.partition("=")[0]
+            for argument in normalize_vllm_parameters(user_args, tokenized=True)
+        }
+        if "--config" in options:
+            return []
+
+        arguments: List[str] = []
+        if (
+            config.log_otlp_endpoint
+            and not env.get("VLLM_LOGGING_CONFIG_PATH")
+            and options.isdisjoint(
+                (
+                    "--enable-log-requests",
+                    "--no-enable-log-requests",
+                    "--enable-log-outputs",
+                    "--max-log-len",
+                )
+            )
+        ):
+            # Keep prompt text and token IDs empty even at DEBUG.
+            arguments.extend(["--enable-log-requests", "--max-log-len", "0"])
+        if (
+            trace_endpoint
+            and "--otlp-traces-endpoint" not in options
+            and not env.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+            and env.get("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "grpc") == "grpc"
+        ):
+            arguments.extend(["--otlp-traces-endpoint", trace_endpoint])
+            set_engine_trace_service_name(env, "vllm", self._model_instance.role)
+            set_engine_trace_instance(
+                env,
+                self._model_instance.id,
+                self._model_instance.name,
+                self._model_instance.model_id,
+                self._model_instance.role,
+            )
+        return arguments
 
     def _make_args_context(
         self,

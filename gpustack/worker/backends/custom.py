@@ -3,6 +3,7 @@ import os
 import shlex
 from typing import Dict, List, Optional, Tuple
 
+from gpustack.observability.tracing import set_engine_trace_instance
 from gpustack.schemas.models import (
     ModelInstanceDeploymentMetadata,
     find_role,
@@ -49,6 +50,39 @@ fi
 echo "PD router nofile limits: soft=$(ulimit -Sn), hard=$(ulimit -Hn)" >&2
 exec "$@"
 """
+
+# The bundled vLLM Router exposes tracing in its Python binding but not its CLI.
+_VLLM_ROUTER_TRACE_SCRIPT = """\
+import sys
+from vllm_router.launch_router import launch_router, parse_router_args
+
+args = parse_router_args(sys.argv[2:])
+args.enable_trace = True
+args.otlp_traces_endpoint = sys.argv[1]
+launch_router(args)
+"""
+
+
+def _vllm_router_trace_command(
+    image: str,
+    args: List[str],
+    env: Dict[str, str],
+    endpoint: Optional[str],
+) -> List[str]:
+    if (
+        not endpoint
+        or image.rsplit("/", 1)[-1] != "runner:cuda13.0-vllm0.32.0"
+        or args[:1] != ["vllm-router"]
+        or env.get("PYPI_PACKAGES_INSTALL")
+        or env.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+        or env.get("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "grpc") != "grpc"
+    ):
+        return args
+
+    options = {arg.partition("=")[0] for arg in args[1:]}
+    if options & {"--enable-trace", "--otlp-traces-endpoint"}:
+        return args
+    return ["python3", "-c", _VLLM_ROUTER_TRACE_SCRIPT, endpoint, *args[1:]]
 
 
 class CustomServer(InferenceServer):
@@ -158,6 +192,42 @@ class CustomServer(InferenceServer):
                 self._model.backend_version
             )
             image_overridden = image_overridden or bool(configured_image)
+        use_recipe_defaults = (
+            managed_router
+            and launch
+            and launch.source == "recipe"
+            and not image_overridden
+            and not command
+        )
+        if (
+            use_recipe_defaults
+            and self._config.log_otlp_endpoint
+            and source_model.disaggregation.mode.value == "sglang-mooncake"
+            and image.rsplit("/", 1)[-1] == "runner:cuda13.0-sglang0.5.22"
+            and not env.get("PYPI_PACKAGES_INSTALL")
+        ):
+            options = {arg.partition("=")[0] for arg in command_args}
+            if "--json-log" not in options:
+                command_args = [*command_args, "--json-log"]
+            if "--log-level" not in options:
+                # The dispatch event is DEBUG without tracing. Keep other targets at INFO.
+                env.setdefault("RUST_LOG", "smg=info,smg::observability::events=debug")
+        if (
+            use_recipe_defaults
+            and source_model.disaggregation.mode.value == "vllm-nixl"
+        ):
+            traced_args = _vllm_router_trace_command(
+                image, command_args, env, self._config.effective_trace_otlp_endpoint
+            )
+            if traced_args is not command_args:
+                set_engine_trace_instance(
+                    env,
+                    self._model_instance.id,
+                    self._model_instance.name,
+                    self._model_instance.model_id,
+                    "router",
+                )
+            command_args = traced_args
         if managed_router and not backend_command and image_overridden and not command:
             if not command_args:
                 raise ValueError("Managed PD router requires an explicit command")

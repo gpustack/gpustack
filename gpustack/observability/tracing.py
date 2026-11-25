@@ -1,7 +1,8 @@
 import asyncio
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
-from typing import AsyncIterator, Iterator, Optional
+from typing import AsyncIterator, Dict, Iterator, Optional
+from urllib.parse import quote, unquote
 from uuid import UUID
 
 from opentelemetry import trace
@@ -37,6 +38,46 @@ PUBLIC_INFERENCE_PATHS = frozenset(
 _INFERENCE_TRACER: ContextVar[Optional[trace.Tracer]] = ContextVar(
     "inference_tracer", default=None
 )
+
+
+def set_engine_trace_service_name(
+    env: Dict[str, str], backend: str, role: Optional[str]
+) -> None:
+    """Set the launcher's default while honoring OpenTelemetry service names."""
+    if "OTEL_SERVICE_NAME" in env:
+        return
+
+    name = f"{backend}.{role}" if role in ("prefill", "decode") else backend
+    for attribute in env.get("OTEL_RESOURCE_ATTRIBUTES", "").split(","):
+        key, separator, value = attribute.partition("=")
+        if separator and key.strip() == "service.name":
+            name = unquote(value.strip())
+    env["OTEL_SERVICE_NAME"] = name
+
+
+def set_engine_trace_instance(
+    env: Dict[str, str],
+    instance_id: int,
+    name: str,
+    model_id: int,
+    role: Optional[str],
+) -> None:
+    """Attach the managed instance identity to engine and Router spans."""
+    identity = {
+        "gpustack.engine_instance_id": str(instance_id),
+        "gpustack.engine_instance_name": quote(name, safe=""),
+        "gpustack.model_id": str(model_id),
+        "gpustack.engine_role": (
+            role if role in ("prefill", "decode", "router") else "engine"
+        ),
+    }
+    attributes = [
+        attr
+        for attr in env.get("OTEL_RESOURCE_ATTRIBUTES", "").split(",")
+        if attr and attr.partition("=")[0].strip() not in identity
+    ]
+    attributes.extend(f"{key}={value}" for key, value in identity.items())
+    env["OTEL_RESOURCE_ATTRIBUTES"] = ",".join(attributes)
 
 
 @asynccontextmanager
