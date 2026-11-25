@@ -71,6 +71,7 @@ def _stub_pipeline(monkeypatch):
     """Stub every lookup that precedes the worker call, so only it remains."""
     instance = SimpleNamespace(
         id=11,
+        name="qwen3-instance",
         model_id=1,
         worker_id=1,
         port=9000,

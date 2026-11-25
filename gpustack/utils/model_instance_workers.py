@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import re
 from typing import Dict, Iterable, List, Optional, Set, Union
 
@@ -371,6 +371,7 @@ class ModelInstanceEndpoint:
     dp_rank: Optional[int] = None
     component: Optional[str] = None
     attempt: Optional[int] = None
+    instance_name: Optional[str] = field(default=None, compare=False)
 
     @property
     def registry_name(self) -> str:

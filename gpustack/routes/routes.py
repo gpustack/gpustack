@@ -33,6 +33,7 @@ from gpustack.routes import (
     pd_modes,
     probes,
     proxy,
+    request_traces,
     source_probe,
     update,
     user_groups,
@@ -250,6 +251,11 @@ model_routers = [
         "prefix": "/models",
         "tags": ["Models"],
         "dependencies": _org_owner_only,
+    },
+    {
+        "router": request_traces.router,
+        "prefix": "/models",
+        "tags": ["Models"],
     },
     {
         "router": model_instances.router,

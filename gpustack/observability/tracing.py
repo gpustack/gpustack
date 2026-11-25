@@ -3,7 +3,6 @@ from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from typing import AsyncIterator, Dict, Iterator, Optional
 from urllib.parse import quote, unquote
-from uuid import UUID
 
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
@@ -123,17 +122,6 @@ def trace_log_fields() -> dict:
         "span_id": f"{context.span_id:016x}",
         "trace_flags": int(context.trace_flags),
     }
-
-
-def inference_request_id(headers: Headers) -> Optional[str]:
-    value = headers.get("x-request-id", "")
-    if len(value) == 36:
-        try:
-            if str(UUID(value)) == value.lower():
-                return value
-        except ValueError:
-            pass
-    return None
 
 
 def inject_trace_context(headers: dict, span: trace.Span) -> None:

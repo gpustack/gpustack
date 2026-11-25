@@ -28,7 +28,6 @@ from gpustack import envs
 from gpustack.observability.tracing import (
     PUBLIC_INFERENCE_PATHS,
     current_inference_span,
-    inference_request_id,
     inject_trace_context,
     set_span_error,
     trace_inference_http,
@@ -94,12 +93,14 @@ class WorkerProxyTracingMiddleware:
         if tracer is None or router_header_key not in headers:
             await self.app(scope, receive, send)
             return
-        attributes = {"http.request.method": "POST"}
-        request_id = inference_request_id(headers)
-        if request_id:
-            attributes["gpustack.request_id"] = request_id
         await trace_inference_http(
-            self.app, scope, receive, send, tracer, "POST inference proxy", attributes
+            self.app,
+            scope,
+            receive,
+            send,
+            tracer,
+            "POST inference proxy",
+            {"http.request.method": "POST"},
         )
 
 
@@ -274,8 +275,11 @@ async def proxy(path: str, request: Request):  # noqa: C901
         span = current_inference_span()
         inject_trace_context(headers, span)
         target_instance_id = getattr(request.state, "x_target_instance_id", None)
+        request_id = request.headers.get("x-request-id") or None
+        if request_id:
+            span.set_attribute("gpustack.request_id", request_id)
         log_context = {
-            "request_id": inference_request_id(request.headers),
+            "request_id": request_id,
             "model_instance_id": target_instance_id,
         }
         if span.is_recording() and target_instance_id:
@@ -283,6 +287,10 @@ async def proxy(path: str, request: Request):  # noqa: C901
             endpoint = getattr(request.state, "model_instance_endpoint", None)
             if endpoint is not None:
                 span.set_attribute("gpustack.model_id", endpoint.model_id)
+                if endpoint.instance_name:
+                    span.set_attribute(
+                        "gpustack.model_instance_name", endpoint.instance_name
+                    )
             if f"/{path}" in PUBLIC_INFERENCE_PATHS:
                 span.set_attribute("http.route", f"/{path}")
         # Read the header while popping it: aiohttp sets its own framing, and

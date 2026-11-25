@@ -280,6 +280,7 @@ async def proxy_request_by_model(
         )
         instance, rank_endpoint = await _select_managed_endpoint(session, instance)
         span.set_attribute("gpustack.model_instance_id", instance.id)
+        span.set_attribute("gpustack.model_instance_name", instance.name)
         lookup_worker_id = (
             rank_endpoint.worker_id if rank_endpoint else instance.worker_id
         )

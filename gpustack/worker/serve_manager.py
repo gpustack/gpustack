@@ -2,7 +2,7 @@ import asyncio
 import httpx
 import contextlib
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from functools import partial, wraps
 import json
@@ -5558,7 +5558,7 @@ class ServeManager(ContainerLogPersister):
                     return None
                 if observed != endpoint:
                     return None
-        return endpoint
+        return replace(endpoint, instance_name=instance.name)
 
 
 def is_ready(

@@ -122,6 +122,34 @@ def _parse_cli(subcommand: str, argv: list[str]) -> argparse.Namespace:
     return parser.parse_args([subcommand, *argv])
 
 
+def test_trace_query_settings_use_server_cli_and_disable_with_tracing(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("GPUSTACK_RUN_DIR", str(tmp_path / "run"))
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+    builtin = Config(data_dir=str(tmp_path / "builtin"), builtin_tempo_http_port=3320)
+    assert builtin.get_trace_query_url() == "http://127.0.0.1:3320"
+
+    cfg = parse_args(
+        _parse_cli(
+            "start",
+            [
+                "--data-dir",
+                str(tmp_path / "configured"),
+                "--gateway-mode",
+                "disabled",
+                "--trace-otlp-endpoint",
+                "collector:4317",
+                "--trace-query-url",
+                "https://tempo.example/tempo/",
+            ],
+        )
+    )
+    assert cfg.get_trace_query_url() == "https://tempo.example/tempo"
+    cfg.disable_tracing = True
+    assert cfg.get_trace_query_url() is None
+
+
 @pytest.mark.parametrize("subcommand", ["start", "prerun"])
 @pytest.mark.parametrize(
     ("flag", "attr", "env_name", "flag_value", "env_value"),

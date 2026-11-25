@@ -2,6 +2,8 @@ from functools import partial
 from contextlib import asynccontextmanager
 import logging
 from pathlib import Path
+import ssl
+from typing import Optional
 import aiohttp
 from fastapi import FastAPI
 from fastapi_cdn_host import patch_docs
@@ -32,6 +34,15 @@ from gpustack.extension import (
 logger = logging.getLogger(__name__)
 
 
+def _tempo_query_client(directory: Optional[str] = None) -> aiohttp.ClientSession:
+    context: ssl.SSLContext | bool = True
+    if directory:
+        path = Path(directory)
+        context = ssl.create_default_context(cafile=str(path / "ca.crt"))
+        context.load_cert_chain(path / "client.crt", path / "client.key")
+    return aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=context))
+
+
 def create_app(cfg: Config) -> FastAPI:
     native_inference = cfg.gateway_mode == GatewayModeEnum.disabled
 
@@ -46,7 +57,14 @@ def create_app(cfg: Config) -> FastAPI:
             connector=connector, trust_env=True
         )
         app.state.http_client_no_proxy = aiohttp.ClientSession(connector=connector)
+        tempo_client = None
         try:
+            if cfg.get_trace_query_url():
+                try:
+                    tempo_client = _tempo_query_client(cfg.trace_query_tls_dir)
+                except OSError:
+                    logger.exception("Unable to load Tempo query client credentials")
+                app.state.tempo_query_client = tempo_client
             async with inference_tracing(
                 cfg.effective_trace_otlp_endpoint if native_inference else None,
                 "server",
@@ -55,6 +73,8 @@ def create_app(cfg: Config) -> FastAPI:
                 yield
         finally:
             app.state.inference_tracer = None
+            if tempo_client is not None:
+                await tempo_client.close()
             await app.state.http_client.close()
             await app.state.http_client_no_proxy.close()
 
