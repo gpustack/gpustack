@@ -274,15 +274,20 @@ targets (`gs "$GPUSTACK_URL/v2/model-route-targets?route_id=ROUTE_ID"`, every pa
 with `gs -X DELETE "$GPUSTACK_URL/v2/model-routes/ROUTE_ID"` only if none remain.
 
 **Confirm:** `GET /v2/models/ID` returns `404` and no instances remain for the model. A route that only
-served this model is no longer listed by `/v1/models`, and a request to it returns `404` or `503`. A
-shared route stays listed and keeps answering from its remaining targets. Requests can still reach the
+served this model is no longer listed by `/v1/models`, and a request to it returns `404` or `503`. For a
+shared route, confirm through `/v2/model-routes/ROUTE_ID` and `/v2/model-route-targets?route_id=ROUTE_ID`
+(every page) that the route and its remaining targets still exist. `/v1/models` leaves out routes with no
+ready target, so check inference only once at least one remaining target is ready. Requests can still reach the
 deleted model for a few seconds, so retry before concluding the delete failed.
 
 ## Hard rules
 
 - Verify after every change, using the **Confirm** step for that workflow. A `200` or `202` only means the
   request was accepted.
-- Judge a model by its instances, not by its model row.
+- Judge a model by its instances, not by its model row. For a model with `roles`, a start or scale is
+  complete only when every role in `role_status` has `ready == desired` and the model's `state` is
+  `running`; instances can all be ready while upstream registration is still pending. A stop is complete
+  when no instances remain.
 - Always send `cluster_id` on create. Prefer GET → edit → PUT of the whole model over a partial PUT.
 - Restart after changing how a model runs; a PUT alone does not apply it.
 - Make one change at a time when recovering, and confirm it before the next.
