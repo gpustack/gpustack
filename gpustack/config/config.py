@@ -7,7 +7,7 @@ import socket
 import uuid
 from enum import Enum
 from typing import Any, List, Literal, Optional, Dict
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 
 import httpx
 import hmac
@@ -1323,6 +1323,30 @@ def get_image_name(
     prefix = f"{registry}/" if registry else ""
     image_repo = apply_container_namespace_to_image(image_repo, container_namespace)
     return f"{prefix}{image_repo}:{version}"
+
+
+def worker_trace_endpoint(
+    cfg: Optional[Config], server_url: Optional[str]
+) -> Optional[str]:
+    """Resolve the trace receiver advertised to a separately deployed Worker."""
+    if cfg is None or not (endpoint := cfg.effective_trace_otlp_endpoint):
+        return None
+    if cfg.trace_advertise_endpoint:
+        return cfg.trace_advertise_endpoint
+    if not cfg.use_builtin_tempo():
+        return endpoint
+
+    # Local Tempo listens in the Server container. Workers use the host they
+    # register with and the separate OTLP port.
+    try:
+        host = urlsplit(server_url or "").hostname
+    except ValueError:
+        return None
+    if not host or not re.fullmatch(r"[a-zA-Z0-9._:-]+", host):
+        return None
+    if ":" in host:
+        host = f"[{host}]"
+    return f"{host}:{cfg.builtin_tempo_otlp_port}"
 
 
 def get_cluster_image_name(

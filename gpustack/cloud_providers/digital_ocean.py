@@ -41,7 +41,7 @@ class DigitalOceanClient(ProviderClientBase):
         }
         try:
             logger.info(f"Creating digital ocean droplet with name {instance.name}")
-            logger.debug(f"Request body: {req}")
+            logger.debug("Request body: %s", {**req, "user_data": "***"})
             droplet_resp = await self.client.droplets.create(body=req)
             id = droplet_resp['droplet']['id']
             return str(id)

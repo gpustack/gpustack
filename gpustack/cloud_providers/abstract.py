@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, Tuple
 from abc import ABC, abstractmethod
 from enum import Enum
@@ -38,7 +38,8 @@ class CloudInstanceCreate:
     # None when the provider has no SSH key API, i.e. create_ssh_key
     # registered nothing to attach by id.
     ssh_key_id: Optional[str] = None
-    user_data: Optional[str] = None
+    # Cloud-init can contain Worker registration credentials.
+    user_data: Optional[str] = field(default=None, repr=False)
     labels: Optional[Dict[str, str]] = None
     # Token identifying one attempt at creating this instance, for providers
     # that offer replay protection. Stable across retries of the same attempt,

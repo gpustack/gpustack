@@ -33,6 +33,7 @@ from gpustack.utils.vllm_topology import vllm_lb_mode, manual_dp_enabled
 from gpustack.config.config import (
     Config,
     get_cluster_image_name,
+    worker_trace_endpoint,
 )
 from gpustack.policies.scorers.offload_layer_scorer import OffloadLayerScorer
 from gpustack.policies.scorers.pairing_affinity_scorer import PairingRetentionScorer
@@ -6845,8 +6846,9 @@ class WorkerProvisioningController:
         ssh_key = await Credential.one_by_id(session, worker.ssh_key_id)
         if ssh_key is None:
             raise ValueError(f"SSH key {worker.ssh_key_id} not found")
+        server_url = worker.cluster.server_url or cfg.server_external_url
         user_data = await client.construct_user_data(
-            server_url=worker.cluster.server_url or cfg.server_external_url,
+            server_url=server_url,
             token=worker.cluster.registration_token,
             image_name=get_cluster_image_name(
                 worker.cluster.worker_config,
@@ -6859,6 +6861,8 @@ class WorkerProvisioningController:
             # the ones that have one attach it by id instead and ignore it.
             ssh_public_key=ssh_key.public_key,
         )
+        if endpoint := worker_trace_endpoint(cfg, server_url):
+            user_data.set_worker_trace_endpoint(endpoint)
         to_create = construct_cloud_instance(worker, ssh_key, user_data.format())
         logger.info(f"Creating cloud instance for worker {worker.name}")
         logger.debug(f"Cloud instance configuration: {to_create}")

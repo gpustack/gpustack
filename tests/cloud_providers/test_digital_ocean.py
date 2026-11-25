@@ -1,3 +1,5 @@
+from unittest.mock import AsyncMock
+
 import pytest
 from gpustack.cloud_providers.digital_ocean import DigitalOceanClient
 from gpustack.cloud_providers.abstract import CloudInstanceCreate, InstanceState
@@ -65,18 +67,38 @@ def do_client(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_create_instance(do_client):
+async def test_create_instance(do_client, monkeypatch, caplog):
+    user_data = "#cloud-config\nregistration_token: test-registration-token\n"
     instance = CloudInstanceCreate(
         name='test-droplet',
         image='ubuntu-20-04-x64',
         type='s-1vcpu-1gb',
         region='nyc3',
         ssh_key_id='ssh-1',
-        user_data=None,
+        user_data=user_data,
         labels={'env': 'test'},
     )
-    droplet_id = await do_client.create_instance(instance)
+    create_droplet = AsyncMock(wraps=do_client.client.droplets.create)
+    monkeypatch.setattr(do_client.client.droplets, "create", create_droplet)
+
+    with caplog.at_level("DEBUG", logger="gpustack.cloud_providers.digital_ocean"):
+        droplet_id = await do_client.create_instance(instance)
+
     assert droplet_id == '12345'
+    assert "Request body: {'name': 'test-droplet'" in caplog.text
+    assert "'user_data': '***'" in caplog.text
+    assert "test-registration-token" not in caplog.text
+    create_droplet.assert_awaited_once_with(
+        body={
+            "name": instance.name,
+            "image": instance.image,
+            "size": instance.type,
+            "region": instance.region,
+            "ssh_keys": [instance.ssh_key_id],
+            "user_data": user_data,
+            "tags": ["env:test"],
+        }
+    )
 
 
 @pytest.mark.asyncio

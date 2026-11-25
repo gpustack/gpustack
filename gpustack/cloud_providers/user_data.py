@@ -124,6 +124,16 @@ class UserDataTemplate:
         for idx, command in enumerate(commands):
             command_list.insert(idx, command)
 
+    def set_worker_trace_endpoint(self, endpoint: str) -> None:
+        worker_config = next(
+            file
+            for file in self._data["write_files"]
+            if file["path"] == "/var/lib/gpustack/config.yaml"
+        )
+        content = yaml.safe_load(worker_config["content"])
+        content["trace_otlp_endpoint"] = endpoint
+        worker_config["content"] = yaml.safe_dump(content, sort_keys=False)
+
     def add_ssh_authorized_keys(self, *public_keys: Optional[str]):
         """
         Trust the given public keys on first boot via cloud-init's
