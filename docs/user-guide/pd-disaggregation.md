@@ -340,6 +340,9 @@ Configure every Worker eligible to host the Router if you need the check on
 all of them. Workers without this configuration retain their existing placement
 behavior. Workers with an opted-in but unavailable or expired measurement are
 excluded from Router placement until the measurement is available again.
+If the configured kubeconfig is invalid or missing, the Worker still starts.
+It reports the budget as unavailable and tries to read the kubeconfig again
+on the next status update.
 
 This check uses a snapshot, not a reservation. Kubernetes remains the final
 authority if other Pods reserve CPU between measurement and creation.

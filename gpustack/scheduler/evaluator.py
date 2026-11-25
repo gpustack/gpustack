@@ -188,7 +188,14 @@ async def evaluate_models(
     return results
 
 
-def _current_cpu_budgets(workers: List[Worker]) -> Dict[int, Optional[int]]:
+def _current_cpu_budgets(
+    model: ModelSpec, workers: List[Worker]
+) -> Dict[int, Optional[int]]:
+    if not any(
+        role_takes_no_accelerator(model, role.name) for role in (model.roles or [])
+    ):
+        return {}
+
     now = datetime.now(timezone.utc)
     budgets = {}
     for worker in workers:
@@ -206,7 +213,7 @@ def make_hashable_key(
     cpu_budgets: Optional[Dict[int, Optional[int]]] = None,
 ) -> str:
     if cpu_budgets is None:
-        cpu_budgets = _current_cpu_budgets(workers) if model.roles else {}
+        cpu_budgets = _current_cpu_budgets(model, workers)
     key_data = json.dumps(
         {
             "model": model.model_dump(mode="json"),
@@ -326,7 +333,7 @@ async def evaluate_model_with_cache(
         resource_view = ResourceView(
             model_instances, cache_resource_reservations(cache_instances)
         )
-        cpu_budgets = _current_cpu_budgets(workers) if model.roles else {}
+        cpu_budgets = _current_cpu_budgets(model, workers)
         cache_key = make_hashable_key(
             model,
             workers,
@@ -356,7 +363,7 @@ async def evaluate_model_with_cache(
             )
             # A budget that expired while evaluating must not key a later
             # verdict for a fresh sample of the same size.
-            if not cpu_budgets or cpu_budgets == _current_cpu_budgets(workers):
+            if cpu_budgets == _current_cpu_budgets(model, workers):
                 evaluate_cache[cache_key] = result
     except Exception as e:
         logger.exception(

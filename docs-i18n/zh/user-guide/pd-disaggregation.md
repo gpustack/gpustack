@@ -202,6 +202,16 @@ NVIDIA Mooncake 要求推理镜像中包含其 transfer-engine 运行时和 RDMA
 
 组成员同时需要主机网络、hostPort、主机 IPC 和设备挂载，超出了 `baseline` Pod Security Admission 级别允许的范围。GPUStack 会据此为自己管理的命名空间设置标签。其对自备集群的含义，以及**不**涵盖的内容，参见[命名空间与 Pod Security Admission](cluster-management.md#namespaces-and-pod-security-admission)。
 
+### Kubernetes Router 的 CPU 调度 { #kubernetes-router-cpu-placement }
+
+Worker 可以上报其 Kubernetes 节点还能接受多少 CPU 请求。GPUStack 在检查 PD 组容量和选择 Router 节点时都会使用这个数据。余量等于节点可分配的 CPU 减去所有命名空间中活跃 Pod 的 CPU 请求量，不是 CPU 实时利用率。
+
+要在 Kubernetes Worker 上启用此功能，将 `GPUSTACK_WORKER_KUBERNETES_CPU_BUDGET_KUBECONFIG` 设为同一集群专用 kubeconfig 的路径，并启用 TLS 校验。将 `GPUSTACK_RUNTIME_KUBERNETES_NODE_NAME` 设为 Worker 所在节点的名称（Helm chart 已设置此变量）。仅授予专用身份读取该节点的 `get` 权限，以及跨命名空间列出核心 Pod 资源的 `list` 权限。不要扩大集群代理使用的 Worker ServiceAccount 权限。通过投射卷挂载 kubeconfig 和凭据，避免 Kubernetes 运行时把该挂载复制到推理 Pod 中。
+
+Worker 只向服务器上报可用 CPU 毫核数和过期时间。如需检查所有可能承载 Router 的 Worker，请逐一配置。未启用的 Worker 保留原有调度行为；已启用但采集失败或数据过期的 Worker，在获得有效测量前不会被选为 Router 节点。如果配置指向的 kubeconfig 无效或不存在，Worker 仍能启动，将余量上报为不可用，并在下次状态更新时重试读取。
+
+这项检查只使用快照，不预留资源。如果其他 Pod 在采集后、创建前请求了 CPU，是否接纳 Router Pod 仍由 Kubernetes 决定。
+
 ### KV 传输接口 { #the-kv-transfer-interface }
 
 在内置的 vLLM NIXL 和 SGLang NIXL 部署中，UCX 可能选择容器网桥，例如 `docker0`、`br-*` 或 `flannel.1`。如果 UCX 公布了对端无法访问的地址，握手就会失败。GPUStack 按以下优先级为每个 Worker 选择 KV 传输接口。

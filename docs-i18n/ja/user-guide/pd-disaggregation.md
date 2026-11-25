@@ -197,6 +197,16 @@ NVIDIA Mooncake は、推論イメージ内に転送エンジンのランタイ�
 
 グループのメンバーには、ホストネットワーク、hostPort、ホスト IPC、デバイスマウントの 4 つすべてが必要です。これは Pod Security Admission の `baseline` レベルを超えます。GPUStack は所有する名前空間に適切なラベルを設定します。独自に用意したクラスターでの意味と、その対象*外*については、[名前空間と Pod Security Admission](cluster-management.md#namespaces-and-pod-security-admission)を参照してください。
 
+### Kubernetes Router の CPU を考慮した配置 { #kubernetes-router-cpu-placement }
+
+Worker は、稼働する Kubernetes ノードで CPU リクエストに使える残量を報告できます。GPUStack はこの値を PD グループの容量確認と Router の配置の両方に使用します。残量は、ノードの割り当て可能な CPU から全名前空間の稼働中の Pod が要求する CPU を引いた値で、CPU 使用率ではありません。
+
+Kubernetes Worker で有効にするには、`GPUSTACK_WORKER_KUBERNETES_CPU_BUDGET_KUBECONFIG` に、同じクラスター用で TLS 検証が有効な専用 kubeconfig のパスを設定します。`GPUSTACK_RUNTIME_KUBERNETES_NODE_NAME` には Worker が稼働するノード名を設定します（Helm チャートでは設定済みです）。専用の認証主体には、対象ノードの `get` と、全名前空間にまたがるコア Pod リソースの `list` だけを許可します。クラスターのプロキシが使用する Worker の ServiceAccount に権限を追加しないでください。Kubernetes ランタイムが推論 Pod にマウントをコピーしないよう、kubeconfig と認証情報は投射ボリュームでマウントします。
+
+サーバーに報告されるのは、利用可能な CPU ミリコア数と有効期限だけです。すべての配置候補で確認するには、Router を実行できる各 Worker を設定してください。未設定の Worker では従来どおりに配置されます。有効化した Worker で値を取得できない場合や期限が切れた場合は、有効な値を取得するまで Router の配置先から除外されます。指定した kubeconfig が無効または存在しない場合も Worker は起動し、残量を取得できないことを報告して、次の状態更新時に再読み込みを試みます。
+
+この確認はスナップショットに基づくもので、リソースの予約ではありません。測定後から Router Pod の作成までに他の Pod が CPU を確保した場合、最終的な受け入れ可否は Kubernetes が判断します。
+
 ### KV 転送のインターフェース { #the-kv-transfer-interface }
 
 組み込みの vLLM NIXL と SGLang NIXL のデプロイでは、UCX が `docker0`、`br-*`、`flannel.1` などのコンテナブリッジを選択する場合があります。UCX がピアから到達できないアドレスを通知すると、ハンドシェイクに失敗します。GPUStack は Worker ごとに次の優先順で KV 転送インターフェースを選択します。

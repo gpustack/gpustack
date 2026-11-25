@@ -90,6 +90,25 @@ def test_cpu_budget_counts_init_sidecars_pod_requests_and_overhead(pod_level, ex
     assert _collect(api).available_millicores == expected
 
 
+@pytest.mark.parametrize("allocated", [None, {"cpu": "2"}])
+def test_cpu_budget_accounts_for_optional_container_allocations(allocated):
+    api = _node_api("8")
+    pod = _pod([_container("app", "1")])
+    pod.status.container_statuses = [
+        client.V1ContainerStatus(
+            image="test",
+            image_id="test",
+            name="app",
+            ready=True,
+            restart_count=0,
+            allocated_resources=allocated,
+        )
+    ]
+    api.list_pod_for_all_namespaces.return_value = _page([pod])
+
+    assert _collect(api).available_millicores == (6000 if allocated else 7000)
+
+
 @pytest.mark.parametrize("forbidden", [False, True])
 def test_unavailable_budget_is_distinct_from_zero(forbidden):
     api = _node_api("2")
@@ -106,20 +125,52 @@ def test_unavailable_budget_is_distinct_from_zero(forbidden):
 
 
 @pytest.mark.parametrize(
-    "endpoint,verify", [("http://kube", True), ("https://kube", False)]
+    ("endpoint", "verify"),
+    [("http://kube", True), ("https://kube", False), (None, True), ("https:", True)],
 )
-def test_opted_in_collector_requires_verified_tls(monkeypatch, endpoint, verify):
+def test_opted_in_collector_requires_a_verified_https_endpoint(
+    monkeypatch, endpoint, verify
+):
     def load(*, client_configuration, **_):
         client_configuration.host = endpoint
         client_configuration.verify_ssl = verify
 
     monkeypatch.setattr(config, "load_kube_config", load)
+    api_client = Mock()
+    monkeypatch.setattr(client, "ApiClient", api_client)
 
-    with pytest.raises(ValueError, match="verified HTTPS"):
-        KubernetesCPUCollector.from_kubeconfig("/test/kubeconfig", "worker-a")
+    collector = KubernetesCPUCollector.from_kubeconfig("/test/kubeconfig", "worker-a")
+
+    assert collector.collect().available_millicores is None
+    api_client.assert_not_called()
 
 
-def test_cpu_budget_reloads_the_mounted_token(monkeypatch, tmp_path):
+def test_opted_in_collector_without_a_node_name_does_not_open_kubeconfig(monkeypatch):
+    load = Mock()
+    monkeypatch.setattr(config, "load_kube_config", load)
+
+    collector = KubernetesCPUCollector.from_kubeconfig("/test/kubeconfig", None)
+
+    assert collector.collect().available_millicores is None
+    load.assert_not_called()
+
+
+@pytest.mark.parametrize("content", [None, "clusters: [", "- not a mapping"])
+def test_unusable_kubeconfig_does_not_prevent_collector_startup(tmp_path, content):
+    kubeconfig = tmp_path / "kubeconfig.yml"
+    if content is not None:
+        kubeconfig.write_text(content, encoding="utf-8")
+
+    collector = KubernetesCPUCollector.from_kubeconfig(str(kubeconfig), "worker-a")
+
+    budget = collector.collect()
+    assert budget.available_millicores is None
+    assert budget.expires_at is None
+
+
+def test_cpu_budget_recovers_from_missing_kubeconfig_and_reloads_token(
+    monkeypatch, tmp_path
+):
     api = _node_api("8")
     api.list_pod_for_all_namespaces.return_value = _page([])
     observed = []
@@ -134,6 +185,10 @@ def test_cpu_budget_reloads_the_mounted_token(monkeypatch, tmp_path):
     token = tmp_path / "token"
     token.write_text("first-test-token", encoding="utf-8")
     kubeconfig = tmp_path / "kubeconfig.yml"
+    collector = KubernetesCPUCollector.from_kubeconfig(str(kubeconfig), "worker-a")
+
+    assert collector.collect().available_millicores is None
+
     kubeconfig.write_text(
         """apiVersion: v1
 kind: Config
@@ -150,8 +205,6 @@ current-context: test
 """,
         encoding="utf-8",
     )
-    collector = KubernetesCPUCollector.from_kubeconfig(str(kubeconfig), "worker-a")
-
     assert collector.collect().available_millicores == 8000
     token.write_text("second-test-token", encoding="utf-8")
     assert collector.collect().available_millicores == 8000

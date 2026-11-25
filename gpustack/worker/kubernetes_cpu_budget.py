@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 from kubernetes import client, config
 from kubernetes.utils.quantity import parse_quantity
 from urllib3.exceptions import HTTPError
+from yaml import YAMLError
 
 from gpustack.envs import WORKER_STATUS_SYNC_INTERVAL
 from gpustack.schemas.workers import KubernetesCPUBudget
@@ -74,7 +75,7 @@ class KubernetesCPUCollector:
     def __init__(
         self,
         open_api: Callable[[], AbstractContextManager[client.CoreV1Api]],
-        node_name: str,
+        node_name: Optional[str],
     ):
         self._open_api = open_api
         self._node_name = node_name
@@ -83,40 +84,48 @@ class KubernetesCPUCollector:
     def from_kubeconfig(
         cls, path: str, node_name: Optional[str]
     ) -> "KubernetesCPUCollector":
-        """Use a dedicated credential, not the Worker's proxied ServiceAccount."""
-        if not node_name:
-            raise ValueError(
-                "CPU budget collection requires GPUSTACK_RUNTIME_KUBERNETES_NODE_NAME"
-            )
-
-        def settings() -> client.Configuration:
-            result = client.Configuration()
-            config.load_kube_config(
-                config_file=path, client_configuration=result, persist_config=False
-            )
-            if not result.verify_ssl or urlsplit(result.host).scheme != "https":
-                raise ValueError(
-                    "CPU budget collection requires a verified HTTPS Kubernetes API"
-                )
-            result.retries = 0
-            return result
-
-        settings()
+        """Load the dedicated credential at sampling time, not Worker startup."""
 
         @contextmanager
         def open_api() -> Iterator[client.CoreV1Api]:
-            # Reload tokenFile and other mounted credentials on each sample.
-            with client.ApiClient(settings()) as api_client:
+            settings = client.Configuration()
+            try:
+                # Reload tokenFile and other mounted credentials on each sample.
+                config.load_kube_config(
+                    config_file=path,
+                    client_configuration=settings,
+                    persist_config=False,
+                )
+            except (AttributeError, TypeError, YAMLError) as error:
+                raise config.ConfigException("Invalid CPU budget kubeconfig") from error
+            endpoint = urlsplit(settings.host or "")
+            if (
+                not settings.verify_ssl
+                or endpoint.scheme != "https"
+                or not endpoint.hostname
+            ):
+                raise config.ConfigException(
+                    "CPU budget collection requires a verified HTTPS Kubernetes API"
+                )
+            settings.retries = 0
+            with client.ApiClient(settings) as api_client:
                 yield client.CoreV1Api(api_client)
 
         return cls(open_api, node_name)
 
     def collect(self) -> KubernetesCPUBudget:
         """Report an unavailable budget when the node or Pod list cannot be read."""
+        node_name = self._node_name
+        if not node_name:
+            logger.warning(
+                "CPU budget collection requires GPUSTACK_RUNTIME_KUBERNETES_NODE_NAME"
+            )
+            return KubernetesCPUBudget()
+
         started = datetime.now(timezone.utc)
         try:
             with self._open_api() as api:
-                available = self._available_millicores(api)
+                available = self._available_millicores(api, node_name)
         except (
             client.ApiException,
             config.ConfigException,
@@ -128,7 +137,8 @@ class KubernetesCPUCollector:
         ) as error:
             # Do not include an API response body; it may contain Pod details.
             logger.warning(
-                "Cannot establish Kubernetes CPU request budget (%s, HTTP status %s)",
+                "Cannot establish Kubernetes CPU request budget (%s, HTTP status %s); "
+                "check the kubeconfig, TLS and permissions to read the node and list Pods",
                 type(error).__name__,
                 getattr(error, "status", None),
             )
@@ -139,9 +149,9 @@ class KubernetesCPUCollector:
             + timedelta(seconds=max(3 * WORKER_STATUS_SYNC_INTERVAL, 30)),
         )
 
-    def _available_millicores(self, api: client.CoreV1Api) -> int:
+    def _available_millicores(self, api: client.CoreV1Api, node_name: str) -> int:
         deadline = monotonic() + _COLLECTION_TIMEOUT
-        node = api.read_node(self._node_name, _request_timeout=_REQUEST_TIMEOUT)
+        node = api.read_node(node_name, _request_timeout=_REQUEST_TIMEOUT)
         if node.status is None or not node.status.allocatable:
             raise ValueError("Kubernetes Node has no allocatable CPU data")
         allocatable = int(parse_quantity(node.status.allocatable["cpu"]) * 1000)
@@ -152,7 +162,7 @@ class KubernetesCPUCollector:
             if remaining <= 0:
                 raise TimeoutError("CPU budget collection exceeded its deadline")
             page = api.list_pod_for_all_namespaces(
-                field_selector=f"spec.nodeName={self._node_name}",
+                field_selector=f"spec.nodeName={node_name}",
                 limit=500,
                 _continue=cursor,
                 _request_timeout=min(ceil(remaining), _REQUEST_TIMEOUT),
@@ -162,7 +172,7 @@ class KubernetesCPUCollector:
             requested += sum(
                 _pod_request_millicores(pod)
                 for pod in page.items
-                if pod.spec.node_name == self._node_name
+                if pod.spec.node_name == node_name
                 and (
                     pod.status is None
                     or pod.status.phase not in ("Succeeded", "Failed")

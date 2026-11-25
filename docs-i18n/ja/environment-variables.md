@@ -205,6 +205,7 @@ TLS バージョンの設定は `GPUSTACK_GATEWAY_MIRROR_INGRESS_NAME` で
 |------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------|---------|----------------|
 | `GPUSTACK_WORKER_HEARTBEAT_INTERVAL`                             | ワーカーのハートビート間隔（秒）。 | `30`    | ワーカー |
 | `GPUSTACK_WORKER_STATUS_SYNC_INTERVAL`                           | ワーカーの状態同期間隔（秒）。 | `30`    | ワーカー |
+| `GPUSTACK_WORKER_KUBERNETES_CPU_BUDGET_KUBECONFIG`                 | [Kubernetes Router の CPU を考慮した配置](user-guide/pd-disaggregation.md#kubernetes-router-cpu-placement)に使用する専用 kubeconfig のパス。 | （空） | ワーカー |
 | `GPUSTACK_KV_TRANSFER_IFNAME`                                    | ワーカーの起動時に読み込まれ、組み込みの vLLM NIXL と SGLang NIXL のデプロイで KV 転送に使用するインターフェースを指定します。設定例には、Linux インターフェース `ens5f0`、RDMA HCA ポート `mlx5_2:1`、カンマ区切りのデバイス一覧 `ens5f0,ens6f0` があります。[KV 転送のインターフェース](user-guide/pd-disaggregation.md#the-kv-transfer-interface)を参照してください。 | （空）     | ワーカー |
 | `GPUSTACK_WORKER_UNREACHABLE_CHECK_MODE`                         | ワーカー到達不能チェックのモード。選択肢：`auto`、`enabled`、`disabled`。`auto` はワーカー数が 50 を超えるとチェックを無効にします。 | `auto`  | サーバー |
 | `GPUSTACK_WORKER_HEARTBEAT_GRACE_PERIOD`                         | ワーカーハートビートの猶予時間（秒）。 | `150`   | サーバー |

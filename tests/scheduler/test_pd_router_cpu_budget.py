@@ -9,8 +9,7 @@ from gpustack.policies.resource_view import ResourceView
 from gpustack.policies.worker_filters.backend_framework_filter import (
     BackendFrameworkFilter,
 )
-from gpustack.scheduler import port_budget, scheduler
-from gpustack.scheduler.evaluator import make_hashable_key
+from gpustack.scheduler import evaluator, port_budget, scheduler
 from gpustack.scheduler.group_capacity import GroupCapacity
 from gpustack.schemas.models import (
     BackendEnum,
@@ -142,15 +141,57 @@ async def test_router_placement_and_group_capacity_agree(
 def test_preflight_cache_tracks_usable_budgets_not_clock_ticks():
     model = _model()
     worker = _worker(1, 2000)
-    baseline = make_hashable_key(model, [worker])
+    baseline = evaluator.make_hashable_key(model, [worker])
     budget = worker.status.kubernetes_cpu_budget
 
     budget.expires_at += timedelta(seconds=30)
-    assert make_hashable_key(model, [worker]) == baseline
+    assert evaluator.make_hashable_key(model, [worker]) == baseline
 
     budget.available_millicores = 1425
-    insufficient = make_hashable_key(model, [worker])
+    insufficient = evaluator.make_hashable_key(model, [worker])
     assert insufficient != baseline
 
     budget.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
-    assert make_hashable_key(model, [worker]) not in {baseline, insufficient}
+    expired = evaluator.make_hashable_key(model, [worker])
+    assert expired not in {baseline, insufficient}
+
+    worker.status.kubernetes_cpu_budget = KubernetesCPUBudget()
+    assert evaluator.make_hashable_key(model, [worker]) == expired
+
+    worker.status.kubernetes_cpu_budget = None
+    assert evaluator.make_hashable_key(model, [worker]) != expired
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["prefill", "router"])
+async def test_only_router_preflight_cache_depends_on_cpu_budget(monkeypatch, role):
+    model = _model()
+    model.roles = [RoleSpec(name=role, replicas=1)]
+    worker = _worker(1, 2000)
+    evaluate = AsyncMock(
+        side_effect=[
+            evaluator.ModelEvaluationResult(),
+            evaluator.ModelEvaluationResult(),
+        ]
+    )
+    monkeypatch.setattr(evaluator, "evaluate_cache", {})
+    monkeypatch.setattr(
+        evaluator, "visible_cache_service", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(evaluator, "cache_instances_in", AsyncMock(return_value=[]))
+    monkeypatch.setattr(evaluator, "evaluate_model", evaluate)
+    monkeypatch.setattr(
+        evaluator, "evaluate_model_limiter", evaluator.AsyncLimiter(50, 10)
+    )
+
+    args = (None, None, model, [worker], [])
+    key = evaluator.make_hashable_key(model, [worker])
+    before = await evaluator.evaluate_model_with_cache(*args)
+    worker.status.kubernetes_cpu_budget.available_millicores = 1425
+    after = await evaluator.evaluate_model_with_cache(*args)
+
+    has_router = role == "router"
+    assert (evaluator.make_hashable_key(model, [worker]) != key) is has_router
+    assert (after is not before) is has_router
+    assert await evaluator.evaluate_model_with_cache(*args) is after
+    assert evaluate.await_count == (2 if has_router else 1)

@@ -1,10 +1,11 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 from gpustack.schemas.workers import (
+    KubernetesCPUBudget,
     WorkerRegistrationPublic,
     WorkerStatus,
     WorkerStatusPublic,
@@ -75,6 +76,56 @@ async def test_register_worker_closes_registration_client(
 
     registration_client.create_async.assert_awaited_once()
     registration_client.aclose.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("available_millicores", [None, 2400])
+async def test_cpu_budget_is_reported_on_registration_and_periodic_sync(
+    monkeypatch, config, tmp_path, available_millicores
+):
+    measured = KubernetesCPUBudget()
+    if available_millicores is not None:
+        measured = KubernetesCPUBudget(
+            available_millicores=available_millicores,
+            expires_at=datetime.now(timezone.utc) + timedelta(seconds=60),
+        )
+    cpu_collector = Mock(spec=worker_manager.KubernetesCPUCollector)
+    cpu_collector.collect.return_value = measured
+    worker = _registration_public()
+    status = WorkerStatusPublic.model_validate(worker.model_dump())
+    collector = Mock(spec=worker_manager.WorkerStatusCollector)
+    collector.timed_collect.side_effect = [status, status.model_copy(deep=True)]
+    registration_client = Mock(spec=worker_manager.WorkerRegistrationClient)
+    registration_client.create_async.return_value = worker
+    status_client = Mock(spec=worker_manager.WorkerStatusClient)
+    monkeypatch.setattr(
+        worker_manager, "registration_client", Mock(return_value=registration_client)
+    )
+    monkeypatch.setattr(worker_manager, "ensure_server_tls_trust", AsyncMock())
+    monkeypatch.setattr(worker_manager, "ClientSet", Mock())
+    monkeypatch.setattr(
+        worker_manager, "WorkerStatusClient", Mock(return_value=status_client)
+    )
+    manager = worker_manager.WorkerManager(
+        config.model_copy(update={"data_dir": str(tmp_path)}),
+        is_embedded=False,
+        collector=collector,
+        cpu_collector=cpu_collector,
+    )
+
+    await manager.register_with_server()
+
+    registration_client.create_async.assert_awaited_once()
+    registered = registration_client.create_async.await_args.args[0]
+    assert registered.status.kubernetes_cpu_budget == KubernetesCPUBudget()
+    cpu_collector.collect.assert_not_called()
+
+    manager.sync_worker_status()
+
+    cpu_collector.collect.assert_called_once_with()
+    status_client.create.assert_called_once()
+    synced = status_client.create.call_args.args[0]
+    assert synced.status.kubernetes_cpu_budget == measured
 
 
 @pytest.mark.asyncio
