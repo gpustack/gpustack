@@ -162,6 +162,15 @@ def _metric_columns() -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+_DATE_RANGE_ERROR = "end_date must be on or after start_date"
+
+
+def _is_reversed_date_range(
+    start_date: Optional[date], end_date: Optional[date]
+) -> bool:
+    return start_date is not None and end_date is not None and end_date < start_date
+
+
 class ResourceBreakdownRequest(BaseModel):
     scope: str = USAGE_SCOPE_ALL
     start_date: date
@@ -201,9 +210,8 @@ class ResourceBreakdownRequest(BaseModel):
     @field_validator("end_date")
     @classmethod
     def validate_date_range(cls, value: date, info: ValidationInfo) -> date:
-        start_date = info.data.get("start_date")
-        if start_date is not None and value < start_date:
-            raise ValueError("end_date must be on or after start_date")
+        if _is_reversed_date_range(info.data.get("start_date"), value):
+            raise ValueError(_DATE_RANGE_ERROR)
         return value
 
     @field_validator("page")
@@ -2329,6 +2337,13 @@ async def estimate_storage_breakdown_export(
     )
 
 
+def _validate_query_date_range(
+    start_date: Optional[date], end_date: Optional[date]
+) -> None:
+    if _is_reversed_date_range(start_date, end_date):
+        raise InvalidException(message=_DATE_RANGE_ERROR)
+
+
 @router.get("/summary")
 async def usage_summary(
     session: SessionDep,
@@ -2353,6 +2368,7 @@ async def usage_summary(
         organization_ids=organization_id_list,
         user_group_ids=user_group_id_list,
     )
+    _validate_query_date_range(start_date, end_date)
     group_member_ids = None
     if user_group_id_list:
         group_member_ids = await _group_member_user_ids(session, user_group_id_list)
@@ -2483,6 +2499,7 @@ async def resource_events(  # noqa: C901
         organization_ids=organization_id_list,
         user_group_ids=user_group_id_list,
     )
+    _validate_query_date_range(start_date, end_date)
     group_member_ids = None
     if user_group_id_list:
         group_member_ids = await _group_member_user_ids(session, user_group_id_list)
