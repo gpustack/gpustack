@@ -1851,7 +1851,7 @@ model_sets:
       env:
         NCCL_MIN_NCHANNELS: '16'
         NCCL_MAX_NCHANNELS: '16'
-        SGLANG_TORCH_PROFILER_DIR: /home/proj_dpsk-v4/profile
+        SGLANG_TORCH_PROFILER_DIR: /tmp/profile
         SGLANG_OPT_USE_FUSED_STORE_CACHE: 'false'
         SGLANG_OPT_USE_FUSED_HASH_TOPK: 'true'
         SGLANG_OPT_SWIGLU_CLAMP_FUSION: 'false'
