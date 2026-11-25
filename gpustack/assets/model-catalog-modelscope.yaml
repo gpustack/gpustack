@@ -1826,7 +1826,7 @@ model_sets:
     - mode: Hygon-BW1100-TP4-DP2
       source: model_scope
       backend: SGLang
-      image_name: localhost/yk/dsv4:bw1100
+      image_name: nas.lvjianjin.cn:8500/yangkun/dsv4:bw1100-fp8
       backend_parameters:
       - --reasoning-parser=deepseek-v4
       - --tool-call-parser=deepseekv4
