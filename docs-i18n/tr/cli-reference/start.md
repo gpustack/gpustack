@@ -71,6 +71,8 @@ gpustack start [OPTIONS]
 | `--disable-worker`                               | (boş)                                          | (KULLANIMDAN KALDIRILDI) GPUStack sunucusunun yerleşik worker'ını devre dışı bırakır. Yeni kurulumlarda varsayılan olarak yerleşik worker bulunmaz. Gerekirse '--enable-worker' ile etkinleştirin. İki bayrak da ayarlanmazsa geriye uyumluluk için v2.0.1 öncesindeki eski kurulumlarda yerleşik worker varsayılan olarak etkinleştirilir. |
 | `--enable-worker`                                | `False`                                          | GPUStack sunucusunun yerleşik worker'ını etkinleştirir. |
 | `--bootstrap-password` değer                     | Otomatik oluşturulur.                                  | Varsayılan yönetici kullanıcısının ilk parolası. |
+| `--jwt-token-expire-minutes` değer | `120` | Her web arayüzü oturum belirtecinin ve çerezinin dakika cinsinden geçerlilik süresi. Sıfırdan büyük olmalıdır. Etkin oturumlar süre dolmadan yenilenebilir. Şu ortam değişkeniyle de ayarlanabilir `GPUSTACK_JWT_TOKEN_EXPIRE_MINUTES`. |
+| `--log-stream-timeout-seconds` değer | `GPUSTACK_PROXY_TIMEOUT_SECONDS` (varsayılan `1800`) | Çalışana gönderilen canlı günlük isteğinin saniye cinsinden toplam zaman aşımı. Model örnekleri, benchmark'lar ve KV Cache için geçerlidir. `0`, toplam süre sınırını kaldırır. Şu ortam değişkeniyle de ayarlanabilir `GPUSTACK_LOG_STREAM_TIMEOUT_SECONDS`. |
 | `--database-url` değer                           | Yerleşik PostgreSQL.                             | Veritabanının URL'si. PostgreSQL 13.0+, MySQL 8.0.36+ ve openGauss (postgresql:// şeması) ile OceanBase (mysql:// şeması) gibi uyumlu veritabanları desteklenir. Örnek: postgresql://username:password@host:port/dbname veya mysql://username:password@host:port/dbname |
 | `--redis-url` değer                              | None                                             | Hızlı ve paylaşılan duruma ihtiyaç duyan özellikler (LB eklentisinin paylaşılan durum arka ucu) için harici Redis URL'si. Biçim: `redis://host[:port][/db]`. Kimlik bilgileri ağ geçidi CR'sine yazılacağı için kabul edilmez; TLS (`rediss://`) desteklenmez. |
 | `--ssl-keyfile` değer                            | (boş)                                          | SSL anahtar dosyasının yolu. |
@@ -193,6 +195,9 @@ metrics_port: 10161
 disable_metrics: false
 enable_worker: false
 bootstrap_password: your_admin_password
+jwt_token_expire_minutes: 120
+# If omitted, the log stream timeout inherits GPUSTACK_PROXY_TIMEOUT_SECONDS.
+# log_stream_timeout_seconds: 1800
 database_url: postgresql://username:password@host:port/dbname
 # database_url: mysql://username:password@host:port/dbname
 ssl_keyfile: /path/to/keyfile

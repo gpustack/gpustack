@@ -24,7 +24,6 @@ from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.models import Model
 from gpustack.schemas.users import User
 from gpustack.security import JWTManager
-from gpustack import envs
 from gpustack.api.auth import SESSION_COOKIE_NAME
 
 from gpustack.server.metrics_collector import (
@@ -413,7 +412,11 @@ class RefreshTokenMiddleware(BaseHTTPMiddleware):
         jwt_manager: JWTManager = request.app.state.jwt_manager
         token = request.cookies.get(SESSION_COOKIE_NAME)
 
-        if token:
+        # The endpoint owns the session when it sets or clears its cookie.
+        if token and not any(
+            cookie.startswith(f"{SESSION_COOKIE_NAME}=")
+            for cookie in response.headers.getlist("set-cookie")
+        ):
             try:
                 payload = jwt_manager.decode_jwt_token(token)
                 if payload:
@@ -426,8 +429,9 @@ class RefreshTokenMiddleware(BaseHTTPMiddleware):
                             key=SESSION_COOKIE_NAME,
                             value=new_token,
                             httponly=True,
-                            max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
-                            expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+                            max_age=jwt_manager.expires_in_seconds,
+                            expires=jwt_manager.expires_in_seconds,
+                            secure=request.url.scheme == "https",
                         )
             except (ExpiredSignatureError, DecodeError):
                 pass

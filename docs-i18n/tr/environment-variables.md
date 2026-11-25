@@ -67,6 +67,7 @@ Bu ortam değişkenleri genellikle üçüncü taraf hizmet entegrasyonları içi
 | Değişken | Açıklama | Varsayılan | Şunlar için geçerlidir: |
 | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------- | --------------- |
 | `GPUSTACK_PROXY_TIMEOUT_SECONDS`               | Saniye cinsinden temsili çıkarım isteğinde mutlak tavan. | `1800`  | Sunucu ve Çalışan |
+| `GPUSTACK_LOG_STREAM_TIMEOUT_SECONDS` | Çalışana gönderilen canlı günlük isteğinin saniye cinsinden toplam zaman aşımı. Model örnekleri, benchmark'lar ve KV Cache için geçerlidir. `0`, toplam süre sınırını kaldırır. | `GPUSTACK_PROXY_TIMEOUT_SECONDS` (varsayılan `1800`) | Sunucu |
 | `GPUSTACK_PROXY_TTFT_TIMEOUT_SECONDS`          | Bir akış yanıtının ilk parçası için saniyeler içinde beklemede geri durdurma. Sıralamayı ve önceden doldurmayı kapsar, böylece cömert kalır. | `300`   | Sunucu ve Çalışan |
 | `GPUSTACK_PROXY_STREAM_IDLE_TIMEOUT_SECONDS`   | Bir akış yanıtı başladıktan sonra parçalar arasındaki saniye cinsinden maksimum boşluk. Gövdesi yalnızca sona ulaşan akışsız bir yanıta hiçbir zaman uygulanmaz. | `60`    | Sunucu ve Çalışan |
 | `GPUSTACK_PROXY_UPSTREAM_IDLE_TIMEOUT_SECONDS` | Higress'in upstream bağlantı havuzundaki boşta kalma zaman aşımı, saniye cinsinden. İstek süresiyle ilgili değildir: boşta kalan bağlantıları kapatır, isteğin süresini sınırlamaz. | `3`     | Sunucu |
@@ -82,7 +83,7 @@ Bu ortam değişkenleri genellikle üçüncü taraf hizmet entegrasyonları içi
 
 | Değişken | Açıklama | Varsayılan | Şunlar için geçerlidir: |
 | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- | --------------- |
-| `GPUSTACK_JWT_TOKEN_EXPIRE_MINUTES` | JWT jetonunun dakika cinsinden son kullanma süresi. | `120`   | Sunucu |
+| `GPUSTACK_JWT_TOKEN_EXPIRE_MINUTES` | Her web arayüzü oturum belirtecinin ve çerezinin dakika cinsinden geçerlilik süresi. Sıfırdan büyük olmalıdır. Etkin oturumlar süre dolmadan yenilenebilir. | `120` | Sunucu |
 | `GPUSTACK_PROVIDER_TEST_EGRESS_ALLOWLIST` | Arayan tarafından sağlanan bir temel URL'yi (`/get-models`, `/test-model`, `/test-decision-model`) çevirerek sağlayıcı uç noktalarının ulaşabileceği CIDR'lerin, IP adreslerinin ve DNS adlarının izin verilenler listesi. Bir hedefe yalnızca ana bilgisayar adının adlardan birine eşit olması veya bu adlardan biriyle bitmesi (nokta sınırı) veya çözümlenen her adresin CIDR'lerden birinin içinde olması durumunda izin verilir; http(s) olmayan temel URL dahil olmak üzere diğer her şey reddedilir. Boş, kısıtlama olmadığı anlamına gelir. örneğin, `api.openai.com,10.0.1.0/24,vllm.internal.corp` | (boş) | Sunucu |
 
 ### Ağ Geçidi Yapılandırması { #gateway-configuration }

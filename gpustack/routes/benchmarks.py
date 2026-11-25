@@ -1876,15 +1876,18 @@ async def get_benchmark_logs(  # noqa: C901
         ]:
             log_options.follow = False
 
-    timeout = aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT, sock_connect=5)
-
     if log_options.follow:
+        timeout = aiohttp.ClientTimeout(
+            total=request.app.state.server_config.log_stream_timeout_seconds or None,
+            sock_connect=5,
+        )
 
         def on_exception(e: Exception, t: aiohttp.ClientTimeout) -> tuple[str, int]:
+            duration = f" ({t.total} seconds)" if t.total is not None else ""
             msg = (
-                str(e)
+                f"Unable to read logs: {type(e).__name__}"
                 if not isinstance(e, TimeoutError)
-                else f"Log stream timed out ({t.total} seconds). Please reopen the log page."
+                else f"Log stream timed out{duration}. Please reopen the log page."
             )
             return f"\x1b[999;1H{msg}\n", status.HTTP_500_INTERNAL_SERVER_ERROR
 
@@ -1907,6 +1910,7 @@ async def get_benchmark_logs(  # noqa: C901
             media_type="application/octet-stream",
         )
     else:
+        timeout = aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT, sock_connect=5)
         resp, body = await request_to_worker(
             worker=worker,
             method="GET",

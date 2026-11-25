@@ -71,6 +71,8 @@ gpustack start [OPTIONS]
 | `--disable-worker`                               | (пусто)                                          | (УСТАРЕЛО) Отключить встроенный воркер сервера GPUStack. В новых установках встроенный воркер по умолчанию отсутствует. При необходимости включите его флагом '--enable-worker'. Если ни один флаг не задан, ради обратной совместимости встроенный воркер по умолчанию включается в старых установках, созданных до v2.0.1. |
 | `--enable-worker`                                | `False`                                          | Включить встроенный воркер сервера GPUStack. |
 | `--bootstrap-password` значение                     | Автоматически.                                  | Начальный пароль пользователя-администратора по умолчанию. |
+| `--jwt-token-expire-minutes` значение | `120` | Срок действия каждого токена сеанса веб-интерфейса и его cookie в минутах. Значение должно быть больше нуля. Активный сеанс может продлеваться до истечения срока действия. Также настраивается через переменную окружения `GPUSTACK_JWT_TOKEN_EXPIRE_MINUTES`. |
+| `--log-stream-timeout-seconds` значение | `GPUSTACK_PROXY_TIMEOUT_SECONDS` (по умолчанию `1800`) | Общее время запроса потоковых логов к рабочему узлу в секундах. Применяется к экземплярам моделей, бенчмаркам и KV Cache. Значение `0` отключает ограничение общей длительности. Также настраивается через переменную окружения `GPUSTACK_LOG_STREAM_TIMEOUT_SECONDS`. |
 | `--database-url` значение                           | Встроенная PostgreSQL.                             | URL базы данных. Поддерживаются PostgreSQL 13.0+, MySQL 8.0.36+ и совместимые базы данных, например openGauss (схема postgresql://) и OceanBase (схема mysql://). Пример: postgresql://username:password@host:port/dbname или mysql://username:password@host:port/dbname |
 | `--redis-url` значение                              | None                                             | URL внешнего Redis для функций, которым требуется быстрое общее состояние (бэкенд общего состояния плагина LB). Формат: `redis://host[:port][/db]`. Учётные данные не допускаются, поскольку они сохранялись бы в CR шлюза; TLS (`rediss://`) не поддерживается. |
 | `--ssl-keyfile` значение                            | (пусто)                                          | Путь к файлу SSL-ключа. |
@@ -193,6 +195,9 @@ metrics_port: 10161
 disable_metrics: false
 enable_worker: false
 bootstrap_password: your_admin_password
+jwt_token_expire_minutes: 120
+# If omitted, the log stream timeout inherits GPUSTACK_PROXY_TIMEOUT_SECONDS.
+# log_stream_timeout_seconds: 1800
 database_url: postgresql://username:password@host:port/dbname
 # database_url: mysql://username:password@host:port/dbname
 ssl_keyfile: /path/to/keyfile

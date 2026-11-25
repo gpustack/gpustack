@@ -1,5 +1,6 @@
 from functools import partial
 from contextlib import asynccontextmanager
+from datetime import timedelta
 import logging
 from pathlib import Path
 import aiohttp
@@ -81,7 +82,10 @@ def create_app(cfg: Config) -> FastAPI:
     _load_extension_plugins(app, cfg)
     exceptions.register_handlers(app)
 
-    app.state.jwt_manager = JWTManager(cfg.jwt_secret_key)
+    app.state.jwt_manager = JWTManager(
+        cfg.jwt_secret_key,
+        expires_delta=timedelta(minutes=cfg.jwt_token_expire_minutes),
+    )
     app.state.websocket_authenticator = BearerTokenAuthenticator()
 
     # The product deployment has no federation peers: nothing ever

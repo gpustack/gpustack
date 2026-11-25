@@ -1,6 +1,6 @@
 import asyncio
 import ssl
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -12,6 +12,9 @@ from fastapi.testclient import TestClient
 from gpustack.api.exceptions import register_handlers
 from gpustack.api.auth import (
     GATEWAY_AUTH_TOKEN_HEADER,
+    OIDC_ID_TOKEN_COOKIE_NAME,
+    SESSION_COOKIE_NAME,
+    SSO_LOGIN_COOKIE_NAME,
     authenticate_request,
     client_ip_getter,
     get_current_user,
@@ -26,7 +29,7 @@ from gpustack.api.exceptions import (
 from gpustack.extension import Plugin, PluginContext
 from gpustack.schemas.config import GatewayModeEnum
 from gpustack.schemas.principals import PrincipalType
-from gpustack.security import LEGACY_TOKEN_ACCESS_KEY
+from gpustack.security import JWTManager, LEGACY_TOKEN_ACCESS_KEY, generate_secret_key
 from gpustack.schemas.users import AuthProviderEnum
 from gpustack.routes import auth as auth_route
 from gpustack.routes.auth import oidc_callback
@@ -1252,9 +1255,9 @@ async def test_oidc_callback_uses_system_trust_store(monkeypatch):
             "external_auth_groups": None,
         },
     )()
-    request.app.state.jwt_manager = type(
-        "JWTManager", (), {"create_jwt_token": lambda self, username: "jwt-token"}
-    )()
+    request.app.state.jwt_manager = JWTManager(
+        secret_key=generate_secret_key(), expires_delta=timedelta(minutes=7)
+    )
     request.query_params = {"code": "auth-code", "state": "test-state"}
     request.cookies = {"gpustack_oidc_state": "test-state"}
     # Read by the session-cookie hardening (``secure=request.url.scheme
@@ -1284,6 +1287,10 @@ async def test_oidc_callback_uses_system_trust_store(monkeypatch):
     response = await oidc_callback(request=request, session=object())
 
     assert response.status_code in (302, 307)
+    cookies = response.headers.getlist("set-cookie")
+    for name in (SESSION_COOKIE_NAME, OIDC_ID_TOKEN_COOKIE_NAME, SSO_LOGIN_COOKIE_NAME):
+        cookie = next(cookie for cookie in cookies if cookie.startswith(f"{name}="))
+        assert "Max-Age=420" in cookie
     assert captured["trust_env"] is False
     assert captured["timeout"] is not None
     assert isinstance(captured["verify"], ssl.SSLContext)

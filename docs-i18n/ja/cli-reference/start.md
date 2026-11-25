@@ -71,6 +71,8 @@ gpustack start [OPTIONS]
 | `--disable-worker`                               | （空）                                          | （非推奨）GPUStackサーバーの組み込みワーカーを無効にします。新規インストールでは、デフォルトで組み込みワーカーは存在しません。必要な場合は'--enable-worker'で有効にしてください。どちらのフラグも設定されていない場合、後方互換性のため、v2.0.1より前の既存インストールでは組み込みワーカーがデフォルトで有効になります。 |
 | `--enable-worker`                                | `False`                                          | GPUStackサーバーの組み込みワーカーを有効にします。 |
 | `--bootstrap-password` 値                     | 自動生成。                                  | デフォルトの管理者ユーザーの初期パスワード。 |
+| `--jwt-token-expire-minutes` 値 | `120` | Web UI の各セッショントークンとその Cookie の有効期間（分）。0 より大きい値を指定します。使用中のセッションは有効期限前に更新できます。 次の環境変数でも設定できます `GPUSTACK_JWT_TOKEN_EXPIRE_MINUTES`. |
+| `--log-stream-timeout-seconds` 値 | `GPUSTACK_PROXY_TIMEOUT_SECONDS` (デフォルトは `1800`) | Worker へのリアルタイムログリクエストの合計時間上限（秒）。モデルインスタンス、ベンチマーク、KV Cache に適用されます。`0` を指定すると合計時間の上限が無効になります。 次の環境変数でも設定できます `GPUSTACK_LOG_STREAM_TIMEOUT_SECONDS`. |
 | `--database-url` 値                           | 組み込みPostgreSQL。                             | データベースのURL。PostgreSQL 13.0+、MySQL 8.0.36+、およびopenGauss（postgresql://スキーム）やOceanBase（mysql://スキーム）などの互換データベースをサポートします。例：postgresql://username:password@host:port/dbnameまたはmysql://username:password@host:port/dbname |
 | `--redis-url` 値                              | None                                             | 共有された高速な状態を必要とする機能（LBプラグインの共有状態バックエンド）で使用する外部RedisのURL。形式：`redis://host[:port][/db]`。認証情報はゲートウェイCRに保存されてしまうため受け付けません。TLS（`rediss://`）はサポートしていません。 |
 | `--ssl-keyfile` 値                            | （空）                                          | SSLキーファイルのパス。 |
@@ -193,6 +195,9 @@ metrics_port: 10161
 disable_metrics: false
 enable_worker: false
 bootstrap_password: your_admin_password
+jwt_token_expire_minutes: 120
+# If omitted, the log stream timeout inherits GPUSTACK_PROXY_TIMEOUT_SECONDS.
+# log_stream_timeout_seconds: 1800
 database_url: postgresql://username:password@host:port/dbname
 # database_url: mysql://username:password@host:port/dbname
 ssl_keyfile: /path/to/keyfile

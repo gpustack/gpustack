@@ -85,7 +85,10 @@ INSECURE_TLS_ENV = "GPUSTACK_INSECURE_TLS"
 INSECURE_TLS = os.getenv(INSECURE_TLS_ENV, "false").lower() in ["true", "1"]
 
 # JWT Expiration
-JWT_TOKEN_EXPIRE_MINUTES = int(os.getenv("GPUSTACK_JWT_TOKEN_EXPIRE_MINUTES", 120))
+DEFAULT_JWT_TOKEN_EXPIRE_MINUTES = 120
+JWT_TOKEN_EXPIRE_MINUTES = int(
+    os.getenv("GPUSTACK_JWT_TOKEN_EXPIRE_MINUTES", DEFAULT_JWT_TOKEN_EXPIRE_MINUTES)
+)
 
 # Anything that ends up *inside* a WasmPlugin CR is configured under
 # ``gateway_plugin`` in config.yaml instead of here, so the two mechanisms keep

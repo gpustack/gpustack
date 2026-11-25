@@ -252,6 +252,13 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         default=get_gpustack_env("BOOTSTRAP_PASSWORD"),
     )
     server_group.add_argument(
+        "--log-stream-timeout-seconds",
+        type=int,
+        help="Total timeout for live log requests. Defaults to the proxy timeout "
+        "(1800 seconds by default). Use 0 for no total timeout.",
+        default=get_gpustack_env("LOG_STREAM_TIMEOUT_SECONDS"),
+    )
+    server_group.add_argument(
         "--ssl-keyfile",
         type=str,
         help="Path to the SSL key file.",
@@ -430,6 +437,13 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         "--trusted-hosts",
         action='append',
         help='Allowlist for the X-Forwarded-Host header behind a reverse proxy. Specify the flag multiple times for multiple hosts. When unset, derived from --server-external-url. If both are unset, it defaults to "*" to trust any host (not recommended unless the server is only reachable via a trusted proxy).',
+    )
+
+    server_group.add_argument(
+        "--jwt-token-expire-minutes",
+        type=int,
+        help="Lifetime of a Web UI session token in minutes. Defaults to 120.",
+        default=get_gpustack_env("JWT_TOKEN_EXPIRE_MINUTES"),
     )
 
     # OIDC settings
@@ -968,6 +982,8 @@ def set_server_options(args, config_data: dict):
         "disable_worker",
         "enable_worker",
         "bootstrap_password",
+        "jwt_token_expire_minutes",
+        "log_stream_timeout_seconds",
         "ssl_keyfile",
         "ssl_certfile",
         "ssl_ca_certfile",

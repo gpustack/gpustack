@@ -359,6 +359,10 @@ class JWTManager:
         self.algorithm = algorithm
         self.expires_delta = expires_delta
 
+    @property
+    def expires_in_seconds(self) -> int:
+        return int(self.expires_delta.total_seconds())
+
     def create_jwt_token(self, username: str):
         to_encode = {"sub": username}
         expire = datetime.now(timezone.utc) + self.expires_delta

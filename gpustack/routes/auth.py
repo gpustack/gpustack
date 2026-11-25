@@ -22,7 +22,6 @@ from gpustack.schemas.users import UpdatePassword
 from gpustack.schemas.principals import PrincipalType
 from gpustack.schemas.users import User, AuthProviderEnum
 from gpustack.security import JWTManager
-from gpustack import envs
 from gpustack.api.auth import (
     SESSION_COOKIE_NAME,
     OIDC_ID_TOKEN_COOKIE_NAME,
@@ -652,8 +651,8 @@ async def saml_callback(request: Request, session: SessionDep):
         key=SESSION_COOKIE_NAME,
         value=access_token,
         httponly=True,
-        max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
-        expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+        max_age=jwt_manager.expires_in_seconds,
+        expires=jwt_manager.expires_in_seconds,
         samesite="lax",
         secure=request.url.scheme == "https",
     )
@@ -661,8 +660,8 @@ async def saml_callback(request: Request, session: SessionDep):
         key=SSO_LOGIN_COOKIE_NAME,
         value="true",
         httponly=True,
-        max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
-        expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+        max_age=jwt_manager.expires_in_seconds,
+        expires=jwt_manager.expires_in_seconds,
         samesite="lax",
         secure=request.url.scheme == "https",
     )
@@ -930,8 +929,8 @@ async def oidc_callback(request: Request, session: SessionDep):
         key=SESSION_COOKIE_NAME,
         value=access_token,
         httponly=True,
-        max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
-        expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+        max_age=jwt_manager.expires_in_seconds,
+        expires=jwt_manager.expires_in_seconds,
         samesite="lax",
         secure=request.url.scheme == "https",
     )
@@ -942,8 +941,8 @@ async def oidc_callback(request: Request, session: SessionDep):
                 key=OIDC_ID_TOKEN_COOKIE_NAME,
                 value=id_token,
                 httponly=True,
-                max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
-                expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+                max_age=jwt_manager.expires_in_seconds,
+                expires=jwt_manager.expires_in_seconds,
                 samesite="lax",
                 secure=request.url.scheme == "https",
             )
@@ -951,8 +950,8 @@ async def oidc_callback(request: Request, session: SessionDep):
                 key=SSO_LOGIN_COOKIE_NAME,
                 value="true",
                 httponly=True,
-                max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
-                expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+                max_age=jwt_manager.expires_in_seconds,
+                expires=jwt_manager.expires_in_seconds,
                 samesite="lax",
                 secure=request.url.scheme == "https",
             )
@@ -1187,8 +1186,8 @@ async def cas_callback(request: Request, session: SessionDep):
         key=SESSION_COOKIE_NAME,
         value=access_token,
         httponly=True,
-        max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
-        expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+        max_age=jwt_manager.expires_in_seconds,
+        expires=jwt_manager.expires_in_seconds,
         samesite="lax",
         secure=request.url.scheme == "https",
     )
@@ -1196,8 +1195,8 @@ async def cas_callback(request: Request, session: SessionDep):
         key=SSO_LOGIN_COOKIE_NAME,
         value="true",
         httponly=True,
-        max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
-        expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+        max_age=jwt_manager.expires_in_seconds,
+        expires=jwt_manager.expires_in_seconds,
         samesite="lax",
         secure=request.url.scheme == "https",
     )
@@ -1224,8 +1223,8 @@ async def login(
         key=SESSION_COOKIE_NAME,
         value=access_token,
         httponly=True,
-        max_age=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
-        expires=envs.JWT_TOKEN_EXPIRE_MINUTES * 60,
+        max_age=jwt_manager.expires_in_seconds,
+        expires=jwt_manager.expires_in_seconds,
         samesite="lax",
         secure=request.url.scheme == "https",
     )

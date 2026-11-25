@@ -6,22 +6,25 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gpustack.routes import cache_services, model_instances
+from gpustack.routes import benchmarks, cache_services, model_instances
+from gpustack.schemas.benchmark import BenchmarkStateEnum
 from gpustack.schemas.models import BackendEnum, ModelInstanceStateEnum
 from gpustack.server import worker_request
 from gpustack.worker.logs import LogOptions
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("route", ["model", "cache"])
+@pytest.mark.parametrize("route", ["model", "cache", "benchmark"])
 @pytest.mark.parametrize("error_type", [RuntimeError, TimeoutError])
 @pytest.mark.parametrize("after_chunk", [False, True])
+@pytest.mark.parametrize("timeout_seconds", [3600, 0])
 async def test_log_errors_keep_safe_hints_and_status(
-    monkeypatch, caplog, route, error_type, after_chunk
+    monkeypatch, caplog, route, error_type, after_chunk, timeout_seconds
 ):
     sentinel = "credential=private-test-value; /internal/config.yaml"
     worker = SimpleNamespace(id=1)
     request = MagicMock()
+    request.app.state.server_config.log_stream_timeout_seconds = timeout_seconds
 
     class FailedResponse:
         status = 200
@@ -38,6 +41,8 @@ async def test_log_errors_keep_safe_hints_and_status(
 
     @asynccontextmanager
     async def failed_request(**kwargs):
+        assert kwargs["timeout"].total == (timeout_seconds or None)
+        assert kwargs["timeout"].sock_connect == 5
         yield FailedResponse()
 
     @asynccontextmanager
@@ -50,6 +55,19 @@ async def test_log_errors_keep_safe_hints_and_status(
         response = await cache_services._proxy_instance_logs(
             request, SimpleNamespace(id=7, cache_service_id=2), worker, options
         )
+    elif route == "benchmark":
+        benchmark = SimpleNamespace(
+            id=7, name="benchmark", worker_id=1, state=BenchmarkStateEnum.RUNNING
+        )
+        monkeypatch.setattr(benchmarks, "async_session", session)
+        monkeypatch.setattr(benchmarks, "assert_resource_visible", MagicMock())
+        monkeypatch.setattr(
+            benchmarks.Benchmark, "one_by_id", AsyncMock(return_value=benchmark)
+        )
+        monkeypatch.setattr(
+            benchmarks.Worker, "one_by_id", AsyncMock(return_value=worker)
+        )
+        response = await benchmarks.get_benchmark_logs(request, MagicMock(), 7, options)
     else:
         monkeypatch.setattr(model_instances, "async_session", session)
         monkeypatch.setattr(
@@ -92,6 +110,7 @@ async def test_log_errors_keep_safe_hints_and_status(
         else f"Unable to read logs: {error_type.__name__}".encode()
     ) in body
     assert (b"model output" in body) is after_chunk
+    assert b"None seconds" not in body
     records = [r for r in caplog.records if r.exc_info]
     assert len(records) == 1
     assert records[0].name == worker_request.logger.name
