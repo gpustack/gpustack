@@ -18,7 +18,8 @@ from gpustack.server.db import async_session
 
 DEFAULT_MAX_ARCHIVE_BYTES = 256 * 1024 * 1024
 ARCHIVE_FORMAT_VERSION = 1
-_TERMINAL_RETRY_AT = 32503680000.0  # Year 3000 sentinel for disabled retries (MySQL DOUBLE compatible)
+# Year 3000 sentinel for disabled retries (MySQL DOUBLE compatible)
+_TERMINAL_RETRY_AT = 32503680000.0
 
 
 class BenchmarkPayloadError(RuntimeError):
