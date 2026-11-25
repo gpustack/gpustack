@@ -54,6 +54,9 @@ from gpustack.policies.worker_filters.gpu_matching_filter import GPUMatchingFilt
 from gpustack.policies.worker_filters.local_path_filter import LocalPathFilter
 from gpustack.policies.worker_filters.pd_mode_filter import PDModeRuntimeFilter
 from gpustack.policies.worker_filters.cluster_filter import ClusterFilter
+from gpustack.policies.worker_filters.kubernetes_cpu_budget import (
+    filter_workers_by_cpu_budget,
+)
 from gpustack.policies.worker_filters.gather_floor_filter import GatherFloorFilter
 from gpustack.scheduler.model_registry import detect_model_type
 from gpustack.scheduler.meta_registry import get_model_meta
@@ -1211,7 +1214,7 @@ async def find_candidate(
     cpu_only = role_takes_no_accelerator(model, role)
     # Same reason, same moment: `resources` is role-OWN too, and only the
     # accelerator-free branch consumes it.
-    ram_claim = role_container_resources(model, role).memory if cpu_only else None
+    role_resources = role_container_resources(model, role) if cpu_only else None
     # Read here too, and for the third time for the same reason: both of these
     # are properties of the MODEL and its ROLES, and the projection below
     # flattens the roles away.
@@ -1260,6 +1263,9 @@ async def find_candidate(
 
     worker_filter_chain = WorkerFilterChain(filters)
     workers, filter_messages = await worker_filter_chain.filter(workers)
+    fit = filter_workers_by_cpu_budget(workers, getattr(role_resources, "cpu", None))
+    workers = fit.workers
+    filter_messages.extend(fit.messages)
     messages = (
         [str(ListMessageBuilder(filter_messages)) + "\n"] if filter_messages else []
     )
@@ -1273,7 +1279,7 @@ async def find_candidate(
             model,
             model_instances,
             cpu_only=cpu_only,
-            ram_claim=ram_claim,
+            ram_claim=role_resources.memory if role_resources is not None else None,
             resource_view=resource_view,
             managed_sglang=managed_sglang,
         )

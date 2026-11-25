@@ -318,6 +318,32 @@ level allows. GPUStack labels the namespaces it owns accordingly; see
 for what that means on a cluster you brought yourself, including what it does
 *not* cover.
 
+### Kubernetes Router CPU placement
+
+Workers can report how much CPU is still available for requests on their
+Kubernetes node. GPUStack uses this information for both PD group capacity
+checks and Router placement. It is based on node allocatable CPU minus the CPU
+requests of active Pods across namespaces, not on how busy the CPUs are.
+
+To enable this on a Kubernetes Worker, set
+`GPUSTACK_WORKER_KUBERNETES_CPU_BUDGET_KUBECONFIG` to a dedicated, TLS-verified
+kubeconfig for the same cluster. The Worker must also have
+`GPUSTACK_RUNTIME_KUBERNETES_NODE_NAME` set to its node name (the Helm chart
+already sets it). Give the dedicated identity only `get` access to the node
+and `list` access to core Pods across namespaces. Do not extend the Worker
+ServiceAccount used by the cluster proxy. Mount the kubeconfig and its
+credentials in a projected volume so the Kubernetes runtime does not copy the
+mount into inference Pods.
+
+Only the available millicores and their expiration are reported to the server.
+Configure every Worker eligible to host the Router if you need the check on
+all of them. Workers without this configuration retain their existing placement
+behavior. Workers with an opted-in but unavailable or expired measurement are
+excluded from Router placement until the measurement is available again.
+
+This check uses a snapshot, not a reservation. Kubernetes remains the final
+authority if other Pods reserve CPU between measurement and creation.
+
 ### The KV transfer interface
 
 In built-in vLLM NIXL and SGLang NIXL deployments, UCX can pick a container bridge

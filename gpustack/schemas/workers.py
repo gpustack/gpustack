@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import ClassVar, Dict, Optional, Any, TYPE_CHECKING
 from typing_extensions import Annotated, deprecated
-from pydantic import ConfigDict, BaseModel, PositiveInt, field_validator
+from pydantic import AwareDatetime, ConfigDict, BaseModel, PositiveInt, field_validator
 from urllib.parse import urlparse
 from sqlmodel import (
     Field,
@@ -281,6 +281,19 @@ class Maintenance(BaseModel):
     message: Optional[str] = None
 
 
+class KubernetesCPUBudget(BaseModel):
+    """Available CPU requests on the Worker's node, not CPU utilization."""
+
+    available_millicores: Optional[int] = Field(default=None, ge=0)
+    expires_at: Optional[AwareDatetime] = None
+
+    def available_at(self, now: datetime) -> Optional[int]:
+        """Return the last measurement only while it is fresh."""
+        if self.expires_at is not None and now < self.expires_at:
+            return self.available_millicores
+        return None
+
+
 class WorkerStatus(SystemInfo):
     """
     rpc_servers: Deprecated
@@ -300,6 +313,10 @@ class WorkerStatus(SystemInfo):
     NVLink domain its cards agree on. Read under `Worker.labels`, so a
     hand-filled label always wins over a discovered fact.
     """
+
+    # Missing means the collector is disabled; an empty budget means enabled
+    # but unavailable, and must not be interpreted as an unchecked placement.
+    kubernetes_cpu_budget: Optional[KubernetesCPUBudget] = None
 
     kv_transfer_ifname: Optional[str] = Field(
         default=None,

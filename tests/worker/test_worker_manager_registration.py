@@ -4,7 +4,11 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from gpustack.schemas.workers import WorkerRegistrationPublic, WorkerStatus
+from gpustack.schemas.workers import (
+    WorkerRegistrationPublic,
+    WorkerStatus,
+    WorkerStatusPublic,
+)
 from gpustack.worker import worker_manager
 
 
@@ -33,19 +37,19 @@ async def test_register_worker_closes_registration_client(
     """The registration ClientSet is single-use; it must be closed whether
     registration succeeds or fails, otherwise its pooled keep-alive
     connection is stranded until the process exits."""
-    manager = worker_manager.WorkerManager.__new__(worker_manager.WorkerManager)
-    manager._cfg = config.model_copy(update={"data_dir": str(tmp_path)})
-    manager._is_embedded = False
-    manager._collector = Mock()
-    manager._collector.timed_collect.return_value = SimpleNamespace(
-        model_dump=lambda: {
-            "hostname": "worker-host",
-            "ip": "127.0.0.1",
-            "ifname": "eth0",
-            "port": 10100,
-            "worker_uuid": "uuid-1",
-            "status": WorkerStatus.get_default_status().model_dump(),
-        }
+    collector = Mock()
+    collector.timed_collect.return_value = WorkerStatusPublic(
+        hostname="worker-host",
+        ip="127.0.0.1",
+        ifname="eth0",
+        port=10100,
+        worker_uuid="uuid-1",
+        status=WorkerStatus.get_default_status(),
+    )
+    manager = worker_manager.WorkerManager(
+        config.model_copy(update={"data_dir": str(tmp_path)}),
+        is_embedded=False,
+        collector=collector,
     )
 
     registration_client = Mock(spec=worker_manager.WorkerRegistrationClient)

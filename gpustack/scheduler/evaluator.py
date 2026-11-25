@@ -5,6 +5,7 @@ import logging
 import os
 from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, List, Tuple, Optional, Dict
 
 from gpustack_runtime.detector import ManufacturerEnum
@@ -187,17 +188,32 @@ async def evaluate_models(
     return results
 
 
+def _current_cpu_budgets(workers: List[Worker]) -> Dict[int, Optional[int]]:
+    now = datetime.now(timezone.utc)
+    budgets = {}
+    for worker in workers:
+        budget = worker.status.kubernetes_cpu_budget if worker.status else None
+        if budget is not None:
+            budgets[worker.id] = budget.available_at(now)
+    return budgets
+
+
 def make_hashable_key(
     model: ModelSpec,
     workers: List[Worker],
     extra: Optional[Dict[str, Any]] = None,
+    *,
+    cpu_budgets: Optional[Dict[int, Optional[int]]] = None,
 ) -> str:
+    if cpu_budgets is None:
+        cpu_budgets = _current_cpu_budgets(workers) if model.roles else {}
     key_data = json.dumps(
         {
             "model": model.model_dump(mode="json"),
             # State outside the spec and the workers that a verdict depends
             # on, rendered by the caller.
             "extra": extra,
+            "cpu_budgets": cpu_budgets,
             # Excluded from model_dump (response-hidden field), but it
             # changes which Org-scoped backend versions the evaluation
             # sees — without it cached results would leak across Orgs.
@@ -208,6 +224,7 @@ def make_hashable_key(
                     exclude={
                         "status": {
                             "cpu": True,
+                            "kubernetes_cpu_budget": True,
                             "swap": True,
                             "filesystem": True,
                             "os": True,
@@ -309,6 +326,7 @@ async def evaluate_model_with_cache(
         resource_view = ResourceView(
             model_instances, cache_resource_reservations(cache_instances)
         )
+        cpu_budgets = _current_cpu_budgets(workers) if model.roles else {}
         cache_key = make_hashable_key(
             model,
             workers,
@@ -316,6 +334,7 @@ async def evaluate_model_with_cache(
                 "cache_service": cache_service_verdict_key(cache_service),
                 "reservations": resource_view.reservation_key(),
             },
+            cpu_budgets=cpu_budgets,
         )
         if cache_key in evaluate_cache:
             logger.trace(
@@ -335,7 +354,10 @@ async def evaluate_model_with_cache(
                 resource_view=resource_view,
                 cache_instances=cache_instances,
             )
-            evaluate_cache[cache_key] = result
+            # A budget that expired while evaluating must not key a later
+            # verdict for a fresh sample of the same size.
+            if not cpu_budgets or cpu_budgets == _current_cpu_budgets(workers):
+                evaluate_cache[cache_key] = result
     except Exception as e:
         logger.exception(
             f"Error evaluating model {model.name or model.readable_source}: {e}"

@@ -40,6 +40,9 @@ from gpustack.policies.worker_filters.backend_framework_filter import (
 )
 from gpustack.policies.worker_filters.cluster_filter import ClusterFilter
 from gpustack.policies.worker_filters.gpu_matching_filter import GPUMatchingFilter
+from gpustack.policies.worker_filters.kubernetes_cpu_budget import (
+    filter_workers_by_cpu_budget,
+)
 from gpustack.policies.worker_filters.label_matching_filter import LabelMatchingFilter
 from gpustack.policies.worker_filters.local_path_filter import LocalPathFilter
 from gpustack.policies.worker_filters.pd_mode_filter import PDModeRuntimeFilter
@@ -120,6 +123,7 @@ class GroupCapacity:
         self._committed_ports: Dict[int, int] = {}
         # role -> {worker_id: worker}, after that role's filters.
         self._eligible: Dict[Optional[str], Dict[int, Worker]] = {}
+        self._unknown_cpu_capacity: Dict[str, Set[int]] = {}
         self._projected: Dict[Optional[str], "_RoleProjection"] = {}
         # (role, worker_id) -> the candidates the count produced there, in the
         # order it produced them. See `_translate`.
@@ -239,6 +243,8 @@ class GroupCapacity:
         out: Dict[int, int] = {}
         for worker_id in worker_ids:
             self._spanning_port_demands.pop((role, worker_id), None)
+            if worker_id in self._unknown_cpu_capacity.get(role, ()):
+                continue
             worker = eligible.get(worker_id)
             if worker is None:
                 # Filtered out for this role — a measured, definite zero, not
@@ -885,11 +891,15 @@ class GroupCapacity:
         cpu_only = role_takes_no_accelerator(self._model, role)
         # `resources` is role-OWN as well, and only the accelerator-free
         # branch consumes it — same read-before-projection reason.
-        ram_claim = (
-            role_container_resources(self._model, role).memory if cpu_only else None
+        role_resources = (
+            role_container_resources(self._model, role) if cpu_only else None
         )
         model = role_effective_model(self._model, role)
-        self._projected[role] = _RoleProjection(model, cpu_only, ram_claim)
+        self._projected[role] = _RoleProjection(
+            model,
+            cpu_only,
+            role_resources.memory if role_resources is not None else None,
+        )
 
         chain = WorkerFilterChain(
             [
@@ -928,6 +938,12 @@ class GroupCapacity:
             # Repeating it beside a fleet we are deliberately treating as
             # wholly eligible would contradict the very list we return.
             messages = []
+
+        if role_resources is not None:
+            fit = filter_workers_by_cpu_budget(kept, role_resources.cpu)
+            kept = fit.workers
+            self._unknown_cpu_capacity[role] = fit.unknown_ids
+            messages.extend(fit.messages)
 
         # Deduplicated and stripped here rather than in `notes_for`, because
         # this runs once per role (the result is cached on `_eligible`) while

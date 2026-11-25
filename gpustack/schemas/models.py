@@ -520,17 +520,11 @@ class RoleResources(BaseModel):
     Kubernetes (so the Pod lands in the Guaranteed QoS class) and into
     ``cpu_shares`` on Docker, which makes it a weight rather than a cap there.
 
-    It does **not** take part in placement. The scheduler's allocatable
-    view has two dimensions, RAM and VRAM, and CPU is not one of them, so
-    nothing subtracts this from a worker before choosing it. Declaring it
-    still buys cgroup enforcement and kubelet admission; "the scheduler will
-    place the router according to this number" is not true yet and must not
-    be implied in the UI.
+    Placement compares this request with the CPU budget reported by opted-in
+    Kubernetes workers. It is not a placement constraint on other workers.
     """
     memory: Optional[int] = None
-    """Bytes. Unlike `cpu` this one *is* consumed by placement: it becomes the
-    role's ``ComputedResourceClaim.ram``, which the allocatable view already
-    tracks and subtracts."""
+    """Bytes. The role's ``ComputedResourceClaim.ram`` tracks this request."""
 
 
 # A managed router is a proxy: it forwards requests and loads no weights, so
