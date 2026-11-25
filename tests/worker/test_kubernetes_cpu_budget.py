@@ -1,9 +1,13 @@
+import logging
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
+from threading import Barrier
 from unittest.mock import Mock
 
 import pytest
 from kubernetes import client, config
 
+from gpustack.schemas.workers import KubernetesCPUBudget
 from gpustack.worker.kubernetes_cpu_budget import KubernetesCPUCollector
 
 
@@ -145,14 +149,32 @@ def test_opted_in_collector_requires_a_verified_https_endpoint(
     api_client.assert_not_called()
 
 
-def test_opted_in_collector_without_a_node_name_does_not_open_kubeconfig(monkeypatch):
+@pytest.mark.parametrize("node_name", [None, ""])
+def test_missing_node_name_warns_once_and_reports_unavailable(
+    monkeypatch, caplog, node_name
+):
     load = Mock()
     monkeypatch.setattr(config, "load_kube_config", load)
+    collector = KubernetesCPUCollector.from_kubeconfig("/test/kubeconfig", node_name)
+    start = Barrier(2, timeout=5)
 
-    collector = KubernetesCPUCollector.from_kubeconfig("/test/kubeconfig", None)
+    def collect():
+        start.wait()
+        return collector.collect()
 
-    assert collector.collect().available_millicores is None
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        samples = [pool.submit(collect) for _ in range(2)]
+        for sample in samples:
+            assert sample.result(timeout=5) == KubernetesCPUBudget()
+
+    assert collector.collect() == KubernetesCPUBudget()
     load.assert_not_called()
+    warning = (
+        KubernetesCPUCollector.__module__,
+        logging.WARNING,
+        "CPU budget collection requires GPUSTACK_RUNTIME_KUBERNETES_NODE_NAME",
+    )
+    assert caplog.record_tuples.count(warning) == 1
 
 
 @pytest.mark.parametrize("content", [None, "clusters: [", "- not a mapping"])

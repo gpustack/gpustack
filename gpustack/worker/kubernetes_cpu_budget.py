@@ -5,6 +5,7 @@ from contextlib import AbstractContextManager, contextmanager
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from math import ceil
+from threading import Lock
 from time import monotonic
 from typing import Callable, Dict, Iterator, Optional
 from urllib.parse import urlsplit
@@ -79,6 +80,8 @@ class KubernetesCPUCollector:
     ):
         self._open_api = open_api
         self._node_name = node_name
+        self._missing_node_warning_lock = Lock()
+        self._warned_missing_node = False
 
     @classmethod
     def from_kubeconfig(
@@ -117,9 +120,13 @@ class KubernetesCPUCollector:
         """Report an unavailable budget when the node or Pod list cannot be read."""
         node_name = self._node_name
         if not node_name:
-            logger.warning(
-                "CPU budget collection requires GPUSTACK_RUNTIME_KUBERNETES_NODE_NAME"
-            )
+            with self._missing_node_warning_lock:
+                first_warning = not self._warned_missing_node
+                self._warned_missing_node = True
+            if first_warning:
+                logger.warning(
+                    "CPU budget collection requires GPUSTACK_RUNTIME_KUBERNETES_NODE_NAME"
+                )
             return KubernetesCPUBudget()
 
         started = datetime.now(timezone.utc)
