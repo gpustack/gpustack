@@ -1,14 +1,28 @@
 import os
 import sys
 import argparse
+from glob import escape as escape_glob
+import json
 import logging
 from pathlib import Path
+import re
 from shutil import move
+from string import Template
+from tempfile import NamedTemporaryFile
 from typing import List, Dict
+from urllib.parse import urlsplit
+
+import yaml
+from gpustack_runtime import envs as runtime_envs
 from gpustack.config.config import Config
 from gpustack.schemas.config import GatewayModeEnum
 from gpustack.envs import MIGRATION_DATA_DIR, DATA_MIGRATION
 from gpustack.logging import setup_logging
+from gpustack.gateway.client.networking_istio_io_v1alpha3_api import (
+    HIGRESS_CONFIGMAP,
+    HIGRESS_DEFAULT_CONFIG,
+    configure_higress_access_log_context,
+)
 from gpustack.cmd.start import (
     start_cmd_options,
     parse_args,
@@ -25,11 +39,16 @@ from gpustack.utils.s6_services import (
     postgres_services,
     migration_services,
     observability_services,
+    log_collection_services,
     all_services,
     gpustack_service_name,
 )
+from gpustack.worker.log_export import ENGINE_LOG_EXPORT_DIR
 
 logger = logging.getLogger(__name__)
+ALLOY_LOG_TEMPLATE = Path("/etc/gpustack/logging/docker.alloy.tmpl")
+_DOCKER_MOUNTINFO = Path("/proc/self/mountinfo")
+_DOCKER_CONTAINER_MOUNT = re.compile(r"/containers/([0-9a-f]{64})/[^/]+$")
 
 
 def setup_prerun_cmd(subparsers: argparse._SubParsersAction):
@@ -57,7 +76,10 @@ def run(args: argparse.Namespace):
             "Starting pre-run checks and setup s6-overlay configuration for GPUStack..."
         )
         s6_base_path = args.s6_base_path or "/etc/s6-overlay/s6-rc.d"
-        enabled_services = determine_enabled_services(cfg)
+        enabled_services = determine_enabled_services(
+            cfg,
+            logs_active=prepare_log_collection(cfg),
+        )
         # migrate hardcode postgres data dir if needed for determining dependency services
         migrate_hardcode_postgres_data_and_password(cfg, enabled_services)
         dependency_services = determine_dependency_services(cfg)
@@ -240,6 +262,10 @@ def prepare_gateway_config(cfg: Config):
     higress_embedded_kubeconfig = Path(cfg.higress_base_dir()) / "kubeconfig"
 
     if cfg.gateway_mode == GatewayModeEnum.embedded:
+        _prepare_higress_observability(
+            higress_embedded_kubeconfig.parent / "apiserver",
+            log_enabled=bool(cfg.log_otlp_endpoint),
+        )
         with open(config_path, "w") as f:
             f.write(f"DATA_DIR={cfg.data_dir}\n")
             f.write(f"LOG_DIR={cfg.log_dir}\n")
@@ -268,6 +294,210 @@ contexts:
 current-context: higress
 """
             )
+
+
+def _write_yaml_atomically(path: Path, content: dict) -> None:
+    _write_text_atomically(path, yaml.safe_dump(content, sort_keys=False))
+
+
+def _write_text_atomically(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with NamedTemporaryFile(
+        mode="w", encoding="utf-8", dir=path.parent, delete=False
+    ) as output:
+        temporary_path = Path(output.name)
+        try:
+            output.write(content)
+            output.close()
+            temporary_path.replace(path)
+        finally:
+            temporary_path.unlink(missing_ok=True)
+
+
+def _set_higress_access_log_context(
+    configmap_path: Path, template: dict, *, trace_enabled: bool, log_enabled: bool
+) -> None:
+    defaults = yaml.safe_load(template["data"]["mesh"])
+    configmap = (
+        yaml.safe_load(configmap_path.read_text())
+        if configmap_path.exists()
+        else template
+    )
+    mesh = yaml.safe_load(configmap["data"]["mesh"])
+    if configure_higress_access_log_context(
+        mesh, defaults, trace_enabled=trace_enabled, log_enabled=log_enabled
+    ):
+        configmap["data"]["mesh"] = yaml.safe_dump(mesh, sort_keys=False)
+        _write_yaml_atomically(configmap_path, configmap)
+    if log_enabled and not _supports_higress_log_collection(mesh):
+        logger.warning(
+            "Could not verify the Higress access-log template. Check that emitted "
+            "records are JSON with string path and request_id fields."
+        )
+
+
+def _supports_higress_log_collection(mesh: dict) -> bool:
+    if not isinstance(mesh, dict):
+        return False
+    try:
+        fields = json.loads(mesh.get("accessLogFormat", ""))
+    except (TypeError, ValueError, RecursionError):
+        return False
+    return isinstance(fields, dict) and all(
+        isinstance(fields.get(field), str) for field in ("path", "request_id")
+    )
+
+
+def _prepare_higress_observability(apiserver_dir: Path, *, log_enabled: bool) -> None:
+    """Configure the embedded gateway before the file-backed API server starts."""
+    configmap_path = apiserver_dir / HIGRESS_CONFIGMAP
+    if not log_enabled and not configmap_path.exists():
+        return
+
+    template = yaml.safe_load((HIGRESS_DEFAULT_CONFIG / HIGRESS_CONFIGMAP).read_text())
+    _set_higress_access_log_context(
+        configmap_path, template, trace_enabled=False, log_enabled=log_enabled
+    )
+
+
+def _log_export_options(cfg: Config) -> dict:
+    endpoint = cfg.log_otlp_endpoint or ""
+    try:
+        url = urlsplit(endpoint)
+        port = url.port
+    except ValueError:
+        raise ValueError("Invalid OTLP logs URL") from None
+    if (
+        url.scheme not in ("http", "https")
+        or not url.hostname
+        or not url.path
+        or url.username is not None
+        or url.query
+        or url.fragment
+        or port == 0
+        or any(character.isspace() for character in endpoint)
+    ):
+        raise ValueError("Expected a full OTLP/HTTP logs URL without credentials")
+
+    authorization = (
+        cfg.log_otlp_authorization.get_secret_value()
+        if cfg.log_otlp_authorization
+        else ""
+    )
+    if (authorization or cfg.log_otlp_ca_file) and url.scheme != "https":
+        raise ValueError("OTLP log authentication and custom CAs require HTTPS")
+    if any(ord(character) < 32 or ord(character) == 127 for character in authorization):
+        raise ValueError("Invalid OTLP Authorization header")
+
+    headers = (
+        f'{{"Authorization" = {json.dumps(authorization)}}}' if authorization else "{}"
+    )
+    return {
+        "endpoint": json.dumps(endpoint),
+        "headers": headers,
+        "ca_file": json.dumps(cfg.log_otlp_ca_file or ""),
+    }
+
+
+def _docker_application_log_receiver() -> str:
+    # Docker bind-mounts these generated files even with a custom hostname
+    # or a private cgroup namespace.
+    container_ids = set()
+    try:
+        for line in _DOCKER_MOUNTINFO.read_text().splitlines():
+            fields = line.split(maxsplit=5)
+            if len(fields) < 5 or fields[4] not in (
+                "/etc/hostname",
+                "/etc/hosts",
+                "/etc/resolv.conf",
+            ):
+                continue
+            match = _DOCKER_CONTAINER_MOUNT.search(fields[3])
+            if match:
+                container_ids.add(match[1])
+    except OSError:
+        pass
+
+    if len(container_ids) != 1:
+        logger.warning("Unable to identify this Docker container for application logs")
+        return ""
+
+    (container_id,) = container_ids
+    host = runtime_envs.GPUSTACK_RUNTIME_DOCKER_HOST.removeprefix("http+")
+    return f'''loki.source.docker "application" {{
+  host = {json.dumps(host)}
+  targets = [{{"__meta_docker_container_id" = {json.dumps(container_id)}}}]
+  forward_to = [otelcol.receiver.loki.application.receiver]
+}}
+
+otelcol.receiver.loki "application" {{
+  output {{
+    logs = [gpustack.logs.export.application]
+  }}
+}}'''
+
+
+def _check_log_redact_patterns() -> None:
+    name = "GPUSTACK_LOG_REDACT_PATTERNS"
+    try:
+        patterns = json.loads(os.getenv(name) or "[]")
+    except json.JSONDecodeError:
+        raise ValueError(f"{name} must be a JSON array of strings") from None
+    if not isinstance(patterns, list):
+        raise ValueError(f"{name} must be a JSON array of strings")
+    for index, pattern in enumerate(patterns):
+        # Alloy compiles the expressions with RE2 when it loads the pipeline.
+        if not isinstance(pattern, str) or not pattern:
+            raise ValueError(f"{name}[{index}] must be a non-empty RE2 expression")
+
+
+def prepare_log_collection(cfg: Config) -> bool:
+    """Generate the Docker Alloy config when log export is configured."""
+    path = Path(os.getenv("GPUSTACK_RUN_DIR", "/run/gpustack")) / "logging/config.alloy"
+    try:
+        path.unlink(missing_ok=True)
+        if not cfg.log_otlp_endpoint or cfg.log_pod_release:
+            return False
+
+        _check_log_redact_patterns()
+        options = _log_export_options(cfg)
+        directory = escape_glob(str(Path(cfg.log_dir)))
+        state = Path(cfg.data_dir) / "log-collector"
+        engine = [
+            f"{directory}/{ENGINE_LOG_EXPORT_DIR}/archives/*/{name}{suffix}"
+            for name in ("container.log", "container.workload-*.log")
+            for suffix in ("", ".[0-9]*")
+        ]
+        higress_receiver = ""
+        if cfg.gateway_mode == GatewayModeEnum.embedded:
+            higress = [
+                f"{directory}/higress/access.log{suffix}" for suffix in ("", ".[1-5]")
+            ]
+            higress_receiver = f'''otelcol.receiver.filelog "higress" {{
+  include = {json.dumps(higress)}
+  start_at = "end"
+  storage = otelcol.storage.file.offsets.handler
+
+  output {{
+    logs = [gpustack.logs.export.higress]
+  }}
+}}'''
+
+        config = Template(ALLOY_LOG_TEMPLATE.read_text()).substitute(
+            **options,
+            offsets=json.dumps(str(state)),
+            application_receiver=_docker_application_log_receiver(),
+            engine=json.dumps(engine),
+            higress_receiver=higress_receiver,
+        )
+
+        _write_text_atomically(path.with_name("storage-path"), str(state / "alloy"))
+        # The generated config can contain credentials. The temporary file has mode 0600.
+        _write_text_atomically(path, config)
+    except (OSError, TypeError, KeyError, ValueError) as exc:
+        logger.error("Unable to enable application log collection: %s", exc)
+        return False
+    return True
 
 
 def prepare_observability_config(cfg: Config):
@@ -400,7 +630,7 @@ datasources:
     )
 
 
-def determine_enabled_services(cfg: Config) -> List[str]:
+def determine_enabled_services(cfg: Config, logs_active: bool = False) -> List[str]:
     services = []
     # embedded database
     if cfg.database_url is None and cfg.server_role() in [
@@ -416,6 +646,8 @@ def determine_enabled_services(cfg: Config) -> List[str]:
     # embedded observability
     if use_builtin_grafana(cfg):
         services.extend(observability_services.all_services())
+    if logs_active:
+        services.extend(log_collection_services.all_services())
 
     return services
 

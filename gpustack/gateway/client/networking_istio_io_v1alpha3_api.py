@@ -1,4 +1,5 @@
 from enum import Enum
+from pathlib import Path
 from kubernetes_asyncio import client
 from kubernetes_asyncio.client import V1ObjectMeta
 from typing import List, Optional, Dict, Any
@@ -10,6 +11,8 @@ from pydantic import BaseModel, Field
 GROUP = "networking.istio.io"
 VERSION = "v1alpha3"
 PLURAL = "envoyfilters"
+HIGRESS_DEFAULT_CONFIG = Path("/etc/gpustack/data/defaultConfig")
+HIGRESS_CONFIGMAP = "configmaps/higress-config.yaml"
 
 
 class ApplyToStringEnum(str, Enum):
@@ -340,3 +343,33 @@ def get_ingress_fallback_envoyfilter(
         ),
     )
     return envoyfilter
+
+
+def configure_higress_access_log_context(
+    mesh: dict,
+    defaults: dict,
+    *,
+    trace_enabled: bool,
+    log_enabled: bool,
+    trace_format: Optional[str] = None,
+) -> bool:
+    """Switch the bundled access-log format while preserving user formats."""
+    default_format = defaults["accessLogFormat"]
+    trace_format = trace_format or default_format.replace(
+        '"trace_id":"%REQ(X-B3-TRACEID)%"',
+        '"traceparent":"%REQ(TRACEPARENT):55%"',
+    )
+    original = (defaults["accessLogEncoding"], default_format.strip())
+    json_default = ("JSON", default_format.strip())
+    traced = ("JSON", trace_format.strip())
+    if not isinstance(mesh, dict) or not isinstance(mesh.get("accessLogFormat"), str):
+        return False
+    current = (mesh.get("accessLogEncoding"), mesh["accessLogFormat"].strip())
+    if current not in (original, json_default, traced):
+        return False
+    encoding = "JSON" if trace_enabled or log_enabled else original[0]
+    access_format = trace_format if trace_enabled else default_format
+    if current == (encoding, access_format.strip()):
+        return False
+    mesh.update(accessLogEncoding=encoding, accessLogFormat=access_format)
+    return True

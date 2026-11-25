@@ -85,6 +85,7 @@ from gpustack.worker.log_sources import (
     list_log_sources,
 )
 from gpustack.worker.container_logs import ContainerLogPersister
+from gpustack.worker.log_export import EngineLogExport, pod_log_labels
 from gpustack.worker.model_meta import get_meta_from_running_instance
 from gpustack.client import ClientSet
 from gpustack.client.distributed_port_client import DistributedPortClient
@@ -432,6 +433,7 @@ class ServeManager(ContainerLogPersister):
     The mapping of model instance ID to the current generation of its log
     persistence threads. Replacing an entry retires the previous generation.
     """
+    _log_export: Optional[EngineLogExport] = None
     _log_persistence_lock: threading.Lock
     """
     Serializes starting and stopping log persistence, which both the watch
@@ -463,6 +465,10 @@ class ServeManager(ContainerLogPersister):
         self._worker_id_getter = worker_id_getter
         self._config = cfg
         self._serve_log_dir = f"{cfg.log_dir}/serve"
+        if getattr(cfg, "log_otlp_endpoint", None) and not getattr(
+            cfg, "log_pod_release", None
+        ):
+            self._log_export = EngineLogExport(Path(cfg.log_dir))
         self._clientset_getter = clientset_getter
 
         self._provisioning_processes = {}
@@ -542,6 +548,18 @@ class ServeManager(ContainerLogPersister):
         return {
             "gpustack.ai/component-kind": item.component.kind,
             "gpustack.ai/component-attempt": str(item.component.attempt),
+        }
+
+    def _registered_workload_labels(
+        self, mi: ModelInstance, item: ModelInstanceWorkload
+    ) -> Dict[str, str]:
+        role = (
+            "router" if item.component and item.component.kind == "sglang_smg" else None
+        )
+        return {
+            **self._managed_workload_labels(mi),
+            **self._component_workload_labels(item),
+            **pod_log_labels(self._config, mi, self._worker_id, role=role),
         }
 
     @staticmethod
@@ -880,8 +898,7 @@ class ServeManager(ContainerLogPersister):
                     )
                 plan.labels = {
                     **(plan.labels or {}),
-                    **self._managed_workload_labels(mi),
-                    **self._component_workload_labels(item),
+                    **self._registered_workload_labels(mi, item),
                 }
                 create_workload(plan)
                 if item.component is not None:
@@ -1211,8 +1228,7 @@ class ServeManager(ContainerLogPersister):
         plan = transform_workload_plan(self._config, plan, fallback)
         plan.labels = {
             **(plan.labels or {}),
-            **self._managed_workload_labels(current),
-            **self._component_workload_labels(item),
+            **self._registered_workload_labels(current, item),
         }
         # CPU preparation is pure and synchronous under the instance lifecycle
         # lock; a stop cannot acknowledge absence while this create is in flight.
@@ -2135,6 +2151,11 @@ class ServeManager(ContainerLogPersister):
         - If everything is fine, update the model instance state to RUNNING.
         """
 
+        if self._log_export:
+            try:
+                self._log_export.prune()
+            except OSError as exc:
+                logger.warning("Cannot expire retained log archives: %s", exc)
         self._retry_managed_stops()
 
         # Snapshot local state BEFORE the list call. Reversing this order
@@ -3970,9 +3991,11 @@ class ServeManager(ContainerLogPersister):
                     )
                 ):
                     multi_port_external = False
-                write_log_sources(
+                directory = write_log_sources(
                     Path(self._serve_log_dir), mi, self._worker_id, multi_port_external
                 )
+                if self._log_export and engine_log_targets(mi, self._worker_id):
+                    self._log_export.register(directory, mi, self._worker_id)
         except Exception as exc:
             logger.warning("Cannot persist log sources for instance %s: %s", mi.id, exc)
 
@@ -4158,7 +4181,7 @@ class ServeManager(ContainerLogPersister):
             if restart_count in keep:
                 continue
             try:
-                shutil.rmtree(path)
+                self._remove_serve_log_directory(path)
                 logger.info(f"Deleted serve logs of restart {restart_count}: {path}")
             except OSError as e:
                 logger.warning(f"Failed to delete serve log directory {path}: {e}")
@@ -4194,7 +4217,7 @@ class ServeManager(ContainerLogPersister):
 
         if instance_dir is not None:
             try:
-                shutil.rmtree(instance_dir)
+                self._remove_serve_log_directory(instance_dir)
                 logger.info(f"Deleted serve log directory: {instance_dir}")
             except OSError as e:
                 logger.warning(
@@ -4207,6 +4230,15 @@ class ServeManager(ContainerLogPersister):
                 logger.info(f"Deleted serve log file: {path}")
             except OSError as e:
                 logger.warning(f"Failed to delete serve log file {path}: {e}")
+
+    def _remove_serve_log_directory(self, path: Path) -> None:
+        if self._log_export:
+            try:
+                self._log_export.retain(path)
+            except OSError as exc:
+                logger.warning("Cannot retain serve logs for %s: %s", path, exc)
+        if path.exists():
+            shutil.rmtree(path)
 
     def _start_model_instance(self, mi: ModelInstance):
         """Start once, deferring periodic reaping until process creation finishes."""

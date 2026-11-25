@@ -1,0 +1,134 @@
+import.file "gpustack" {
+  filename = "/etc/gpustack/logging/common.alloy"
+}
+
+gpustack.logs "export" {
+  endpoint = sys.env("GPUSTACK_LOG_OTLP_ENDPOINT")
+  // Select an empty header map when the optional credential is absent.
+  headers = {
+    "false" = {},
+    "true" = {"Authorization" = sys.env("GPUSTACK_LOG_OTLP_AUTHORIZATION")},
+  }[string.format("%t", sys.env("GPUSTACK_LOG_OTLP_AUTHORIZATION") != "")]
+  ca_file = sys.env("GPUSTACK_LOG_OTLP_CA_FILE")
+}
+
+discovery.kubernetes "pods" {
+  role = "pod"
+
+  namespaces {
+    names = [sys.env("POD_NAMESPACE")]
+  }
+
+  selectors {
+    role = "pod"
+    label = "gpustack.ai/log-source in (application,engine,higress)"
+  }
+}
+
+discovery.relabel "release" {
+  targets = discovery.kubernetes.pods.targets
+
+  rule {
+    source_labels = ["__meta_kubernetes_pod_label_gpustack_ai_log_release"]
+    regex = sys.env("GPUSTACK_LOG_POD_RELEASE_PATTERN")
+    action = "keep"
+  }
+}
+
+discovery.relabel "application" {
+  targets = discovery.relabel.release.output
+
+  rule {
+    source_labels = ["__meta_kubernetes_pod_label_gpustack_ai_log_source", "__meta_kubernetes_pod_container_name"]
+    regex = "application;" + sys.env("GPUSTACK_LOG_POD_RELEASE_PATTERN") + "-(server|worker)"
+    action = "keep"
+  }
+}
+
+discovery.relabel "higress" {
+  targets = discovery.kubernetes.pods.targets
+
+  rule {
+    source_labels = ["__meta_kubernetes_pod_label_gpustack_ai_log_source", "__meta_kubernetes_pod_container_name", "__meta_kubernetes_pod_label_app", "__meta_kubernetes_pod_label_higress"]
+    regex = "higress;higress-gateway;" + sys.env("GPUSTACK_LOG_HIGRESS_SELECTOR")
+    action = "keep"
+  }
+}
+
+discovery.relabel "engine" {
+  targets = discovery.relabel.release.output
+
+  rule {
+    source_labels = ["__meta_kubernetes_pod_label_gpustack_ai_log_source"]
+    regex = "engine"
+    action = "keep"
+  }
+
+  rule {
+    source_labels = ["__meta_kubernetes_pod_container_init"]
+    regex = "true"
+    action = "drop"
+  }
+
+  rule {
+    regex = "__meta_kubernetes_pod_label_gpustack_ai_(cluster_id|worker_id|model_id|model_instance_id|restart_count)"
+    action = "labelmap"
+  }
+
+  rule {
+    source_labels = ["__meta_kubernetes_pod_label_gpustack_ai_log_role"]
+    target_label = "role"
+  }
+
+  // Keep distinct multiline buffers for each engine container.
+  rule {
+    source_labels = ["__meta_kubernetes_pod_uid", "__meta_kubernetes_pod_container_name"]
+    target_label = "engine_log_stream"
+  }
+}
+
+loki.source.kubernetes "application" {
+  targets = discovery.relabel.application.output
+  forward_to = [otelcol.receiver.loki.application.receiver]
+}
+
+loki.source.kubernetes "higress" {
+  targets = discovery.relabel.higress.output
+  forward_to = [otelcol.receiver.loki.higress.receiver]
+}
+
+loki.source.kubernetes "engine" {
+  targets = discovery.relabel.engine.output
+  forward_to = [loki.process.engine.receiver]
+}
+
+loki.process "engine" {
+  forward_to = [otelcol.receiver.loki.engine.receiver]
+
+  stage.multiline {
+    firstline = `^(?:\[[0-9]{4}-[0-9]{2}-[0-9]{2} |(?:\([^)]*\) )?(?:TRACE|DEBUG|INFO|WARNING|WARN|ERROR|CRITICAL)[: ]|\{\s*"|(?:\x1b\[[0-9;]*m)*[0-9]{4}-[0-9]{2}-[0-9]{2} [^\r\n]*Generated vLLM request ID)`
+    max_wait_time = "500ms"
+  }
+
+  stage.label_drop {
+    values = ["engine_log_stream"]
+  }
+}
+
+otelcol.receiver.loki "application" {
+  output {
+    logs = [gpustack.logs.export.application]
+  }
+}
+
+otelcol.receiver.loki "higress" {
+  output {
+    logs = [gpustack.logs.export.higress]
+  }
+}
+
+otelcol.receiver.loki "engine" {
+  output {
+    logs = [gpustack.logs.export.engine]
+  }
+}

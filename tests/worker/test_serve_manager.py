@@ -27,10 +27,12 @@ from gpustack.schemas.models import (
     DistributedServers,
     ModelInstanceSubordinateWorker,
     ModelInstanceStateEnum,
+    ModelInstanceWorkload,
     SourceEnum,
 )
 from gpustack.server.bus import Event, EventType
 from gpustack.worker import log_sources
+from gpustack.worker.log_export import EngineLogExport
 from gpustack.worker.log_sources import (
     CappedLogWriter,
     ServeLogKind,
@@ -70,7 +72,7 @@ from gpustack.worker.serve_manager import (
     _LogPersistence,
 )
 from gpustack_runtime.deployer import WorkloadStatusStateEnum
-from tests.utils.model import new_model, new_model_instance
+from tests.utils.model import new_model, new_model_instance, new_model_instance_workload
 
 
 def _fake_stop_event(max_waits: int = 100):
@@ -1740,6 +1742,58 @@ def test_cleanup_old_logs_keeps_only_current_and_previous_restart(tmp_path: Path
         f"{mid}.container.1.log",
         f"{mid}.container.2.log",
     ]
+
+
+@pytest.mark.parametrize("delete_instance", [False, True])
+def test_worker_registers_and_retires_managed_engine_archives(
+    tmp_path, delete_instance
+):
+    manager, _clients = _build_serve_manager(worker_id=1)
+    serve_dir = tmp_path / "serve"
+    manager._serve_log_dir = str(serve_dir)
+    manager._log_export = EngineLogExport(tmp_path)
+    instance = new_model_instance(19, "managed", 5, worker_id=1)
+    instance.cluster_id = 2
+    instance.restart_count = 4
+    instance.distributed_servers = DistributedServers(
+        orchestration_mode="managed", workloads=[]
+    )
+    manager._record_log_sources(instance)
+    aliases = tmp_path / "engine-export/archives"
+    assert not aliases.exists()
+
+    instance.distributed_servers.workloads = [
+        ModelInstanceWorkload(**new_model_instance_workload(name=name, dp_rank=rank))
+        for rank, name in enumerate(("engine-a", "engine-b"))
+    ]
+    manager._record_log_sources(instance)
+    alias = next(aliases.iterdir())
+    assert alias.name.startswith("2.1.5.19.4.engine.")
+    for name, archive in log_sources.engine_log_targets(instance, 1):
+        path = (
+            container_log_path(serve_dir, instance.name, instance.id, 4)
+            if archive is None
+            else sidecar_container_log_path(
+                serve_dir, instance.name, instance.id, archive, 4
+            )
+        )
+        path.write_text(name)
+        assert (alias / path.name).read_text() == name
+
+    manager._cleanup_old_logs(instance.id, 5)
+    assert 4 in restart_log_dirs(serve_dir, instance.id)
+    engine_log = container_log_path(serve_dir, instance.name, instance.id, 4)
+    with engine_log.open("a") as stream:
+        stream.write("\nERROR final engine error\n")
+    if delete_instance:
+        manager._purge_instance_logs(instance.id)
+    else:
+        manager._cleanup_old_logs(instance.id, 6)
+    assert not restart_log_dirs(serve_dir, instance.id)
+    assert not engine_log.exists()
+    assert (
+        alias / "container.log"
+    ).read_text() == "engine-a\nERROR final engine error\n"
 
 
 def test_cleanup_old_logs_restart_zero_purges_all(tmp_path: Path):

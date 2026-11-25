@@ -13,7 +13,7 @@ from prometheus_client.core import (
 import uvicorn
 from gpustack.config.config import Config
 from gpustack.exporter.bus_metrics import BusMetricsCollector
-from gpustack.logging import setup_logging
+from gpustack.logging import setup_logging, uvicorn_log_config
 from gpustack.schemas.cache_providers import DEFAULT_METRICS_PORT_NAME
 from gpustack.schemas.cache_services import (
     CacheService,
@@ -540,6 +540,7 @@ class MetricExporter(Collector):
                 port=self._port,
                 access_log=False,
                 log_level="error",
+                log_config=uvicorn_log_config(),
             )
 
             setup_logging()

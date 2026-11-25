@@ -25,6 +25,10 @@ spec:
     metadata:
       labels:
         app: {{ .Release.Name }}-server
+        {{- if .Values.logging.endpoint }}
+        gpustack.ai/log-release: {{ .Release.Name | quote }}
+        gpustack.ai/log-source: application
+        {{- end }}
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/port: "{{ .Values.server.metricsPort }}"
@@ -85,6 +89,9 @@ spec:
                 secretKeyRef:
                   name: {{ .Release.Name }}-server-bootstrap-password
                   key: password
+            {{- end }}
+            {{- with (include "gpustack.observabilityEnv" . | trim) }}
+            {{- . | nindent 12 }}
             {{- end }}
           envFrom:
             {{- if .Values.worker.enabled }}

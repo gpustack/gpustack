@@ -21,6 +21,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    SecretStr,
     field_validator,
     model_validator,
 )
@@ -205,6 +206,7 @@ class Config(WorkerConfig, BaseSettings):
                              entry the gateway appended is trusted, so forwarded headers cannot spoof
                              the source address.
         disable_builtin_observability: Disable embedded Grafana and Prometheus services.
+        log_otlp_endpoint: Full OTLP/HTTP logs URL to enable structured log collection and export.
         prometheus_url: Base URL of an external Prometheus to query. When unset, the embedded one is used if it is enabled. Set this to keep the server's own metric queries working on a deployment that delegates observability to its own stack.
         grafana_url: Base URL for Grafana UI used by redirects and proxying. When unset, defaults to the embedded Grafana URL unless builtin observability is disabled.
         grafana_worker_dashboard_uid: Grafana dashboard UID for worker dashboard.
@@ -362,6 +364,10 @@ class Config(WorkerConfig, BaseSettings):
     shuihua_api_base_url: str = "https://hub.do.top"
 
     disable_builtin_observability: bool = False
+    log_otlp_endpoint: Optional[str] = Field(default=None, repr=False)
+    log_otlp_authorization: Optional[SecretStr] = Field(default=None, repr=False)
+    log_otlp_ca_file: Optional[str] = None
+    log_pod_release: Optional[str] = None
     builtin_prometheus_port: int = 19090
     prometheus_url: Optional[str] = None
     builtin_grafana_port: int = 13000

@@ -1,10 +1,12 @@
+import argparse
 import json
 from pathlib import Path
 
 from starlette.requests import Request
 import pytest
 
-from gpustack.cmd.prerun import prepare_observability_config
+from gpustack.cmd.prerun import prepare_observability_config, setup_prerun_cmd
+from gpustack.cmd.start import setup_start_cmd
 from gpustack.config.config import Config
 from gpustack.routes import prometheus as prometheus_routes
 
@@ -58,6 +60,39 @@ def test_no_prometheus_at_all_is_a_first_class_answer(tmp_path):
     cfg = Config(data_dir=str(tmp_path / "data"), disable_builtin_observability=True)
 
     assert cfg.get_prometheus_url() is None
+
+
+def _parse_cli(subcommand: str, argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command")
+    setup_start_cmd(subparsers)
+    setup_prerun_cmd(subparsers)
+    return parser.parse_args([subcommand, *argv])
+
+
+@pytest.mark.parametrize("subcommand", ["start", "prerun"])
+@pytest.mark.parametrize(
+    ("flag", "attr", "env_name", "flag_value", "env_value"),
+    [
+        (
+            "--log-otlp-endpoint",
+            "log_otlp_endpoint",
+            "GPUSTACK_LOG_OTLP_ENDPOINT",
+            "http://collector.cli:4318/v1/logs",
+            "http://collector.env:4318/v1/logs",
+        ),
+    ],
+)
+def test_otlp_endpoint_cli_flags_and_env_precedence(
+    monkeypatch, subcommand, flag, attr, env_name, flag_value, env_value
+):
+    monkeypatch.delenv(env_name, raising=False)
+    assert getattr(_parse_cli(subcommand, []), attr) is None
+    assert getattr(_parse_cli(subcommand, [flag, flag_value]), attr) == flag_value
+
+    monkeypatch.setenv(env_name, env_value)
+    assert getattr(_parse_cli(subcommand, []), attr) == env_value
+    assert getattr(_parse_cli(subcommand, [flag, flag_value]), attr) == flag_value
 
 
 def test_incluster_gateway_scrape_job_uses_pod_discovery(tmp_path, monkeypatch):
@@ -117,6 +152,8 @@ def test_incluster_gateway_scrape_job_uses_pod_discovery(tmp_path, monkeypatch):
 
 
 def test_prepare_prometheus_config_writes_observability_env(tmp_path, monkeypatch):
+    import yaml
+
     cfg = Config(
         data_dir=str(tmp_path / "data"),
         builtin_prometheus_port=19100,
@@ -135,15 +172,16 @@ def test_prepare_prometheus_config_writes_observability_env(tmp_path, monkeypatc
 
     env_text = observability_config_path.read_text()
     prom_text = prometheus_config.read_text()
-    datasource_text = (
-        grafana_provisioning_dir / "datasources" / "datasource.yaml"
-    ).read_text()
+    datasource = yaml.safe_load(
+        (grafana_provisioning_dir / "datasources" / "datasource.yaml").read_text()
+    )["datasources"][0]
 
     assert "PROMETHEUS_PORT=19100" in env_text
     assert "GF_SERVER_HTTP_PORT=13100" in env_text
     assert f"PROMETHEUS_DATA_DIR={tmp_path / 'data' / 'prometheus'}" in env_text
     assert "127.0.0.1:10161/metrics/targets" in prom_text
-    assert "url: http://127.0.0.1:19100/prometheus" in datasource_text
+    assert datasource["url"] == "http://127.0.0.1:19100/prometheus"
+    assert datasource["orgId"] == 1
 
 
 @pytest.mark.asyncio

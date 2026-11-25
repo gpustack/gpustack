@@ -179,7 +179,8 @@ async def process_request(
 
             await record_model_usage(request, usage, operation)
         except Exception as e:
-            logger.error(f"Error processing model usage: {e}")
+            # Parser and validation errors can include the model response.
+            logger.error("Error processing model usage (%s)", type(e).__name__)
         response = Response(
             content=response_body,
             status_code=response.status_code,
@@ -320,7 +321,9 @@ async def handle_streaming_response(
                 ):
                     yield processed_chunk
             except Exception as e:
-                logger.error(f"Error processing streaming response: {e}")
+                logger.error(
+                    "Error processing streaming response (%s)", type(e).__name__
+                )
                 yield chunk
 
     return StreamingResponse(streaming_generator(), headers=response.headers)

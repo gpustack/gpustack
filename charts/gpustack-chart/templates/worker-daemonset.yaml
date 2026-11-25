@@ -71,6 +71,10 @@ spec:
     metadata:
       labels:
         app: {{ $w.dsName }}
+        {{- if $.Values.logging.endpoint }}
+        gpustack.ai/log-release: {{ $.Release.Name | quote }}
+        gpustack.ai/log-source: application
+        {{- end }}
         {{- if $multiVendor }}
         app.kubernetes.io/component: worker
         gpustack.io/runtime: {{ $w.name }}
@@ -140,6 +144,9 @@ spec:
               value: "all"
             - name: NVIDIA_MIG_MONITOR_DEVICES
               value: "all"
+            {{- end }}
+            {{- with (include "gpustack.observabilityEnv" $ | trim) }}
+            {{- . | nindent 12 }}
             {{- end }}
           envFrom:
             - secretRef:

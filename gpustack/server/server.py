@@ -17,7 +17,7 @@ import tenacity
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.gpu_instances import sync_builtin_templates_to_db
-from gpustack.logging import setup_logging
+from gpustack.logging import setup_logging, uvicorn_log_config
 from gpustack.schemas.users import (
     User,
     get_default_cluster_principal,
@@ -354,6 +354,7 @@ class Server:
             port=self._config.get_api_port(),
             access_log=False,
             log_level="error",
+            log_config=uvicorn_log_config(),
         )
 
         setup_logging()

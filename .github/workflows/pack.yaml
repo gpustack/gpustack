@@ -378,11 +378,11 @@ jobs:
           echo "--- values.yaml image stanza ---"
           yq '.image' charts/gpustack-chart/values.yaml
 
-      - name: Helm lint
-        run: helm lint charts/gpustack-chart
-
-      - name: Helm dependency update
-        run: helm dependency update charts/gpustack-chart
+      - name: Prepare Helm chart
+        run: |
+          helm dependency update charts/gpustack-chart
+          helm lint charts/gpustack-chart
+          helm lint charts/gpustack-chart --set-string logging.endpoint=http://collector:4318/v1/logs
 
       - name: Helm package
         run: |

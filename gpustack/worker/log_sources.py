@@ -1673,7 +1673,7 @@ def _workload_log_name(name: str) -> str:
 
 def write_log_sources(
     log_dir: Path, instance, worker_id: int, multi_port_external: Optional[bool] = None
-) -> None:
+) -> Path:
     """Persist only this generation's accepted local identities beside its logs."""
     from gpustack.utils.model_instance_workers import get_model_instance_workloads
 
@@ -1755,7 +1755,7 @@ def write_log_sources(
             record = prior
         streams[key] = record
     if list(streams.values()) == old:
-        return
+        return directory
     payload = dict(
         version=1,
         instance_id=instance.id,
@@ -1769,6 +1769,7 @@ def write_log_sources(
         os.replace(temporary, target)
     finally:
         temporary.unlink(missing_ok=True)
+    return directory
 
 
 def read_log_sources(

@@ -11,9 +11,11 @@ fetched, so neither a machine without helm nor an outage at somebody else's
 chart repository turns this suite red.
 """
 
+import json
 import pathlib
 import shutil
 import subprocess
+import sys
 from copy import deepcopy
 from functools import lru_cache
 
@@ -58,42 +60,45 @@ def pinned_operator_version() -> tuple[int, ...]:
 
 
 @pytest.fixture(scope="module", autouse=True)
-def chart_dependencies():
-    """Vendor the chart's dependencies, which every render needs.
+def chart_dependencies(tmp_path_factory):
+    """Prepare dependencies without modifying the checkout's vendored archive.
 
     `helm template` resolves dependencies while loading the chart — before any
     value is read — so a missing `charts/` fails every render here regardless of
-    what the test asks for, including the ones whose sub-charts are conditioned
-    off. The directory is generated, not committed, so a fresh checkout and a CI
-    runner both start without it.
+    what the test asks for, including when its sub-charts are disabled.
 
     `dependency update` rather than `build`: the lock file is not tracked either,
     and `build` refuses a repository that was never `helm repo add`-ed, which is
     the normal state of a runner.
     """
-    chart = yaml.safe_load((CHART_DIR / "Chart.yaml").read_text())
+    render_path = tmp_path_factory.mktemp("helm-chart") / CHART_DIR.name
+    shutil.copytree(CHART_DIR, render_path)
+    chart = yaml.safe_load((render_path / "Chart.yaml").read_text())
     wanted = [d["name"] for d in chart.get("dependencies") or []]
-    vendored = {path.name for path in (CHART_DIR / "charts").glob("*")}
+    vendored = {path.name for path in (render_path / "charts").glob("*")}
     missing = [
         name for name in wanted if not any(entry.startswith(name) for entry in vendored)
     ]
-    if not missing:
-        return
-
-    result = subprocess.run(
-        [HELM, "dependency", "update", CHART],
-        capture_output=True,
-        text=True,
-        timeout=600,
-    )
-    if result.returncode != 0:
-        # Last line, not the whole log: `dependency update` narrates every repo
-        # it refreshes before saying what went wrong.
-        detail = (result.stderr.strip() or result.stdout.strip()).splitlines()
-        pytest.skip(
-            f"chart dependencies unavailable ({', '.join(missing)}): "
-            f"{detail[-1] if detail else 'helm dependency update failed'}"
-        )
+    if missing:
+        try:
+            result = subprocess.run(
+                [HELM, "dependency", "update", str(render_path)],
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
+        except subprocess.TimeoutExpired:
+            pytest.skip(f"chart dependency download timed out ({', '.join(missing)})")
+        if result.returncode != 0:
+            # Last line, not the whole log: `dependency update` narrates each repo.
+            detail = (result.stderr.strip() or result.stdout.strip()).splitlines()
+            pytest.skip(
+                f"chart dependencies unavailable ({', '.join(missing)}): "
+                f"{detail[-1] if detail else 'helm dependency update failed'}"
+            )
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(sys.modules[__name__], "CHART", str(render_path))
+        yield
 
 
 # Every render has to name the gpustack image: `image.tag` is deliberately
@@ -168,6 +173,211 @@ def container_env(docs: list[dict], kind: str, name: str) -> dict[str, str]:
                 if "value" in e
             }
     pytest.fail(f"{kind}/{name} not rendered")
+
+
+@pytest.mark.parametrize("auth_secret", ["", "logs-auth"])
+def test_logging_references_existing_secrets(auth_secret):
+    docs = render(
+        "--set",
+        f"logging.authorizationSecret.name={auth_secret},logging.caSecret.name=logs-ca",
+        "--set-string",
+        "logging.endpoint=https://collector:4318/v1/logs",
+    )
+    assert "logs-auth" not in names(docs, "Secret")
+    server = container_env(docs, "StatefulSet", "gpustack-server")
+    assert "GPUSTACK_LOG_OTLP_AUTHORIZATION" not in server
+    assert "GPUSTACK_LOG_OTLP_CA_FILE" not in server
+    alloy = next(
+        doc
+        for doc in docs
+        if doc["kind"] == "Deployment" and doc["metadata"]["name"] == "gpustack-alloy"
+    )
+    pod = alloy["spec"]["template"]["spec"]
+    env = {entry["name"]: entry for entry in pod["containers"][0]["env"]}
+    if auth_secret:
+        assert env["GPUSTACK_LOG_OTLP_AUTHORIZATION"]["valueFrom"]["secretKeyRef"] == {
+            "name": auth_secret,
+            "key": "authorization",
+        }
+    else:
+        assert "GPUSTACK_LOG_OTLP_AUTHORIZATION" not in env
+    ca = next(
+        volume["secret"]
+        for volume in pod["volumes"]
+        if volume["name"] == "gpustack-otel-ca"
+    )
+    assert ca == {
+        "secretName": "logs-ca",
+        "items": [{"key": "ca.crt", "path": "ca.crt"}],
+    }
+
+
+@pytest.mark.parametrize(
+    "patterns",
+    [[], [r"\b1[3-9][0-9]{9}\b", r'(?i)"email"\s*:', r"\Q$(POD_NAMESPACE)\E"]],
+)
+def test_logging_redaction_patterns_reach_alloy(patterns):
+    docs = render(
+        "--set-string",
+        "logging.endpoint=http://collector:4318/v1/logs",
+        "--set-json",
+        f"logging.redactPatterns={json.dumps(patterns)}",
+    )
+    alloy = container_env(docs, "Deployment", "gpustack-alloy")
+    value = alloy["GPUSTACK_LOG_REDACT_PATTERNS"]
+    assert "$(POD_NAMESPACE)" not in value
+    assert json.loads(value) == patterns
+
+
+@pytest.mark.parametrize("invalid", ["", 1, "[", r"(x)\1"])
+def test_logging_rejects_invalid_redaction_pattern(invalid):
+    error = render_error(
+        "--set-string",
+        "logging.endpoint=http://collector:4318/v1/logs",
+        "--set-json",
+        f"logging.redactPatterns={json.dumps(['valid', invalid])}",
+    )
+    assert "logging.redactPatterns[1] must be a non-empty RE2 expression" in error
+
+
+@pytest.mark.parametrize("pattern", ["foo|", "(?:)", "a*", r"\B"])
+def test_logging_rejects_redaction_patterns_that_match_the_empty_string(pattern):
+    patterns = [r"\btoken\b", pattern]
+    error = render_error(
+        "--set-string",
+        "logging.endpoint=http://collector:4318/v1/logs",
+        "--set-json",
+        f"logging.redactPatterns={json.dumps(patterns)}",
+    )
+    assert "logging.redactPatterns[1] must not match the empty string" in error
+
+
+def test_legacy_higress_log_collection_values_do_not_mount_host_logs():
+    docs = render(
+        "--is-upgrade",
+        "--set",
+        "logging.higress.mode=nodeCollector",
+        "--set-string",
+        "logging.endpoint=https://collector:4318/v1/logs",
+    )
+    obsolete = "gpustack-higress-log-collector"
+    assert obsolete not in names(docs, "DaemonSet")
+    assert obsolete not in names(docs, "ConfigMap")
+    for doc in docs:
+        if doc["kind"] in {"Deployment", "DaemonSet", "StatefulSet"}:
+            volumes = doc["spec"]["template"]["spec"].get("volumes", [])
+            assert all(
+                not volume.get("hostPath", {})
+                .get("path", "")
+                .startswith(("/var/log/pods", "/var/log/containers"))
+                for volume in volumes
+            )
+
+
+def test_bundled_higress_log_format_survives_worker_values_upgrade():
+    def get_mesh(docs):
+        return next(
+            doc["data"]["mesh"]
+            for doc in docs
+            if doc["metadata"]["name"] == "higress-config"
+        )
+
+    options = ("--set-string", "logging.endpoint=http://otel:4318/v1/logs")
+    before = get_mesh(render(*options))
+    after = get_mesh(render(*options, "--set-string", "worker.nodeSelector.zone=other"))
+    assert before == after
+    assert yaml.safe_load(after)["accessLogEncoding"] == "JSON"
+
+
+def test_existing_gateway_agent_can_disable_only_gateway_collection():
+    docs = render(
+        "--set",
+        "worker.enabled=true,logging.higress.enabled=false,"
+        "logging.endpoint=http://otel:4318/v1/logs",
+    )
+    assert "GPUSTACK_LOG_HIGRESS_SELECTOR" not in container_env(
+        docs, "Deployment", "gpustack-alloy"
+    )
+    assert "gpustack-alloy" in names(docs, "Deployment")
+    for kind, name in (
+        ("StatefulSet", "gpustack-server"),
+        ("DaemonSet", "gpustack-worker"),
+    ):
+        assert container_env(docs, kind, name)["GPUSTACK_LOG_POD_RELEASE"] == "gpustack"
+
+
+@pytest.mark.parametrize(
+    "encoding,access_log_format",
+    [
+        ("JSON", '{"path":"%REQ(:PATH)%","request_id":"%REQ(X-REQUEST-ID)%"}'),
+        ("TEXT", '{"path":"%REQ(:PATH)%","request_id":"%REQ(X-REQUEST-ID)%"}'),
+        (
+            "TEXT",
+            '{"path":"%REQ(:PATH)%","request_id":"%REQ(X-REQUEST-ID)%",'
+            '"response_code":%RESPONSE_CODE%}',
+        ),
+    ],
+)
+def test_bundled_higress_log_collection_preserves_custom_format(
+    encoding, access_log_format
+):
+    docs = render(
+        "--set",
+        "logging.endpoint=http://otel:4318/v1/logs,"
+        f"higress-core.meshConfig.accessLogEncoding={encoding}",
+        "--set-literal",
+        f"higress-core.meshConfig.accessLogFormat={access_log_format}",
+    )
+    configmap = next(doc for doc in docs if doc["metadata"]["name"] == "higress-config")
+    mesh = yaml.safe_load(configmap["data"]["mesh"])
+    assert mesh["accessLogEncoding"] == encoding
+    assert mesh["accessLogFormat"] == access_log_format
+    assert "GPUSTACK_HELM_HIGRESS_LOG_FORMAT" not in container_env(
+        docs, "StatefulSet", "gpustack-server"
+    )
+
+
+@pytest.mark.parametrize(
+    "setting,containers",
+    [
+        ("higress-core.global.enableIstioAPI=false", {"higress-gateway"}),
+        ("higress-core.global.o11y.enabled=true", {"higress-gateway", "promtail"}),
+    ],
+)
+def test_higress_logs_keep_existing_gateway_pod_layout(setting, containers):
+    docs = render(
+        "--set",
+        f"{setting},logging.endpoint=http://otel:4318/v1/logs",
+    )
+    gateway = next(
+        doc
+        for doc in docs
+        if doc["kind"] == "Deployment" and doc["metadata"]["name"] == "higress-gateway"
+    )
+    pod = gateway["spec"]["template"]["spec"]
+    assert {container["name"] for container in pod["containers"]} == containers
+    assert "automountServiceAccountToken" not in pod
+    assert "gpustack-higress-file-log" not in names(docs, "EnvoyFilter")
+    assert (
+        container_env(docs, "StatefulSet", "gpustack-server")[
+            "GPUSTACK_LOG_OTLP_ENDPOINT"
+        ]
+        == "http://otel:4318/v1/logs"
+    )
+
+
+@pytest.mark.parametrize(
+    "settings,message",
+    [
+        (
+            "logging.endpoint=http://logs/v1/logs,logging.authorizationSecret.name=logs-auth",
+            "require an HTTPS",
+        ),
+        ("logging.endpoint=https://user:password@logs/v1/logs", "without credentials"),
+    ],
+)
+def test_invalid_telemetry_settings_are_rejected(settings, message):
+    assert message in render_error("--set", settings)
 
 
 class TestServerOnly:

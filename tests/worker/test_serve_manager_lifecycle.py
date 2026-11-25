@@ -4642,6 +4642,7 @@ def test_smg_stop_keeps_engine_and_port_claims(smg, worker_state):
 @pytest.mark.parametrize('public_model', [False, True])
 def test_smg_server_pending_attempt_creates_only_cpu_and_is_adopted(smg, public_model):
     s = smg
+    s.serve._config.log_pod_release = "trace-test"
     if public_model:
         from gpustack.schemas.models import ModelPublic
 
@@ -4682,6 +4683,7 @@ def test_smg_server_pending_attempt_creates_only_cpu_and_is_adopted(smg, public_
         assert plan.name == item.name
         assert plan.containers[0].image == 'mirror/engine:v1'
         assert plan.labels['gpustack.ai/component-attempt'] == '1'
+        assert plan.labels['gpustack.ai/log-role'] == 'router'
 
 
 @pytest.mark.parametrize('unknown', ['list', 'lookup', 'worker', 'delete_pending'])
@@ -4849,6 +4851,7 @@ def test_initial_cpu_create_failure_keeps_already_created_engine(smg):
     s = smg
     if s.serve._worker_id != 1:
         return
+    s.serve._config.log_pod_release = "trace-test"
     local = _local_manifest(s)
     for w in local:
         w.state = ModelInstanceWorkloadStateEnum.PENDING
@@ -4866,6 +4869,10 @@ def test_initial_cpu_create_failure_keeps_already_created_engine(smg):
 
     s.create.side_effect = fail_cpu
     assert s.serve._start_managed_workloads(s.instance, local, _managed_plans(local))
+    assert {
+        plan.labels['gpustack.ai/component-kind']: plan.labels['gpustack.ai/log-role']
+        for (plan,), _kwargs in s.create.call_args_list
+    } == {'sglang_engine': 'engine', 'sglang_smg': 'router'}
     assert any(w.name == 'engine-1' for w in s.runtime)
     assert not s.serve._managed_stopping
     assert all(not c.args[0].startswith('engine') for c in s.delete.call_args_list)

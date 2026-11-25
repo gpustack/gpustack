@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from gpustack.worker import logs as worker_logs
+from gpustack.worker.log_export import EngineLogExport
 from gpustack.worker.logs import (
     LineWindow,
     LogOptions,
@@ -17,6 +18,110 @@ from gpustack.worker.logs import (
     plan_line_window,
     read_line_slice,
 )
+
+
+def _export_source(tmp_path, export, instance_name, role=None):
+    from types import SimpleNamespace
+
+    source = tmp_path / "serve" / f"{instance_name}.12" / "0"
+    source.mkdir(parents=True)
+    (source / "container.log").write_text(f"{instance_name}\n")
+    instance = SimpleNamespace(
+        id=12, model_id=7, cluster_id=2, restart_count=0, role=role
+    )
+    export.register(source, instance, worker_id=6)
+    return source
+
+
+def test_log_export_retains_registered_generation_across_same_name_recreation(
+    tmp_path, monkeypatch
+):
+    from gpustack.worker import log_export
+
+    monkeypatch.setattr(log_export, "time_ns", lambda: 1_000_000_000)
+    export = EngineLogExport(tmp_path)
+    source = _export_source(tmp_path, export, "same", "prefill")
+    alias = next((tmp_path / "engine-export" / "archives").iterdir())
+    assert alias.name.startswith("2.6.7.12.0.prefill.")
+    assert (alias / "container.log").read_text() == "same\n"
+    (source / "container.log.1").write_text("rotated\n")
+    assert (alias / "container.log.1").read_text() == "rotated\n"
+
+    export.retain(source.parent)
+    assert not source.exists()
+    assert (alias / "container.log.1").read_text() == "rotated\n"
+    replacement = _export_source(tmp_path, export, "same", "prefill")
+    (replacement / "container.log").write_text("replacement\n")
+    assert (alias / "container.log").read_text() == "same\n"
+
+    monkeypatch.setattr(log_export, "time_ns", lambda: 6_000_000_000)
+    EngineLogExport(tmp_path).prune()
+    assert not alias.is_symlink()
+    assert (replacement / "container.log").read_text() == "replacement\n"
+
+
+def test_log_export_publishes_only_the_final_alias(tmp_path, monkeypatch):
+    archives = tmp_path / "engine-export/archives"
+    replace = Path.replace
+
+    def check_publish(source, target):
+        if target.parent == archives:
+            assert not list(archives.iterdir())
+        return replace(source, target)
+
+    monkeypatch.setattr(Path, "replace", check_publish)
+    _export_source(tmp_path, EngineLogExport(tmp_path), "registered")
+    assert len(list(archives.iterdir())) == 1
+
+
+@pytest.mark.parametrize("limit", ["_MAX_RETAINED_BYTES", "_MAX_RETAINED_ARCHIVES"])
+def test_log_export_skips_archives_when_retention_budget_is_full(
+    tmp_path, monkeypatch, limit
+):
+    from gpustack.worker import log_export
+
+    monkeypatch.setattr(log_export, limit, 0)
+    export = EngineLogExport(tmp_path)
+    source = _export_source(tmp_path, export, "registered")
+    export.retain(source)
+    assert source.exists()
+    assert not list((tmp_path / "engine-export" / "archives").iterdir())
+
+
+def test_log_export_prunes_dangling_aliases_without_retired_directories(tmp_path):
+    export = EngineLogExport(tmp_path)
+    stale = _export_source(tmp_path, export, "stale")
+    live = _export_source(tmp_path, export, "live", "prefill")
+    (stale / "container.log").unlink()
+    stale.rmdir()
+
+    export.prune()
+
+    archives = tmp_path / "engine-export/archives"
+    assert [alias.resolve() for alias in archives.iterdir()] == [live]
+    assert not (tmp_path / "engine-export/retired").exists()
+
+
+def test_log_export_retains_archive_after_a_rotation_file_disappears(
+    tmp_path, monkeypatch
+):
+    export = EngineLogExport(tmp_path)
+    source = _export_source(tmp_path, export, "active")
+    rotated = source / "container.log.1"
+    rotated.write_text("rotated")
+    lstat = Path.lstat
+
+    def remove_during_stat(path):
+        if path == rotated:
+            path.unlink(missing_ok=True)
+        return lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", remove_during_stat)
+    export.retain(source)
+
+    assert not source.exists()
+    (alias,) = (tmp_path / "engine-export/archives").iterdir()
+    assert (alias / "container.log").read_text() == "active\n"
 
 
 @pytest.fixture

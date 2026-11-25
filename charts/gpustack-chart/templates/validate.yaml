@@ -41,3 +41,24 @@ supplying a username and password asks for.
 {{- if and (not $pullSecret.create) $credentials.username $credentials.password }}
 {{- fail "imagePullSecret.credentials are set but imagePullSecret.create is false: the credentials would be discarded. Drop them, or set create=true to have this release own the Secret." }}
 {{- end }}
+
+{{- with .Values.logging.endpoint }}
+{{- if not (regexMatch "^https?://[^/@?#[:space:]]+/[^?#[:space:]]*$" .) }}
+{{- fail "logging.endpoint must be a full OTLP/HTTP logs URL without credentials, query, or fragment." }}
+{{- end }}
+{{- if and (or $.Values.logging.authorizationSecret.name $.Values.logging.caSecret.name) (not (hasPrefix "https://" .)) }}
+{{- fail "logging.authorizationSecret and logging.caSecret require an HTTPS logging.endpoint." }}
+{{- end }}
+{{- if not (kindIs "slice" $.Values.logging.redactPatterns) }}
+{{- fail "logging.redactPatterns must be a list of non-empty RE2 expressions." }}
+{{- end }}
+{{- range $index, $pattern := $.Values.logging.redactPatterns }}
+{{- /* The first alternative matches only after the expression compiles. */}}
+{{- if or (not (kindIs "string" $pattern)) (eq $pattern "") (not (regexMatch (printf "^$|%s" $pattern) "")) }}
+{{- fail (printf "logging.redactPatterns[%d] must be a non-empty RE2 expression." $index) }}
+{{- end }}
+{{- if regexMatch $pattern "" }}
+{{- fail (printf "logging.redactPatterns[%d] must not match the empty string." $index) }}
+{{- end }}
+{{- end }}
+{{- end }}

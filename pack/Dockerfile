@@ -30,6 +30,7 @@ ARG HIGRESS_VERSION=2.1.9
 ARG HIGRESS_APISERVER_VERSION=0.0.26
 ARG PROMETHEUS_VERSION=3.5.1
 ARG GRAFANA_VERSION=12.2.4
+ARG ALLOY_VERSION=v1.22.0
 
 # Stage Base
 #
@@ -42,6 +43,8 @@ FROM gpustack/mirrored-higress-api-server:${HIGRESS_APISERVER_VERSION} AS apiser
 FROM gpustack/mirrored-higress-higress:${HIGRESS_VERSION} AS controller
 FROM gpustack/mirrored-higress-pilot:${HIGRESS_VERSION} AS pilot
 FROM gpustack/mirrored-higress-gateway:${HIGRESS_VERSION} AS gateway
+FROM grafana/alloy:${ALLOY_VERSION} AS alloy
+
 FROM ubuntu:24.04@sha256:d1e2e92c075e5ca139d51a140fff46f84315c0fdce203eab2807c7e495eff4f9 AS base
 SHELL ["/bin/bash", "-eo", "pipefail", "-c"]
 
@@ -441,6 +444,7 @@ RUN --mount=type=bind,from=apiserver,source=/apiserver,dst=/mnt/apiserver,rw \
 EOF
 # Initialize configurations
 COPY pack/rootfs/ /
+COPY --from=alloy /bin/alloy /usr/local/bin/alloy
 COPY docker-compose/grafana/grafana_dashboards/ /etc/dashboards/
 ## END Install Higress standalone components
 

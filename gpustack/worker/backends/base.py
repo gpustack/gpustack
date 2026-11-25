@@ -89,6 +89,7 @@ from gpustack.utils.profiling import time_decorator
 from gpustack.utils import platform
 from gpustack.utils.version import pick_runtime_version
 from gpustack.utils.runtime import transform_workload_plan
+from gpustack.worker.log_export import pod_log_labels
 from gpustack.worker.pd_injection import (
     PDInjection,
     PDInjectionError,
@@ -2223,6 +2224,10 @@ exec "$@"
             # Hand the operator InstanceType name to the runtime; the
             # runtime's Kubernetes deployer owns queue admission from here.
             workload.instance_type = selector.type
+        if get_model_instance_workloads(self._model_instance) is None:
+            labels = pod_log_labels(self._config, self._model_instance, self._worker.id)
+            if labels:
+                workload.labels = {**(workload.labels or {}), **labels}
         return transform_workload_plan(self._config, workload, self._fallback_registry)
 
 

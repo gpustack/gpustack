@@ -6,12 +6,17 @@ principal id that would otherwise violate the FK and roll back the whole
 usage flush batch.
 """
 
+import json
 from types import SimpleNamespace
 
 import pytest
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.testclient import TestClient
 
 from gpustack.api import middlewares
 from gpustack.api.exceptions import ForbiddenException, NotFoundException
+from gpustack.logging import _ApplicationLogFormatter
 
 
 class _FakeSessionCtx:
@@ -41,6 +46,33 @@ def _stub_tenant_context(monkeypatch, *, result=None, exc=None):
 
 _REQUEST = SimpleNamespace(state=SimpleNamespace())
 _USER = SimpleNamespace(id=5, is_admin=False)
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_model_usage_errors_do_not_log_response_values(caplog, stream):
+    app = FastAPI()
+    app.add_middleware(middlewares.ModelUsageMiddleware)
+    payload = {"id": "completion", "choices": "private-response-value", "usage": {}}
+    sse = f"data: {json.dumps(payload)}\n\n"
+
+    @app.post("/v1/chat/completions")
+    async def infer(request: Request):
+        request.state.stream = stream
+        if stream:
+            return StreamingResponse(iter([sse]), media_type="text/event-stream")
+        return JSONResponse(payload)
+
+    response = TestClient(app).post("/v1/chat/completions")
+
+    assert response.status_code == 200
+    if stream:
+        assert response.text == sse
+    else:
+        assert response.json() == payload
+    (record,) = (r for r in caplog.records if r.name == middlewares.__name__)
+    exported = _ApplicationLogFormatter("server").format(record)
+    assert "ValidationError" in exported
+    assert "private-response-value" not in exported
 
 
 @pytest.mark.asyncio

@@ -12,7 +12,7 @@ import yaml
 from gpustack.config.config import set_global_config
 from gpustack import envs
 from gpustack.extension import Plugin, iter_plugin_classes, resolve_version_info
-from gpustack.logging import setup_logging
+from gpustack.logging import setup_application_logging
 from gpustack.utils.envs import get_gpustack_env, get_gpustack_env_bool
 from gpustack.worker.worker import Worker
 from gpustack.config import Config
@@ -355,6 +355,12 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
     )
 
     # Observability settings
+    common_group.add_argument(
+        "--log-otlp-endpoint",
+        type=str,
+        help="Full OTLP/HTTP logs URL (e.g. http://<collector-host>:4318/v1/logs) to enable structured log collection and export.",
+        default=get_gpustack_env("LOG_OTLP_ENDPOINT"),
+    )
     server_group.add_argument(
         "--disable-builtin-observability",
         action=OptionalBoolAction,
@@ -849,7 +855,7 @@ def run(args: argparse.Namespace):
     try:
         cfg = parse_args(args)
         export_insecure_tls_env(cfg)
-        setup_logging(cfg.debug)
+        setup_application_logging(cfg, "worker" if cfg.server_url else "server")
         debug_env_info()
         set_third_party_env(cfg=cfg)
         start_tracemalloc_if_enabled()
@@ -885,8 +891,8 @@ def run_server(cfg: Config):
 
 
 def run_worker(cfg: Config):
-    # Spawned workers initialize process-local tracing before allocating state.
     start_tracemalloc_if_enabled()
+    setup_application_logging(cfg, "worker")
     set_global_config(cfg)
     worker = Worker(cfg)
     worker.start()
@@ -949,6 +955,7 @@ def set_common_options(args, config_data: dict):
         "trusted_proxy_cidrs",
         "service_discovery_name",
         "namespace",
+        "log_otlp_endpoint",
     ]
 
     for option in options:

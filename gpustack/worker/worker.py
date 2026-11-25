@@ -43,7 +43,7 @@ from gpustack.utils.network import (
     get_ifname_by_ip_hostname,
 )
 from gpustack.client import ClientSet
-from gpustack.logging import setup_logging
+from gpustack.logging import set_worker_log_identity, setup_logging, uvicorn_log_config
 from gpustack.utils.process import add_signal_handlers_in_loop
 from gpustack.utils.system_check import check_glibc_version
 from gpustack.utils.task import run_periodically_in_thread
@@ -204,6 +204,7 @@ class Worker:
         self._cluster_id = worker_list.items[0].cluster_id
         self._worker_name = worker_list.items[0].name
         self._worker_uuid = worker_list.items[0].worker_uuid
+        set_worker_log_identity(self._worker_id, self._cluster_id, self._worker_name)
 
     def _create_async_task(self, coro):
         self._async_tasks.append(asyncio.create_task(coro))
@@ -435,6 +436,7 @@ class Worker:
             port=self._config.get_api_port(self._is_embedded),
             access_log=False,
             log_level="error",
+            log_config=uvicorn_log_config(),
         )
 
         setup_logging()

@@ -1,0 +1,122 @@
+{{- if .Values.logging.endpoint }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}-alloy
+  namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Release.Name }}-alloy
+  namespace: {{ .Release.Namespace }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Release.Name }}-alloy
+  namespace: {{ .Release.Namespace }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Release.Name }}-alloy
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: {{ .Release.Name }}-alloy
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-alloy
+  namespace: {{ .Release.Namespace }}
+  labels:
+{{ include "chart_labels" . | indent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-alloy
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-alloy
+    spec:
+      serviceAccountName: {{ .Release.Name }}-alloy
+      enableServiceLinks: false
+      {{- with (include "image_pull_secrets" . | trim) }}
+      {{- . | nindent 6 }}
+      {{- end }}
+      securityContext:
+        runAsUser: 473
+        runAsGroup: 473
+        fsGroup: 473
+        runAsNonRoot: true
+      containers:
+        - name: alloy
+          image: {{ printf "%s:%s" (include "gpustack.image" .) (include "gpustack.imageTag" .) | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/usr/local/bin/alloy"]
+          args:
+            - run
+            - --disable-reporting
+            - --storage.path=/var/lib/alloy
+            - /etc/gpustack/logging/kubernetes.alloy
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: GPUSTACK_LOG_POD_RELEASE_PATTERN
+              value: {{ .Release.Name | regexQuoteMeta | quote }}
+            {{- if include "gpustack.collectHigressLogs" . }}
+            {{- $selector := include "gateway.selectorLabels" (index .Subcharts "higress-core") | fromYaml }}
+            {{- if not (or $selector.app $selector.higress) }}
+            {{- fail "Higress log collection requires the bundled gateway's app or higress selector label." }}
+            {{- end }}
+            - name: GPUSTACK_LOG_HIGRESS_SELECTOR
+              value: {{ printf "%s;%s" (get $selector "app" | regexQuoteMeta) (get $selector "higress" | regexQuoteMeta) | quote }}
+            {{- end }}
+            - name: GPUSTACK_LOG_OTLP_ENDPOINT
+              value: {{ .Values.logging.endpoint | quote }}
+            - name: GPUSTACK_LOG_REDACT_PATTERNS
+              {{- /* Keep Kubernetes from expanding $(VAR) inside a pattern. */}}
+              value: {{ .Values.logging.redactPatterns | mustToJson | replace "$" "\\u0024" | quote }}
+            {{- with (include "gpustack.loggingAuthorizationEnv" . | trim) }}
+            {{- . | nindent 12 }}
+            {{- end }}
+            {{- if .Values.logging.caSecret.name }}
+            - name: GPUSTACK_LOG_OTLP_CA_FILE
+              value: /etc/gpustack/otel-ca/ca.crt
+            {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+          volumeMounts:
+            - name: alloy-state
+              mountPath: /var/lib/alloy
+            {{- with (include "gpustack.loggingCaMount" . | trim) }}
+            {{- . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: alloy-state
+          emptyDir: {}
+        {{- with (include "gpustack.loggingCaVolume" . | trim) }}
+        {{- . | nindent 8 }}
+        {{- end }}
+{{- end }}
