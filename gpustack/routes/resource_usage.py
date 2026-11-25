@@ -34,7 +34,7 @@ from typing import (
 )
 
 from fastapi import APIRouter
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 from sqlalchemy import Select, and_, case, desc, func, literal_column, or_, tuple_
 from sqlmodel import select
 
@@ -197,6 +197,14 @@ class ResourceBreakdownRequest(BaseModel):
     # would 400 their trend/export requests during a rolling upgrade. New
     # callers fetch the full series via page=-1 instead.
     perPage: int = Field(default=20, ge=1, le=10000)
+
+    @field_validator("end_date")
+    @classmethod
+    def validate_date_range(cls, value: date, info: ValidationInfo) -> date:
+        start_date = info.data.get("start_date")
+        if start_date is not None and value < start_date:
+            raise ValueError("end_date must be on or after start_date")
+        return value
 
     @field_validator("page")
     @classmethod
