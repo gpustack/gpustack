@@ -360,6 +360,10 @@ To forward inference requests to the model instances on a worker, the server and
 
 The default is `direct` for the embedded worker inside the server, and `worker` for standalone workers.
 
+!!! note
+
+    Whichever proxy mode is used, the worker's `--server-url` (registration, heartbeats, watches, and the tunnel WebSocket) should reach the server **without traversing the Higress gateway** on Kubernetes deployments: if it points at the gateway's ingress address, a gateway restart or OOMKill disconnects every worker at once, with the consequences described in [Connecting Workers Directly to the Server](../installation/helm.md#connecting-workers-directly-to-the-server). Prefer the server's in-cluster Service address. Docker and embedded setups differ: there the server's `port` (80 by default) *is* the embedded Higress listener and the API listens on `api_port` (30080 by default), so the default Add Worker command — which uses the request host — routes workers through the gateway; point `--server-url` at the API port only when the workers can reach it.
+
 ### Tunnel Mode (Worker Behind a Firewall or NAT)
 
 In `direct` and `worker` modes the server initiates the connection, so the worker must be reachable from the server. That is not always possible — for example when the worker sits behind a firewall or NAT, on a different network, or in a private subnet that only allows outbound traffic.

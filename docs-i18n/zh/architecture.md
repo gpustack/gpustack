@@ -32,6 +32,8 @@ GPUStack Worker 包含以下组件：
 
 AI 网关处理来自客户端的 API 请求，根据请求的模型将流量路由到相应的模型实例。GPUStack 使用 [Higress](https://github.com/alibaba/higress) 实现 API 路由和负载均衡。
 
+网关定位为只位于推理数据路径上。Worker 控制面流量——注册、心跳、模型/实例 watch 以及 `tunnel` 模式的 WebSocket——由每个 Worker 发往 Server，但默认走的是 Server 的*外部* URL，在 Helm 上通常就是网关；让它绕开网关是一项配置工作，并非架构自带保证。不做这项配置，网关故障就会断开所有 Worker——参见 [Worker 直连 Server](installation/helm.md#connecting-workers-directly-to-the-server)。网关资源规划见 [Higress 网关资源配置](installation/helm.md#sizing-the-higress-gateway)。
+
 ### SQL 数据库 { #sql-database }
 
 GPUStack Server 连接 SQL 数据库以存储数据。GPUStack 默认使用内置 PostgreSQL，也可配置外部数据库。兼容的数据库及已验证版本，请参阅[数据库要求](installation/requirements.md#database-requirements)。

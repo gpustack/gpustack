@@ -28,6 +28,8 @@ The GPUStack worker consists of the following components:
 
 The AI Gateway handles incoming API requests from clients. It routes requests to the appropriate model instances based on the requested model. GPUStack uses [Higress](https://github.com/alibaba/higress) for API routing and load balancing.
 
+The gateway is meant to sit on the inference data path only. Worker control traffic — registration, heartbeats, model/instance watches, and the `tunnel`-mode WebSocket — goes from each worker to the server, but by default it takes the server's *external* URL, which on Helm is usually the gateway; keeping it off the gateway is a configuration step, not something the architecture guarantees. Without it, a gateway failure disconnects every worker — see [Connecting Workers Directly to the Server](installation/helm.md#connecting-workers-directly-to-the-server). Gateway resource sizing is covered in [Sizing the Higress Gateway](installation/helm.md#sizing-the-higress-gateway).
+
 ### SQL Database
 
 The GPUStack server connects to a SQL database as the datastore. GPUStack uses an Embedded PostgreSQL by default, but you can configure it to use an external database as well. See [Database Requirements](installation/requirements.md#database-requirements) for the list of compatible databases and verified versions.

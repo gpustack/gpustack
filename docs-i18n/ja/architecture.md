@@ -32,6 +32,8 @@ GPUStack ワーカーは、次のコンポーネントで構成されます。
 
 AI ゲートウェイはクライアントからの API リクエストを処理します。要求されたモデルに基づいて、適切なモデルインスタンスにリクエストを振り分けます。GPUStack は API ルーティングと負荷分散に [Higress](https://github.com/alibaba/higress) を使用します。
 
+ゲートウェイは推論データパスのみに置くことを意図しています。ワーカーの制御プレーン トラフィック（登録、ハートビート、モデル/インスタンスの watch、`tunnel` モードの WebSocket）は各ワーカーからサーバーへ向かいますが、既定ではサーバーの*外部* URL を使います。Helm では通常それがゲートウェイです。ゲートウェイを回避させるのは設定作業であり、アーキテクチャが保証するものではありません。この設定がないと、ゲートウェイ障害で全ワーカーが切断されます。[ワーカーをサーバーに直接接続する](installation/helm.md#connecting-workers-directly-to-the-server) を参照してください。ゲートウェイのリソース サイジングは [Higress ゲートウェイのリソースサイジング](installation/helm.md#sizing-the-higress-gateway) を参照してください。
+
 ### SQL データベース { #sql-database }
 
 GPUStack サーバーはデータストアとして SQL データベースに接続します。デフォルトでは組み込み PostgreSQL を使用しますが、外部データベースも設定できます。対応データベースと検証済みバージョンの一覧は、[データベース要件](installation/requirements.md#database-requirements)をご覧ください。

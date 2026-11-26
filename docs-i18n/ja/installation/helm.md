@@ -213,6 +213,93 @@ helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart 
   -f values.yaml
 ```
 
+### Higress ゲートウェイのリソースサイジング { #sizing-the-higress-gateway }
+
+Higress ゲートウェイ（Envoy）はすべてのクライアント推論トラフィックを処理します。そのメモリ使用量はルート/設定の変更頻度と同時接続数に比例して増加し、LLM ワークロードはストリーミング応答のため接続を長時間維持するので、継続的な負荷の下でメモリは上昇し続けます。同梱の `higress-core` サブチャートのデフォルトは requests・limits ともに `2` CPU / `2Gi` で、継続運用には不十分です。そのため GPUStack チャートはゲートウェイの **limits** を `4` CPU / `4096Mi` に引き上げています（requests はサブチャートのデフォルト `2` CPU / `2048Mi` のまま）。
+
+!!! warning
+
+    ゲートウェイの OOMKill は推論の中断だけにとどまりません。ゲートウェイ経由の処理中のリクエストはすべて切断され、さらにワーカーがゲートウェイのアドレス経由でサーバーに接続している場合、すべてのワーカー接続も同時に切断され、クラスター全体の一斉再接続が発生してモデルサービスが利用不能になることがあります。下記の[ワーカーをサーバーに直接接続する](#connecting-workers-directly-to-the-server)を参照してください。
+
+チューニングのルール:
+
+- **上限に達する前にメモリを監視する。** 同梱の Prometheus はゲートウェイの Envoy 統計を収集するため、`envoy_server_memory_allocated` と `envoy_server_memory_heap_size` にアラートを設定してください（Higress が別の名前空間にある場合は `gateway.namespace` を参照）。`container_memory_working_set_bytes` は kubelet/cAdvisor の指標で、クラスター単位の Prometheus でのみ取得できます。通常運用でメモリが limit に近づき続けるなら、`higress-core.gateway.resources.limits.memory` を引き上げてください。最初の OOMKill を待ってはいけません。
+- **可用性のために最低 2 レプリカを維持する。** ゲートウェイ Deployment のデフォルトは `2` レプリカ（`higress-core.gateway.replicas`）で、ローリング再起動や単一 Pod の障害で全トラフィックが止まりません。レプリカを増やしても、設定と接続の負荷に対する Pod あたりのメモリは減りません（各レプリカがルート全体を保持するため）。ただしリクエストは分散されるので、各 Pod で処理中の大きなリクエストは減ります（下記参照）。`higress-core.gateway.service.externalTrafficPolicy` は `Local` である点に注意: LoadBalancer/NodePort サービスでは、外部 LB が `healthCheckNodePort` に対してヘルスチェックを行う必要があります。さもないとゲートウェイ Pod のいないノードがトラフィックを破棄します。
+- **OOM 対策の手段はメモリ limit です。** サブチャートには CPU 使用率ベースの HPA が付属しています。リクエスト負荷の平滑化には役立ちますが、OOM は**防げません**。ゲートウェイのメモリは CPU ではなく接続数とリクエストサイズに依存するためです。オートスケーリングを有効にしても、メモリ limits には必ず余裕を持たせてください。
+- **HPA は `replicas` を上書きします。** `higress-core.gateway.autoscaling.enabled=true` にすると Deployment は `replicas` を使わなくなり、サブチャートの `autoscaling.minReplicas` のデフォルトは `1` なので、HPA を有効にするだけではゲートウェイが 1 Pod まで縮小されます。HPA を有効にするなら `autoscaling.minReplicas` を必ず `2` 以上に設定してください。
+
+```yaml
+# values.yaml
+higress-core:
+  gateway:
+    replicas: 2
+    resources:
+      requests:
+        cpu: 2000m
+        memory: 4096Mi
+      limits:
+        cpu: 4000m
+        memory: 8192Mi   # メモリが上昇し続ける場合はさらに引き上げる
+    autoscaling:
+      enabled: true
+      minReplicas: 2    # HPA は `replicas` を無視します。2 以上を維持してください
+      maxReplicas: 5
+      targetCPUUtilizationPercentage: 80
+```
+
+#### 画像リクエストのサイジング
+
+ルートと接続の負荷はメモリ使用量の安定した部分です。スパイクの原因はリクエストサイズです。リクエストを検査・書き換えるゲートウェイプラグインはそれぞれリクエストボディ全体をバッファするため、メモリは処理中のリクエストバイト（同時リクエスト数 × ボディサイズ）に比例して増えます。base64 エンコードされた画像を含むリクエストが、最もよくある到達経路です。JSON 内では画像 1 枚がファイルサイズの 1.33 倍を占めます。
+
+下表は、GPUStack のデフォルト プラグイン チェーンと mock アップストリームを使い、1 つのゲートウェイ Pod（2 CPU / 4Gi）で各ケース 60 秒間のストリーミング負荷を、それぞれ新しい Pod から開始して測定したものです。容量の計算式ではなく、桁を判断するための参考値です:
+
+| 画像数 | リクエストボディ | 同時数 | 処理中 | アイドル時からの増分 |
+|---|---|---|---|---|
+| 1 | 1.3 MB | 64 | 85 MB | 約 0.1 GiB |
+| 8 | 10.7 MB | 4 | 43 MB | 約 0.2 GiB |
+| 32 | 42.7 MB | 4 | 171 MB | 約 1.8 GiB |
+| 32 | 42.7 MB | 16 | 683 MB | **OOMKilled** |
+
+リクエストあたりのコストはボディサイズより速く増加し、負荷が終わってもメモリはすぐには戻りません。そのためリクエスト数ではなく処理中のバイト数で予算を立ててください。4Gi の Pod では処理中のリクエストボディを合計 200 MB 程度に抑えるか、`higress-core.gateway.resources.limits.memory` を引き上げてください（複数画像のトラフィックでは 8Gi が出発点として妥当です）。レプリカを増やすことも有効です。リクエストが分散されるためです。
+
+その他の Higress カスタマイズについては、[Higress Helm ドキュメント](https://higress.cn/en/docs/latest/ops/deploy-by-helm)を参照してください。
+
+### ワーカーをサーバーに直接接続する { #connecting-workers-directly-to-the-server }
+
+ワーカーとサーバー間の登録、ハートビート、モデル/インスタンスの watch（および `tunnel` プロキシモードの常設 WebSocket）は制御プレーン トラフィックであり、クライアントの推論トラフィックとは独立しています。Higress ゲートウェイを**経由すべきではありません**。経由すると、ゲートウェイの再起動や OOMKill ですべてのワーカー接続が同時に切断されます。
+
+Chart 管理のワーカーは正しく構成されています。`worker.enabled=true` で `worker.serverURL` が未設定の場合、ワーカーはクラスター内 Service（`http://<release>-server.<namespace>.svc:<server.apiPort>`）に登録し、ゲートウェイを完全にバイパスします。アドレスを自分で指定する場合は、この headless Service ではなく ClusterIP Service（`<release>-server-cluster-ip`）を優先してください。headless 名は Pod IP に解決され、サーバーのフェイルオーバー後に古くなる可能性があります。
+
+確認すべきパスは **Register Cluster** で登録されたクラスター（または `--server-url` で起動したワーカー）です。登録 manifest の `worker.serverURL` はサーバーが生成し、クラスター固有の **Server URL**、`server_external_url`、リクエスト Host の順に解決されます。クラスターに上書きがなければ、サーバーの*外部* URL になります。Helm デプロイでは通常、これが ingress アドレス、つまり Higress ゲートウェイです。この構成では、ゲートウェイ OOM の影響範囲はリクエストの中断にとどまりません:
+
+- すべてのワーカーがサーバーへの接続を同時に失います。`tunnel` モードではトンネル経由で中継される処理中の推論ストリームがすべて切断され、トンネル クライアントは指数バックオフ（1 秒から最大 60 秒、ジッター付き）で再接続します。`direct`/`worker` モードにトンネルはありませんが、モデルとインスタンスの watch は長時間維持される HTTP ストリームであり、同じく切断されて一斉再接続と再取得が発生します。ハートビートは周期的な呼び出しで、失敗しても次の周期で再試行するだけです。
+
+- 障害がハートビートの猶予期間（`GPUSTACK_WORKER_HEARTBEAT_GRACE_PERIOD`、デフォルト 150 秒）を超えると、ワーカーはオフラインと判定されモデルルートが取り下げられます。推論プロセスが動作し続けていても、モデルサービスは利用不能になります。
+
+制御プレーンのパスをゲートウェイから分離するには、ワーカーがサーバーに直接届くアドレスを指すようにします:
+
+- **Register Cluster のクラスター:** クラスターの **Server URL** を直接到達できるアドレス（ワーカーがサーバーと同じクラスターにあればクラスター内 Service、そうでなければサーバー Service 専用の NodePort/LoadBalancer）に設定し、登録 manifest を再取得して再適用します。これはクラスター側で行い、`helm upgrade --set worker.serverURL=…` では行わないでください。次に manifest が適用されるとき、bootstrap Job がサーバー描画の values で worker リリースを再インストールし、ゲートウェイの URL が戻ってきます。manifest 管理のリリースの横に 2 つ目の worker-only リリースを追加しないでください。worker DaemonSet が重複し（その Pod は `hostNetwork` のポート反 affinity で Pending のまま）、2 つ目の operator も立ち上がります。
+
+- **Kubernetes 外のワーカー:** `--server-url` に直接到達できるアドレスを指定して起動します。
+
+- **登録 manifest なしで Helm からインストールしたワーカー:** サーバーのクラスターに worker-only リリースを用意します。サーバー リリースと同じ名前空間に置かれるため、そのリリースが既に所有する Secret を描画してはいけません。`imagePullSecret.create: false` を設定し、`registrationTokenSecretName` をサーバーの `registration-token` Secret に向けてください（`worker.enabled` はデフォルトで `false`、`server` と `higress-core` はデフォルトで有効なため、この 3 つも明示する必要があります）:
+
+```yaml
+# サーバーのクラスターにある worker-only リリースの values.yaml
+server:
+  enabled: false
+higress-core:
+  enabled: false
+imagePullSecret:
+  create: false
+registrationTokenSecretName: registration-token
+worker:
+  enabled: true
+  serverURL: http://gpustack-server-server-cluster-ip.gpustack-system.svc:30080
+```
+
+これによりゲートウェイはクライアントの推論トラフィックのみを扱い、ゲートウェイの再起動はワーカーの登録、ハートビート、watch に影響しなくなります。プロキシモード自体は [ワーカー接続モード](../user-guide/cluster-management.md#worker-connection-modes) を参照してください。
+
 ### プライベートレジストリからのイメージ取得 { #pulling-images-from-a-private-registry }
 
 すべてのイメージ（GPUStack サーバー・ワーカー、higress-plugins、同梱の higress-core の gateway/controller/pilot）をプライベートミラーレジストリから取得するには、`global.hub` を上書きします。Helm のグローバル値の伝播により、1 つの設定ですべてのイメージに適用されます。
@@ -273,6 +360,11 @@ global:
 | `server.nodeSelector`                  | `{}`                     | サーバー Pod の nodeSelector。空でなければ `global.nodeSelector` を置換。 |
 | `gateway.ingressClassname`             | `higress`                | Higress IngressClass の名前。見つかるとクラスター内ゲートウェイモードを有効化。 |
 | `higress-core.enabled`                 | `true`                   | 同梱の Higress ゲートウェイをデプロイ。すでに導入済みなら無効化。 |
+| `higress-core.gateway.replicas`        | `2`                      | Higress ゲートウェイのレプリカ数。可用性のため 2 以上を維持。 |
+| `higress-core.gateway.resources`       | limits `4` CPU / `4096Mi` | ゲートウェイのリソース。limits はサブチャートのデフォルトより引き上げ済み。[Higress ゲートウェイのリソースサイジング](#sizing-the-higress-gateway)を参照。 |
+| `higress-core.gateway.autoscaling.enabled` | `false`              | ゲートウェイの CPU ベース HPA。OOM は防げないため、メモリ limits は別途適正に設定すること。 |
+| `higress-core.gateway.autoscaling.minReplicas` | `1`                      | HPA 有効時の最小レプリカ数。HPA は `replicas` を上書きするため、2 以上に設定してください。 |
+| `worker.serverURL`                     | `""`                     | ワーカーが登録するサーバーアドレス。空ならクラスター内サーバー Service を使用。ゲートウェイ経由のルーティングは避ける。 |
 | `worker.enabled`                       | `false`                  | ワーカー DaemonSet を生成。 |
 | `worker.gpuVendors`                    | `[nvidia]`               | GPU ベンダー。各ベンダーの DaemonSet に加えて CPU DaemonSet を作成。 |
 | `worker.cpuEnabled`                    | `true`                   | CPU ワーカー DaemonSet を生成。`false` の場合は GPU ベンダーが必要。 |
