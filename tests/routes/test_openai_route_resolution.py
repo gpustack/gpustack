@@ -410,6 +410,8 @@ async def test_provider_route_target_proxies_directly_in_server_mode(monkeypatch
                     "Content-Encoding": "gzip",
                     "Transfer-Encoding": "chunked",
                     "Set-Cookie": "upstream_session=abc",
+                    "Connection": "keep-alive, X-Upstream-Internal",
+                    "X-Upstream-Internal": "hop-only",
                 },
                 body=b'{"id":"chatcmpl-1","choices":[]}',
             )
@@ -522,6 +524,8 @@ async def test_provider_route_target_proxies_directly_in_server_mode(monkeypatch
     lowered_resp_headers = {k.lower() for k in resp.headers.keys()}
     assert "content-encoding" not in lowered_resp_headers
     assert "set-cookie" not in lowered_resp_headers
+    assert "connection" not in lowered_resp_headers
+    assert "x-upstream-internal" not in lowered_resp_headers
     assert req.state.model is None
     assert req.state.model_name == "gemini-2.5-flash"
     assert req.state.provider_id == 11
@@ -530,39 +534,35 @@ async def test_provider_route_target_proxies_directly_in_server_mode(monkeypatch
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "config_factory,endpoint,expected_url,expected_auth_header",
+    "config_factory,endpoint,expected_url",
     [
         (
             lambda m: m.GroqConfig(type=m.ModelProviderTypeEnum.GROQ),
             "chat/completions",
             "https://api.groq.com/openai/v1/chat/completions",
-            "authorization",
         ),
         (
             lambda m: m.GithubConfig(type=m.ModelProviderTypeEnum.GITHUB),
             "chat/completions",
             "https://models.inference.ai.azure.com/chat/completions",
-            "authorization",
         ),
         (
             lambda m: m.OpenrouterConfig(type=m.ModelProviderTypeEnum.OPENROUTER),
             "embeddings",
             "https://openrouter.ai/api/v1/embeddings",
-            "authorization",
         ),
         (
-            lambda m: m.ClaudeConfig(
-                type=m.ModelProviderTypeEnum.CLAUDE,
-                claudeCustomUrl="https://claude-proxy.example.com/anthropic",
+            lambda m: m.OpenAIConfig(
+                type=m.ModelProviderTypeEnum.OPENAI,
+                openaiCustomUrl="https://openai-proxy.example.com/custom/v1",
             ),
             "chat/completions",
-            "https://claude-proxy.example.com/anthropic/v1/chat/completions",
-            "x-api-key",
+            "https://openai-proxy.example.com/custom/v1/chat/completions",
         ),
     ],
 )
 async def test_resolve_provider_upstream_url_and_auth_headers(
-    config_factory, endpoint, expected_url, expected_auth_header
+    config_factory, endpoint, expected_url
 ):
     from gpustack.schemas import model_provider as mp
 
@@ -576,11 +576,79 @@ async def test_resolve_provider_upstream_url_and_auth_headers(
     assert (
         openai_route._resolve_provider_upstream_url(provider, endpoint) == expected_url
     )
-    auth_headers = {
-        k.lower(): v
-        for k, v in openai_route._build_provider_auth_headers(provider).items()
+    assert openai_route._build_provider_auth_headers(provider) == {
+        "Authorization": "Bearer provider-secret"
     }
-    assert expected_auth_header in auth_headers
+
+
+@pytest.mark.parametrize(
+    "config_factory",
+    [
+        lambda m: m.ClaudeConfig(type=m.ModelProviderTypeEnum.CLAUDE),
+        lambda m: m.BedrockConfig(
+            type=m.ModelProviderTypeEnum.BEDROCK, awsRegion="us-east-1"
+        ),
+        lambda m: m.AzureOpenAIConfig(
+            type=m.ModelProviderTypeEnum.AZURE,
+            azureServiceUrl="https://example.openai.azure.com",
+        ),
+        lambda m: m.TritonConfig(
+            type=m.ModelProviderTypeEnum.TRITON, tritonDomain="triton.local:8000"
+        ),
+        lambda m: m.TypesafeConfig(type=m.ModelProviderTypeEnum.GPUSTACK_LB_TYPESAFE),
+    ],
+)
+def test_non_openai_wire_providers_require_gateway(config_factory):
+    """Providers whose upstream wire protocol or auth requires Higress ai-proxy
+    translation fail closed with a clear 503 when gateway mode is disabled."""
+    from gpustack.schemas import model_provider as mp
+
+    provider = SimpleNamespace(
+        id=9,
+        name="non-openai-provider",
+        api_tokens=["provider-secret"],
+        config=config_factory(mp),
+    )
+
+    with pytest.raises(ServiceUnavailableException) as exc:
+        openai_route._resolve_provider_upstream_url(provider, "chat/completions")
+    assert exc.value.status_code == 503
+    assert "requires the AI gateway" in exc.value.message
+
+
+@pytest.mark.asyncio
+async def test_rewrite_provider_model_replaces_multipart_model_field():
+    """Overriding the model on a multipart/form-data request replaces the
+    existing model part in place rather than appending a second model field."""
+    import aiohttp
+
+    form_data = aiohttp.FormData()
+    form_data.add_field("model", "whisper-route")
+    form_data.add_field(
+        "file", b"audio-bytes", filename="clip.wav", content_type="audio/wav"
+    )
+
+    target_model, updated_form = openai_route._rewrite_provider_model(
+        "whisper-route", "whisper-large-v3-turbo", None, form_data
+    )
+
+    assert target_model == "whisper-large-v3-turbo"
+    assert updated_form is not None
+
+    payload = updated_form()
+    serialized = bytearray()
+
+    class _Writer:
+        async def write(self, chunk: bytes) -> None:
+            serialized.extend(chunk)
+
+    await payload.write(_Writer())
+    raw_multipart = bytes(serialized)
+    assert raw_multipart.count(b'name="model"') == 1
+    assert b"whisper-large-v3-turbo" in raw_multipart
+    assert b"whisper-route" not in raw_multipart
+    assert b'filename="clip.wav"' in raw_multipart
+    assert b"audio-bytes" in raw_multipart
 
 
 @pytest.mark.asyncio
@@ -599,6 +667,10 @@ async def test_inactive_provider_returns_service_unavailable(monkeypatch, provid
     with pytest.raises(ServiceUnavailableException) as exc:
         await openai_route._load_active_provider(MagicMock(), 11)
     assert exc.value.status_code == 503
+    assert (
+        exc.value.message
+        == "Model provider is unavailable or has no API tokens configured"
+    )
 
 
 @pytest.mark.asyncio

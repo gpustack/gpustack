@@ -930,11 +930,10 @@ class ModelRouteService:
                 model_id=target.model_id,
                 overridden_model_name=target.overridden_model_name,
                 weight=target.weight,
-                provider_id=getattr(target, "provider_id", None),
+                provider_id=target.provider_id,
             )
             for target in targets
-            if target.model_id is not None
-            or getattr(target, "provider_id", None) is not None
+            if target.model_id is not None or target.provider_id is not None
         ]
 
     @locked_cached()

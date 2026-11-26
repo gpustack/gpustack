@@ -42,7 +42,6 @@ from gpustack.http_proxy.load_balancer import LoadBalancer
 from gpustack.routes.model_common import build_category_conditions
 from gpustack.schemas.models import Model, servable_instances
 from gpustack.schemas.model_provider import (
-    ANTHROPIC_API_VERSION,
     ModelProvider,
     ModelProviderTypeEnum,
 )
@@ -800,6 +799,36 @@ _GEMINI_UNSUPPORTED_CHAT_FIELDS = frozenset(
 )
 
 
+# Providers whose get_chat_url() resolves directly to a Bearer-authenticated,
+# OpenAI-wire-compatible /chat/completions endpoint. Providers that rely on
+# Higress ai-proxy for non-OpenAI wire translation or request signing (e.g.
+# Claude /v1/messages, Bedrock SigV4, Azure api-key deployments, Hunyuan,
+# Triton, Typesafe) are rejected cleanly when gateway mode is disabled.
+_OPENAI_COMPATIBLE_PROVIDER_TYPES = frozenset(
+    {
+        ModelProviderTypeEnum.AI360,
+        ModelProviderTypeEnum.BAICHUAN,
+        ModelProviderTypeEnum.DEEPSEEK,
+        ModelProviderTypeEnum.DOUBAO,
+        ModelProviderTypeEnum.GALADRIEL,
+        ModelProviderTypeEnum.GEMINI,
+        ModelProviderTypeEnum.GITHUB,
+        ModelProviderTypeEnum.GROK,
+        ModelProviderTypeEnum.GROQ,
+        ModelProviderTypeEnum.LONGCAT,
+        ModelProviderTypeEnum.MISTRAL,
+        ModelProviderTypeEnum.MOONSHOT,
+        ModelProviderTypeEnum.OLLAMA,
+        ModelProviderTypeEnum.OPENAI,
+        ModelProviderTypeEnum.OPENROUTER,
+        ModelProviderTypeEnum.QWEN,
+        ModelProviderTypeEnum.STEPFUN,
+        ModelProviderTypeEnum.TOGETHERAI,
+        ModelProviderTypeEnum.YI,
+    }
+)
+
+
 def _select_weighted_target(
     route_targets: List[RouteTargetResolution],
 ) -> RouteTargetResolution:
@@ -812,11 +841,15 @@ def _select_weighted_target(
 
 
 def _strip_upstream_hop_headers(headers) -> Dict[str, str]:
-    return {
-        k: v
+    connection_tokens = {
+        token.strip().lower()
         for k, v in headers.items()
-        if k.lower() not in _EXCLUDED_PROVIDER_RESPONSE_HEADERS
+        if k.lower() == "connection"
+        for token in v.split(",")
+        if token.strip()
     }
+    excluded = _EXCLUDED_PROVIDER_RESPONSE_HEADERS | connection_tokens
+    return {k: v for k, v in headers.items() if k.lower() not in excluded}
 
 
 async def _load_active_provider(
@@ -825,37 +858,37 @@ async def _load_active_provider(
     provider = await ModelProvider.one_by_id(session, provider_id)
     if not provider or provider.deleted_at is not None or not provider.api_tokens:
         raise ServiceUnavailableException(
-            message="No running instances available",
+            message="Model provider is unavailable or has no API tokens configured",
             is_openai_exception=True,
         )
     return provider
 
 
 def _resolve_provider_upstream_url(provider: ModelProvider, endpoint: str) -> str:
-    base_url, chat_uri = provider.config.get_chat_url()
-    if not base_url:
+    if provider.config.type not in _OPENAI_COMPATIBLE_PROVIDER_TYPES:
         raise ServiceUnavailableException(
-            message=f"Provider '{provider.name}' has no upstream endpoint configured",
+            message=(
+                f"Provider type '{provider.config.type.value}' requires the AI "
+                "gateway for protocol translation and cannot be proxied directly "
+                "when gateway mode is disabled"
+            ),
             is_openai_exception=True,
         )
-    prefix = "/v1"
-    if chat_uri and chat_uri.endswith("/chat/completions"):
-        prefix = chat_uri[: -len("/chat/completions")]
-    elif chat_uri and chat_uri.endswith("/messages"):
-        prefix = chat_uri[: -len("/messages")]
+    base_url, chat_uri = provider.config.get_chat_url()
+    if not base_url or not chat_uri or not chat_uri.endswith("/chat/completions"):
+        raise ServiceUnavailableException(
+            message=(
+                f"Provider '{provider.name}' has no OpenAI-compatible upstream "
+                "endpoint configured"
+            ),
+            is_openai_exception=True,
+        )
+    prefix = chat_uri[: -len("/chat/completions")]
     return f"{base_url.rstrip('/')}{prefix}/{endpoint.lstrip('/')}"
 
 
 def _build_provider_auth_headers(provider: ModelProvider) -> Dict[str, str]:
     token = random.choice(provider.api_tokens)
-    if provider.config.type == ModelProviderTypeEnum.CLAUDE:
-        version = (
-            getattr(provider.config, "claudeVersion", None) or ANTHROPIC_API_VERSION
-        )
-        return {
-            "x-api-key": token,
-            "anthropic-version": version,
-        }
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -875,18 +908,41 @@ def _sanitize_provider_body(
     return {k: v for k, v in body_json.items() if v is not None and k not in disallowed}
 
 
+def _replace_form_field(
+    form_data: aiohttp.FormData, field_name: str, new_value: str
+) -> aiohttp.FormData:
+    rebuilt = aiohttp.FormData()
+    replaced = False
+    for type_options, part_headers, value in form_data._fields:
+        name = type_options.get("name")
+        if name == field_name:
+            if not replaced:
+                rebuilt.add_field(field_name, new_value)
+                replaced = True
+        else:
+            rebuilt.add_field(
+                name,
+                value,
+                filename=type_options.get("filename"),
+                content_type=part_headers.get("Content-Type"),
+            )
+    if not replaced:
+        rebuilt.add_field(field_name, new_value)
+    return rebuilt
+
+
 def _rewrite_provider_model(
     model_name: str,
     overridden_model_name: Optional[str],
     body_json: Optional[dict],
     form_data: Optional[aiohttp.FormData],
-) -> str:
+) -> Tuple[str, Optional[aiohttp.FormData]]:
     target_model = overridden_model_name or model_name
     if body_json is not None:
         body_json["model"] = target_model
     elif form_data is not None and target_model != model_name:
-        form_data.add_field("model", target_model)
-    return target_model
+        form_data = _replace_form_field(form_data, "model", target_model)
+    return target_model, form_data
 
 
 def _select_provider_http_client(
@@ -912,7 +968,7 @@ async def _proxy_to_provider(
     body_json: Optional[dict],
     form_data: Optional[aiohttp.FormData],
 ):
-    target_model = _rewrite_provider_model(
+    target_model, form_data = _rewrite_provider_model(
         model_name, target.overridden_model_name, body_json, form_data
     )
     request.state.model = None

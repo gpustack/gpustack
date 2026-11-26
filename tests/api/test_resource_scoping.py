@@ -593,12 +593,14 @@ async def test_raw_name_resolution_scopes_to_platform(monkeypatch):
         SimpleNamespace(
             route_id=platform_route_id,
             model_id=111,
+            provider_id=None,
             overridden_model_name=None,
             weight=1,
         ),
         SimpleNamespace(
             route_id=victim_route_id,
             model_id=222,
+            provider_id=None,
             overridden_model_name=None,
             weight=1,
         ),
