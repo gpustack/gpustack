@@ -15,7 +15,6 @@ import tenacity
 import uvicorn
 from urllib.parse import urlparse
 from starlette.middleware.base import BaseHTTPMiddleware
-from gpustack_runtime import envs as runtime_envs
 
 from gpustack.api import exceptions
 from gpustack.config.config import (
@@ -52,7 +51,6 @@ from gpustack.worker.benchmark_manager import BenchmarkManager
 from gpustack.worker.cache_provider_manager import CacheProviderManager
 from gpustack.worker.cache_service_manager import CacheServiceManager
 from gpustack.worker.inference_backend_manager import InferenceBackendManager
-from gpustack.worker.kubernetes_cpu_budget import KubernetesCPUCollector
 from gpustack.worker.model_file_manager import ModelFileManager
 from gpustack.worker.runtime_metrics_aggregator import RuntimeMetricsAggregator
 from gpustack.worker.serve_manager import ServeManager
@@ -135,16 +133,10 @@ class Worker:
             worker_uuid_getter=self.worker_uuid,
         )
 
-        cpu_collector = None
-        if path := envs.WORKER_KUBERNETES_CPU_BUDGET_KUBECONFIG:
-            cpu_collector = KubernetesCPUCollector.from_kubeconfig(
-                path, runtime_envs.GPUSTACK_RUNTIME_KUBERNETES_NODE_NAME
-            )
         self._worker_manager = WorkerManager(
             cfg=cfg,
             is_embedded=self._is_embedded,
             collector=self._status_collector,
-            cpu_collector=cpu_collector,
         )
 
         self._exporter = MetricExporter(

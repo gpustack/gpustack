@@ -6,6 +6,7 @@ import os
 import queue
 from typing import Dict, List, Sequence, Tuple, Optional, Union
 from weakref import WeakValueDictionary
+from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.orm import selectinload
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -17,7 +18,11 @@ from gpustack.policies.candidate_selectors.base_candidate_selector import (
 from gpustack.policies.scorers.pairing_affinity_scorer import PairingAffinityScorer
 from gpustack.policies.scorers.placement_scorer import PlacementScorer
 from gpustack.server.cache_service_resources import load_resource_view
-from gpustack.policies.resource_view import ResourceView
+from gpustack.policies.resource_view import (
+    ResourceView,
+    cpu_allocated_by_worker,
+    worker_cpu_millicores,
+)
 from gpustack.policies.scorers.topology_proximity_scorer import (
     TopologyProximityScorer,
 )
@@ -54,9 +59,6 @@ from gpustack.policies.worker_filters.gpu_matching_filter import GPUMatchingFilt
 from gpustack.policies.worker_filters.local_path_filter import LocalPathFilter
 from gpustack.policies.worker_filters.pd_mode_filter import PDModeRuntimeFilter
 from gpustack.policies.worker_filters.cluster_filter import ClusterFilter
-from gpustack.policies.worker_filters.kubernetes_cpu_budget import (
-    filter_workers_by_cpu_budget,
-)
 from gpustack.policies.worker_filters.gather_floor_filter import GatherFloorFilter
 from gpustack.scheduler.model_registry import detect_model_type
 from gpustack.scheduler.meta_registry import get_model_meta
@@ -74,6 +76,7 @@ from gpustack.schemas.models import (
     Model,
     ModelInstance,
     ModelInstanceStateEnum,
+    RoleNameEnum,
     apply_decision_image_input_meta,
     get_backend,
     is_gguf_model,
@@ -88,11 +91,12 @@ from gpustack.schemas.models import (
 from gpustack.schemas.model_files import ModelFileStateEnum
 from gpustack.schemas.model_sets import ModelSpec
 from gpustack.schemas.principals import _platform_principal_id
-from gpustack.utils.unit import byte_to_gib
+from gpustack.utils.unit import byte_to_gib, cores_to_millicores
 from gpustack.utils.model_instance_workers import (
     get_model_instance_workloads,
     model_instance_legacy_stop,
     model_requires_managed_worker_binding,
+    router_cpu_rejection,
     sglang_smg_mode,
     worker_supports_model_instance_workloads,
 )
@@ -267,7 +271,8 @@ class Scheduler:
 
                 if instance.state != ModelInstanceStateEnum.ANALYZING:
                     instance.state = ModelInstanceStateEnum.ANALYZING
-                    instance.state_message = "Evaluating resource requirements"
+                    if router_cpu_rejection(instance) is None:
+                        instance.state_message = "Evaluating resource requirements"
                     await ModelInstanceService(session).update(instance)
 
                 # Get available workers for potential remote parsing
@@ -315,7 +320,10 @@ class Scheduler:
             except Exception as e:
                 try:
                     instance.state = ModelInstanceStateEnum.ERROR
-                    instance.state_message = str(e)
+                    rejection = router_cpu_rejection(instance)
+                    instance.state_message = (
+                        f"{rejection.message}\n{e}" if rejection else str(e)
+                    )
                     await ModelInstanceService(session).update(instance)
                 except Exception as ue:
                     logger.error(
@@ -607,6 +615,11 @@ class Scheduler:
                     )
                 if state_message != "":
                     model_instance.state_message = state_message
+                if rejection := router_cpu_rejection(model_instance):
+                    detail = (
+                        state_message or "".join(messages) or "No suitable workers."
+                    )
+                    model_instance.state_message = f"{rejection.message}\n{detail}"
 
                 await ModelInstanceService(session).update(model_instance)
                 logger.debug(
@@ -691,6 +704,43 @@ def _incompatible_cohort_message(model, workers, instances, required):
     return None
 
 
+async def _lock_scheduling_rows(session, model, cpu_worker_ids):
+    if not cpu_worker_ids:
+        return await ModelInstance.all_by_field(
+            session, 'model_id', model.id, for_update=True, refresh=True
+        )
+
+    # A locking read sees placements committed while we waited for the Worker
+    # lock, even under repeatable read. Take the instance locks in one order.
+    statement = (
+        select(ModelInstance)
+        .where(
+            (ModelInstance.model_id == model.id)
+            | (
+                (ModelInstance.role == RoleNameEnum.ROUTER.value)
+                & (ModelInstance.cluster_id == model.cluster_id)
+                & ModelInstance.worker_id.in_(cpu_worker_ids)
+                & ModelInstance.deleted_at.is_(None)
+            )
+        )
+        .order_by(ModelInstance.id)
+        .with_for_update()
+        .execution_options(populate_existing=True, autoflush=False)
+    )
+    return (await session.exec(statement)).all()
+
+
+def _cpu_reservations_fit(workers, requested, current, replaced):
+    allocated = cpu_allocated_by_worker(
+        row for row in current if row.id not in replaced
+    )
+    for worker_id, cpu in requested.items():
+        total = worker_cpu_millicores(workers[worker_id])
+        if total is None or allocated.get(worker_id, 0) + cpu > total:
+            return False
+    return True
+
+
 async def _lock_scheduling_admission(
     session, model, expected, candidates, instances=None
 ):
@@ -719,9 +769,18 @@ async def _lock_scheduling_admission(
     ):
         await session.rollback()
         return None
-    current = await ModelInstance.all_by_field(
-        session, 'model_id', model.id, for_update=True, refresh=True
-    )
+    requested_cpu = {}
+    for candidate in candidates.values():
+        if cpu := getattr(candidate.computed_resource_claim, 'cpu_millicores', None):
+            wid = candidate.worker.id
+            requested_cpu[wid] = requested_cpu.get(wid, 0) + cpu
+    locked = await _lock_scheduling_rows(session, model, set(requested_cpu))
+    current = _model_cohort(locked, model.id)
+    if requested_cpu and not _cpu_reservations_fit(
+        indexed, requested_cpu, locked, candidates
+    ):
+        await session.rollback()
+        return None
     required = model_requires_managed_worker_binding(current, model.id)
     rows = {row.id: row for row in current}
     if (
@@ -903,6 +962,7 @@ def build_candidate_selector(
     *,
     resource_view: ResourceView,
     managed_sglang: bool = False,
+    cpu_millicores: Optional[int] = None,
 ) -> ScheduleCandidatesSelector:
     """Which resource-fit selector answers "does one more member fit here".
 
@@ -918,10 +978,8 @@ def build_candidate_selector(
     every branch here reads Model-level fields and none of them knows about
     roles.
 
-    `ram_claim` is the accelerator-free role's declared memory, resolved by the
-    caller before projection because `resources` is a role-OWN field. Only the
-    `cpu_only` branch reads it — every other selector derives RAM from the
-    weights it just sized.
+    The CPU and RAM requests are resolved before projection because `resources`
+    belongs to the role. Only the `cpu_only` branch uses them.
     """
     if cpu_only:
         # Ahead of every backend branch, because the backend a router inherits
@@ -935,6 +993,7 @@ def build_candidate_selector(
             model_instances,
             cpu_only=True,
             ram_claim=ram_claim,
+            cpu_millicores=cpu_millicores,
             resource_view=resource_view,
         )
     if model.gpu_type_selector:
@@ -1146,6 +1205,15 @@ def _instance_scheduling_model(
     )
 
 
+def _prefer_cpu_retry_candidates(
+    candidates: List[ModelInstanceScheduleCandidate], instance: Optional[ModelInstance]
+) -> List[ModelInstanceScheduleCandidate]:
+    rejection = router_cpu_rejection(instance)
+    if rejection is None:
+        return candidates
+    return [c for c in candidates if c.worker.id != rejection.worker_id] or candidates
+
+
 async def find_candidate(
     session: AsyncSession,
     config: Config,
@@ -1263,9 +1331,6 @@ async def find_candidate(
 
     worker_filter_chain = WorkerFilterChain(filters)
     workers, filter_messages = await worker_filter_chain.filter(workers)
-    fit = filter_workers_by_cpu_budget(workers, getattr(role_resources, "cpu", None))
-    workers = fit.workers
-    filter_messages.extend(fit.messages)
     messages = (
         [str(ListMessageBuilder(filter_messages)) + "\n"] if filter_messages else []
     )
@@ -1280,6 +1345,11 @@ async def find_candidate(
             model_instances,
             cpu_only=cpu_only,
             ram_claim=role_resources.memory if role_resources is not None else None,
+            cpu_millicores=(
+                cores_to_millicores(role_resources.cpu)
+                if role_resources is not None
+                else None
+            ),
             resource_view=resource_view,
             managed_sglang=managed_sglang,
         )
@@ -1327,6 +1397,7 @@ async def find_candidate(
         session, model, role, candidates, workers, model_instances, exclude_instance_id
     )
     messages.extend(port_messages)
+    candidates = _prefer_cpu_retry_candidates(candidates, instance)
     candidate_scorers = [
         PlacementScorer(model, model_instances, resource_view=resource_view),
     ]

@@ -284,7 +284,8 @@ def test_non_vgpu_workload_instance_type_untouched(passthrough_transform):
     assert plan.labels is None
 
 
-def test_a_role_that_takes_no_accelerator_claims_no_slice():
+@pytest.mark.parametrize("cpu_millicores", [None, 1250])
+def test_a_role_that_takes_no_accelerator_claims_no_slice(cpu_millicores):
     """`gpu_type_selector` is a Model-level field every role inherits by
     projection, so a managed router asked the device plugin for a slice of the
     very card its own prefill and decode were sharing. Measured on a live
@@ -294,6 +295,7 @@ def test_a_role_that_takes_no_accelerator_claims_no_slice():
     from types import SimpleNamespace
 
     from gpustack.schemas.models import (
+        ComputedResourceClaim,
         DisaggregationSpec,
         GPUTypeSelector,
         Model,
@@ -322,7 +324,12 @@ def test_a_role_that_takes_no_accelerator_claims_no_slice():
         fake = SimpleNamespace(
             _model=model,
             _model_spec=model,
-            _model_instance=SimpleNamespace(role=role),
+            _model_instance=SimpleNamespace(
+                role=role,
+                computed_resource_claim=ComputedResourceClaim(
+                    cpu_millicores=cpu_millicores
+                ),
+            ),
             _get_vgpu_configured_resources=lambda r: "asked-for-a-slice",
         )
         # The real one, bound: what the router asks for *instead* of a slice is
@@ -340,5 +347,5 @@ def test_a_role_that_takes_no_accelerator_claims_no_slice():
     # kubelet admission, so the router declares the floor it actually needs.
     from gpustack.schemas.models import ROUTER_DEFAULT_CPU, ROUTER_DEFAULT_MEMORY
 
-    assert router["cpu"] == ROUTER_DEFAULT_CPU
+    assert router["cpu"] == (1.25 if cpu_millicores is not None else ROUTER_DEFAULT_CPU)
     assert router["memory"] == ROUTER_DEFAULT_MEMORY

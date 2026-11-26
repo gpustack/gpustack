@@ -76,12 +76,12 @@ class AllocationResource:
 
 @dataclass
 class Allocatable(AllocationResource):
-    pass
+    cpu_millicores: Optional[int] = None
 
 
 @dataclass
 class Allocated(AllocationResource):
-    pass
+    cpu_millicores: int = 0
 
 
 @dataclass

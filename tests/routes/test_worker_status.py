@@ -6,22 +6,15 @@ assigned it.
 """
 
 from types import SimpleNamespace
-from datetime import datetime, timezone
 
 import pytest
-from sqlalchemy.dialects.postgresql import dialect
 
 from gpustack.routes import workers as workers_route
 from gpustack.server.worker_status_buffer import (
     worker_status_flush_buffer,
     worker_status_flush_buffer_lock,
 )
-from gpustack.schemas.workers import (
-    KubernetesCPUBudget,
-    Worker,
-    WorkerStatus,
-    WorkerStatusStored,
-)
+from gpustack.schemas.workers import WorkerStatus, WorkerStatusStored
 
 
 def _user(worker_id: int = 1) -> SimpleNamespace:
@@ -78,24 +71,6 @@ async def test_status_report_buffers_operational_fields():
     assert buffered["ip"] == "10.0.0.9"
     assert buffered["hostname"] == "worker-1"
     assert "heartbeat_time" in buffered
-
-
-@pytest.mark.asyncio
-async def test_cpu_budget_survives_status_report_and_storage():
-    expires = datetime(2026, 12, 1, tzinfo=timezone.utc)
-    budget = KubernetesCPUBudget(available_millicores=1425, expires_at=expires)
-    status = _status(status=WorkerStatus(kubernetes_cpu_budget=budget))
-    incoming = WorkerStatusStored.model_validate_json(status.model_dump_json())
-
-    await workers_route.create_worker_status(_user(worker_id=7), incoming)
-
-    async with worker_status_flush_buffer_lock:
-        buffered = worker_status_flush_buffer.pop(7)["status"]
-    column_type = Worker.__table__.c.status.type
-    db_dialect = dialect()
-    encoded = column_type.bind_processor(db_dialect)(buffered)
-    decoded = column_type.result_processor(db_dialect, None)(encoded)
-    assert decoded.kubernetes_cpu_budget == budget
 
 
 @pytest.mark.asyncio

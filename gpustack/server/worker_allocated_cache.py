@@ -137,6 +137,7 @@ async def get_worker_allocated(worker_id: int) -> Allocated:
     return Allocated(
         ram=model_allocated.ram + cache_ram.get(worker_id, 0),
         vram=dict(model_allocated.vram),
+        cpu_millicores=model_allocated.cpu_millicores,
     )
 
 
@@ -160,6 +161,7 @@ async def get_workers_allocated(worker_ids: Iterable[int]) -> Dict[int, Allocate
         allocated[worker_id] = Allocated(
             ram=model_allocated.ram + cache_ram.get(worker_id, 0),
             vram=dict(model_allocated.vram),
+            cpu_millicores=model_allocated.cpu_millicores,
         )
     return allocated
 

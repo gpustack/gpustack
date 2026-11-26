@@ -55,6 +55,7 @@ from gpustack.schemas.models import (
     ModelInstanceUpdate,
     ModelInstancesPublic,
     ModelInstanceStateEnum,
+    RoleNameEnum,
     ServeLogOptionsResponse,
     get_backend,
     role_effective_model,
@@ -82,6 +83,8 @@ from gpustack.utils.model_instance_workers import (
     model_instance_metrics_source_inventory,
     requires_group_recovery,
     calculate_group_recovery_policy,
+    router_cpu_rejection,
+    router_cpu_rejection_message,
 )
 
 router = APIRouter()
@@ -1261,12 +1264,21 @@ async def create_model_instance(
             model_instance_in.distributed_servers is not None
             and (
                 model_instance_in.distributed_servers.stop_requested
+                or model_instance_in.distributed_servers.router_cpu_rejection
+                is not None
                 or model_instance_in.distributed_servers.group_recovery is not None
             )
         )
     ):
         raise BadRequestException(
             message="Managed workloads are initialized by the Server"
+        )
+    if (
+        getattr(model_instance_in.computed_resource_claim, 'cpu_millicores', None)
+        is not None
+    ):
+        raise BadRequestException(
+            message="Router CPU reservations are made by the scheduler"
         )
     try:
         model_instance = await ModelInstance.create(session, model_instance_in)
@@ -1743,6 +1755,13 @@ def _preserve_managed_fields(
     stored = get_model_instance_workloads(instance)
     incoming = get_model_instance_workloads(update)
     guard = model_instance_legacy_stop(instance)
+    rejection = router_cpu_rejection(instance)
+    if instance.role == RoleNameEnum.ROUTER.value:
+        update.computed_resource_claim = instance.computed_resource_claim
+    elif getattr(update.computed_resource_claim, 'cpu_millicores', None) is not None:
+        raise BadRequestException(
+            message="Router CPU reservations are made by the scheduler"
+        )
     if (
         update.distributed_servers is None
         and instance.distributed_servers is not None
@@ -1773,6 +1792,11 @@ def _preserve_managed_fields(
         and model_instance_legacy_stop(update) != guard
     ):
         raise ConflictException(message="Stop barriers are server-owned")
+    if getattr(update.distributed_servers, 'router_cpu_rejection', None) not in (
+        None,
+        rejection,
+    ):
+        raise ConflictException(message="Router recovery is server-owned")
     if incoming is not None and incoming != stored:
         raise ConflictException(
             message="Workloads can only be changed through workload_report"
@@ -1797,7 +1821,7 @@ def _preserve_managed_fields(
         update.model_fields_set.discard('model_config_snapshot')
         update.model_config_snapshot = None
         return
-    if stored is None and guard is None:
+    if stored is None and guard is None and rejection is None:
         return
     # A legacy snapshot may omit the manifest. Preserve it even if the snapshot
     # carries distributed_servers=null or an old subordinate status list.
@@ -1887,13 +1911,20 @@ async def _locked_reporting_worker(session, ctx):
     return await Worker.one_by_id(session, worker.id, for_update=True, refresh=True)
 
 
-async def _persist_instance_update(session, instance, source):
+async def _persist_instance_update(
+    session, instance, source, ctx, worker, cpu_rejection
+):
     """Suppress duplicate reports after authorization and generation checks."""
+    service = ModelInstanceService(session)
+    if cpu_rejection is not None and worker is not None:
+        source = await service.prepare_router_cpu_recovery(
+            instance, source, cpu_rejection, worker, ctx.user.id
+        )
     if isinstance(source, dict) and all(
         getattr(instance, key) == value for key, value in source.items()
     ):
         return
-    await ModelInstanceService(session).update(instance, source)
+    await service.update(instance, source)
 
 
 @router.put("/{id}", response_model=ModelInstancePublic)
@@ -1930,12 +1961,16 @@ async def _update_model_instance(session, ctx, id, model_instance_in):
     member_report = isinstance(model_instance_in, ModelInstanceMemberReport)
     stop_report = isinstance(model_instance_in, ModelInstanceStopReport)
     worker = ctx.user.worker if member_report or stop_report else None
-    current_worker = (
-        await _locked_reporting_worker(session, ctx)
-        if member_report or stop_report
+    cpu_rejection = (
+        router_cpu_rejection_message(model_instance_in)
+        if isinstance(model_instance_in, ModelInstanceUpdate)
         else None
     )
-    if member_report or stop_report:
+    worker_report = member_report or stop_report or cpu_rejection is not None
+    current_worker = (
+        await _locked_reporting_worker(session, ctx) if worker_report else None
+    )
+    if worker_report:
         model_instance = await ModelInstance.one_by_id(
             session, id, for_update=True, refresh=True
         )
@@ -1991,7 +2026,9 @@ async def _update_model_instance(session, ctx, id, model_instance_in):
         source = model_instance_in
     _preserve_model_config_snapshot(model_instance, model_instance_in, source, ctx)
     try:
-        await _persist_instance_update(session, model_instance, source)
+        await _persist_instance_update(
+            session, model_instance, source, ctx, current_worker, cpu_rejection
+        )
     except APIHTTPException:
         raise
     except Exception as e:

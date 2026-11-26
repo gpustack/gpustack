@@ -74,7 +74,7 @@ def _capacity(workers, model=None, selector=_PricedSelector):
     cap = GroupCapacity(
         SimpleNamespace(), model, workers, [], resource_view=ResourceView([])
     )
-    cap._selector = lambda m, instances, cpu_only, ram_claim=None: selector(instances)
+    cap._selector = lambda m, instances, *args: selector(instances)
     for role in ("prefill", "decode"):
         cap._eligible[role] = {w.id: w for w in workers}
         cap._projected[role] = _RoleProjection(model, False)

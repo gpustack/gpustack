@@ -1,13 +1,41 @@
 """Resource accounting for one scheduling view, independent of workload storage."""
 
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, List, Optional
 
 from gpustack.policies.base import Allocated, Allocatable
-from gpustack.schemas.models import ModelInstance
+from gpustack.schemas.models import ModelInstance, RoleNameEnum
 from gpustack.schemas.workers import Worker
 
 logger = logging.getLogger(__name__)
+
+
+def worker_cpu_millicores(worker: Worker) -> Optional[int]:
+    """Use the reported logical CPU capacity, not transient CPU utilization."""
+    cpu = getattr(worker.status, "cpu", None)
+    total = cpu.total if cpu else None
+    return total * 1000 if total and total > 0 else None
+
+
+def _model_cpu_millicores(instance: ModelInstance) -> int:
+    # Simulated placements carry the candidate's claim without a role field.
+    if (
+        getattr(instance, "deleted_at", None) is not None
+        or getattr(instance, "role", RoleNameEnum.ROUTER.value)
+        != RoleNameEnum.ROUTER.value
+    ):
+        return 0
+    return getattr(instance.computed_resource_claim, "cpu_millicores", None) or 0
+
+
+def cpu_allocated_by_worker(instances: Iterable[ModelInstance]) -> Dict[int, int]:
+    """Sum committed CPU claims on their primary Workers (PD Routers only)."""
+    allocated: Dict[int, int] = {}
+    for instance in instances:
+        worker_id = instance.worker_id
+        if worker_id is not None and (cpu := _model_cpu_millicores(instance)):
+            allocated[worker_id] = allocated.get(worker_id, 0) + cpu
+    return allocated
 
 
 def compute_worker_allocated(
@@ -15,8 +43,7 @@ def compute_worker_allocated(
     worker_id: int,
     gpu_type: Optional[str] = None,
 ) -> Allocated:
-    """Aggregate (ram, {gpu_index: vram}) for ``worker_id`` from current
-    ModelInstance assignments — main worker + distributed subordinates.
+    """Aggregate CPU, RAM and VRAM from current ModelInstance assignments.
 
     Both main and subordinate workers reserve their declared RAM and VRAM.
     Host RAM is shared across GPU types; only VRAM is filtered by GPU type.
@@ -33,6 +60,7 @@ def compute_worker_allocated(
             claim = mi.computed_resource_claim
             if claim is not None:
                 allocated.ram += claim.ram or 0
+                allocated.cpu_millicores += _model_cpu_millicores(mi)
                 if mi.gpu_indexes and (
                     gpu_type is None or mi.gpu_type is None or mi.gpu_type == gpu_type
                 ):
@@ -66,7 +94,11 @@ class ResourceView:
     ) -> None:
         self._model_instances = model_instances
         self._reservations = {
-            worker_id: Allocated(ram=claim.ram, vram=dict(claim.vram))
+            worker_id: Allocated(
+                ram=claim.ram,
+                vram=dict(claim.vram),
+                cpu_millicores=claim.cpu_millicores,
+            )
             for worker_id, claim in (reservations or {}).items()
         }
 
@@ -77,12 +109,18 @@ class ResourceView:
     def has_reservation(self, worker_id: int) -> bool:
         """Whether this worker has a non-model resource reservation."""
         claim = self._reservations.get(worker_id)
-        return bool(claim and (claim.ram or any(claim.vram.values())))
+        return bool(
+            claim and (claim.ram or claim.cpu_millicores or any(claim.vram.values()))
+        )
 
     def reservation_key(self) -> Dict[int, dict]:
         """Return the external reservations that affect an evaluation cache key."""
         return {
-            worker_id: {"ram": claim.ram, "vram": dict(claim.vram)}
+            worker_id: {
+                "ram": claim.ram,
+                "vram": dict(claim.vram),
+                "cpu_millicores": claim.cpu_millicores,
+            }
             for worker_id, claim in self._reservations.items()
         }
 
@@ -92,6 +130,7 @@ class ResourceView:
         reservation = self._reservations.get(worker_id)
         if reservation:
             allocated.ram += reservation.ram
+            allocated.cpu_millicores += reservation.cpu_millicores
             for index, vram in reservation.vram.items():
                 allocated.vram[index] = allocated.vram.get(index, 0) + vram
         return allocated
@@ -104,6 +143,9 @@ class ResourceView:
         allocated = self.allocated(worker.id, gpu_type)
 
         allocatable = Allocatable(ram=0, vram={})
+        cpu = worker_cpu_millicores(worker)
+        if cpu is not None:
+            allocatable.cpu_millicores = max(cpu - allocated.cpu_millicores, 0)
         if worker.status.gpu_devices:
             for _, gpu in enumerate(worker.status.gpu_devices):
                 gpu_index = gpu.index

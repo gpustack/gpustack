@@ -11,7 +11,7 @@ from gpustack.policies import utils as policy_utils
 from gpustack.schemas.model_sets import ModelSpec
 from gpustack.schemas.models import DisaggregationSpec, RoleSpec, SourceEnum
 from gpustack.schemas.port_reservations import WorkerPortAvailability
-from gpustack.schemas.workers import WorkerStateEnum
+from gpustack.schemas.workers import CPUInfo, WorkerStateEnum
 from tests.fixtures.workers.fixtures import linux_nvidia_22_H100_80gx8
 from tests.utils.mock import mock_async_session
 
@@ -91,6 +91,7 @@ async def test_unsaved_spec_completes_real_resource_evaluation(
     monkeypatch.setenv('HF_HUB_OFFLINE', '1')
     shutil.copyfile(fixtures / 'qwen3_moe.json', tmp_path / 'config.json')
     worker = linux_nvidia_22_H100_80gx8()
+    worker.status.cpu = CPUInfo(total=16)
     if not fits:
         worker.status.gpu_devices = worker.status.gpu_devices[:1]
     worker.cluster_id = 1

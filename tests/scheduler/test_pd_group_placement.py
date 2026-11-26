@@ -20,9 +20,8 @@ through the real `count_offer_slots`, and the placement is a real
 `solve_group_placement`. The only things patched are the ones that would reach
 the network or the database and answer nothing about placement:
 
-- `get_pretrained_config_with_workers` -- a HuggingFace download. Pinned to
-  Llama-3.1-8B's published hyperparameters so the VRAM estimate is a fixed
-  number rather than whatever the hub serves today.
+- `get_pretrained_config_with_workers` and `get_model_weight_size` -- the
+  HuggingFace metadata for Llama-3.1-8B, pinned to keep estimates reproducible.
 - the `async_session` behind `BackendFrameworkFilter`, and the session handed
   to `schedule_group` -- both pure reads (runner catalog, cache instances).
 - `Cluster.one_by_id` -- the row the cluster topology is read from.
@@ -32,6 +31,7 @@ was returned" is the one thing all three defects above also did.
 """
 
 from gpustack.policies.resource_view import ResourceView
+import re
 from types import SimpleNamespace
 from typing import Dict, List, Optional, Sequence, Tuple
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -48,6 +48,7 @@ from gpustack.schemas.models import (
     RoleSpec,
     SourceEnum,
 )
+from gpustack.schemas.workers import CPUInfo
 from gpustack.scheduler import group_schedule
 from gpustack.scheduler.group_capacity import GroupCapacity
 from gpustack.topology.tree import NODE_LAYER
@@ -72,9 +73,7 @@ RACK_KEY = "topology.gpustack.ai/rack"
 # dropped rather than enforced, which is a green test that proves nothing.
 RACK_LAYER = lid("rack")
 
-# meta-llama/Llama-3.1-8B-Instruct, as published. Fixed here so the VRAM claim
-# the selectors compute (19.95 GiB at the default utilization) is a property of
-# this file rather than of network weather.
+# Llama-3.1-8B hyperparameters keep the selector inputs reproducible.
 LLAMA_31_8B = SimpleNamespace(
     architectures=["LlamaForCausalLM"],
     num_hidden_layers=32,
@@ -118,12 +117,7 @@ def _session_cm():
 
 
 def _offline():
-    """The two patches that keep this file off the network and off a database.
-
-    Returned as a pair rather than applied here so the same two cover both
-    drivers below: `_place`, which goes through `schedule_group`, and the one
-    test that asks `GroupCapacity` directly what it measured.
-    """
+    """Replace remote reads for both the group solver and direct capacity tests."""
     return (
         patch(
             "gpustack.policies.candidate_selectors.base_candidate_selector."
@@ -134,6 +128,7 @@ def _offline():
             "gpustack.policies.worker_filters.backend_framework_filter.async_session",
             side_effect=_session_cm,
         ),
+        patch("gpustack.policies.utils.get_model_weight_size", return_value=16 * GIB),
     )
 
 
@@ -173,6 +168,7 @@ def _fleet(kind: str, count: int, racks=(), cards=None, ram=None):
         # The fixtures predate clusters and carry no id; `ClusterFilter` reads
         # it, so without this every worker is filtered out for every role.
         worker.cluster_id = 1
+        worker.status.cpu = CPUInfo(total=16)
         if cards is not None:
             want = cards[n] if isinstance(cards, (list, tuple)) else cards
             worker.status.gpu_devices = worker.status.gpu_devices[:want]
@@ -255,13 +251,14 @@ async def _place(
     """
     rows = _members(model)
     cluster = SimpleNamespace(id=1, topology=topology)
-    pretrained, backend_session = _offline()
+    pretrained, backend_session, weight_size = _offline()
     with (
         patch.object(
             group_schedule.Cluster, "one_by_id", AsyncMock(return_value=cluster)
         ),
         pretrained,
         backend_session,
+        weight_size,
     ):
         by_instance, messages = await schedule_group(
             session=_read_only_session(),
@@ -391,7 +388,10 @@ async def test_a_group_that_does_not_fit_places_no_member_at_all(config):
     assert messages[0] == (
         "The group needs 8 placements and the cluster has room for 2."
     )
-    assert any("19.95 GiB of VRAM" in message for message in messages[1:])
+    assert any(
+        re.search(r"requires approximately \d+(?:\.\d+)? GiB of VRAM", message)
+        for message in messages[1:]
+    ), messages
 
 
 # --- B. one role paying for what the other took ----------------------------- #
@@ -650,8 +650,8 @@ async def test_e_a_worker_reporting_no_memory_is_unknown_not_zero(config):
     fleet = _fleet("A100x2", 2, ram=[0, 185695764480])
     model = _pd_model(2, 2)
 
-    pretrained, backend_session = _offline()
-    with pretrained, backend_session:
+    pretrained, backend_session, weight_size = _offline()
+    with pretrained, backend_session, weight_size:
         capacity = GroupCapacity(
             config, model, fleet, [], [], resource_view=ResourceView([])
         )

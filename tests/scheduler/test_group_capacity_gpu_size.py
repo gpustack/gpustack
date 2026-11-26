@@ -80,9 +80,7 @@ def _capacity(workers, model=None):
     cap = GroupCapacity(
         SimpleNamespace(), model, workers, [], resource_view=ResourceView([])
     )
-    cap._selector = lambda m, instances, cpu_only, ram_claim=None: _OneCardEach(
-        instances
-    )
+    cap._selector = lambda m, instances, *args: _OneCardEach(instances)
     for role in ("prefill", "decode", "router"):
         cap._eligible[role] = {w.id: w for w in workers}
         cap._projected[role] = _RoleProjection(model, role == "router")
@@ -282,9 +280,7 @@ async def test_a_spanning_member_stays_inside_the_band_that_was_kept():
     # for the engines that support it, and this stub does not go through one.
     model.distributed_inference_across_workers = True
     cap = _capacity(workers, model)
-    cap._selector = lambda m, instances, cpu_only, ram_claim=None: _OnlySpanning(
-        instances
-    )
+    cap._selector = lambda m, instances, *args: _OnlySpanning(instances)
 
     slots = await cap("prefill", [1, 2, 3, 4], [])
 

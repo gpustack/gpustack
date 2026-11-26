@@ -129,6 +129,12 @@ Router またはデプロイのイメージを明示した場合、完全なコ�
 
 そのため、サービス提供前にしばらく `Partially ready` と表示されます。これは正常な経路であり、障害ではありません。
 
+### Router の CPU 配置 { #router-cpu-placement }
+
+GPUStack は Worker が報告する CPU 容量から他の PD Router の予約を差し引き、Router の要求（既定は 2 コア）を満たすか確認します。CPU はコンテナーの作成前、配置の確定時に予約されます。CPU 容量が未報告の Worker は対象外です。旧バージョンで CPU 予約なしに配置されたインスタンスは、再配置時から計上されます。
+
+この計算は GPUStack 内の予約のみを扱い、Kubernetes ノードの空き容量を示すものではありません。Pod が `OutOfcpu` で拒否された場合、エラー時の再起動が有効で Worker の ID がバインドされていれば、理由を保持したまま古い Pod の削除を待ち、再試行時に別の適格な Worker を優先します。代替がなければ、待機時間の後に元の Worker で再試行できます。
+
 ## グループ状態の読み方 { #reading-a-groups-state }
 
 | 表示 | 意味 |
@@ -196,16 +202,6 @@ NVIDIA Mooncake は、推論イメージ内に転送エンジンのランタイ�
 ### Kubernetes：Pod がクラスターに要求するもの { #on-kubernetes-what-the-pods-ask-the-cluster-for }
 
 グループのメンバーには、ホストネットワーク、hostPort、ホスト IPC、デバイスマウントの 4 つすべてが必要です。これは Pod Security Admission の `baseline` レベルを超えます。GPUStack は所有する名前空間に適切なラベルを設定します。独自に用意したクラスターでの意味と、その対象*外*については、[名前空間と Pod Security Admission](cluster-management.md#namespaces-and-pod-security-admission)を参照してください。
-
-### Kubernetes Router の CPU を考慮した配置 { #kubernetes-router-cpu-placement }
-
-Worker は、稼働する Kubernetes ノードで CPU リクエストに使える残量を報告できます。GPUStack はこの値を PD グループの容量確認と Router の配置の両方に使用します。残量は、ノードの割り当て可能な CPU から全名前空間の稼働中の Pod が要求する CPU を引いた値で、CPU 使用率ではありません。
-
-Kubernetes Worker で有効にするには、`GPUSTACK_WORKER_KUBERNETES_CPU_BUDGET_KUBECONFIG` に、同じクラスター用で TLS 検証が有効な専用 kubeconfig のパスを設定します。`GPUSTACK_RUNTIME_KUBERNETES_NODE_NAME` には Worker が稼働するノード名を設定します（Helm チャートでは設定済みです）。専用の認証主体には、対象ノードの `get` と、全名前空間にまたがるコア Pod リソースの `list` だけを許可します。クラスターのプロキシが使用する Worker の ServiceAccount に権限を追加しないでください。Kubernetes ランタイムが推論 Pod にマウントをコピーしないよう、kubeconfig と認証情報は投射ボリュームでマウントします。
-
-サーバーに報告されるのは、利用可能な CPU ミリコア数と有効期限だけです。すべての配置候補で確認するには、Router を実行できる各 Worker を設定してください。未設定の Worker では従来どおりに配置されます。有効化した Worker で値を取得できない場合や期限が切れた場合は、有効な値を取得するまで Router の配置先から除外されます。指定した kubeconfig が無効または存在しない場合も Worker は起動し、残量を取得できないことを報告して、次の状態更新時に再読み込みを試みます。
-
-この確認はスナップショットに基づくもので、リソースの予約ではありません。測定後から Router Pod の作成までに他の Pod が CPU を確保した場合、最終的な受け入れ可否は Kubernetes が判断します。
 
 ### KV 転送のインターフェース { #the-kv-transfer-interface }
 

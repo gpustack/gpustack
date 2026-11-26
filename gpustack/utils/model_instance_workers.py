@@ -17,6 +17,9 @@ from gpustack.schemas.models import (
     ModelInstanceWorkloadObservation,
     ModelInstancePreparation,
     ModelInstanceStateEnum,
+    ModelInstanceUpdate,
+    RoleNameEnum,
+    RouterCPURejection,
     member_worker_ids,
     role_effective_model,
 )
@@ -258,6 +261,33 @@ def model_instance_legacy_stop(
 ) -> Optional[ModelInstanceLegacyStop]:
     servers = getattr(instance, "distributed_servers", None)
     return getattr(servers, "legacy_stop", None)
+
+
+def router_cpu_rejection(
+    instance: Optional[ModelInstanceBase],
+) -> Optional[RouterCPURejection]:
+    if getattr(instance, "role", None) != RoleNameEnum.ROUTER.value:
+        return None
+    return getattr(
+        getattr(instance, "distributed_servers", None), "router_cpu_rejection", None
+    )
+
+
+def router_cpu_rejection_message(update: ModelInstanceUpdate) -> Optional[str]:
+    """Recognize a Router admission rejection from the legacy runtime report."""
+    if (
+        update.role != RoleNameEnum.ROUTER.value
+        or update.state != ModelInstanceStateEnum.ERROR
+        or not (message := update.state_message)
+    ):
+        return None
+    if message == "OutOfcpu" or message.startswith("OutOfcpu:"):
+        return message
+    # The Kubernetes runtime exposes the Pod's message, not its reason field.
+    detail = message.removeprefix("Pod was rejected: ")
+    if detail.startswith("Node didn't have enough resource: cpu,"):
+        return f"OutOfcpu: {message}"
+    return None
 
 
 def has_model_instance_stop_barrier(instance: ModelInstanceBase) -> bool:

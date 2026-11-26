@@ -2834,7 +2834,12 @@ async def test_snapshot_cannot_forge_or_clear_server_stop_release(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     'intent',
-    [{'stop_requested': True}, {'group_recovery': False}, {'group_recovery': True}],
+    [
+        {'stop_requested': True},
+        {'group_recovery': False},
+        {'group_recovery': True},
+        {'router_cpu_rejection': {'worker_id': 1, 'message': 'OutOfcpu'}},
+    ],
 )
 async def test_create_cannot_supply_server_recovery_intent(report_api, intent):
     api = report_api
@@ -2847,6 +2852,89 @@ async def test_create_cannot_supply_server_recovery_intent(report_api, intent):
     ) as client:
         response = await client.post("/model-instances", json=payload)
     assert response.status_code == 400, response.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('restart_on_error', [True, False])
+async def test_router_cpu_rejection_waits_for_stop_before_requeuing(
+    report_api, monkeypatch, restart_on_error
+):
+    from gpustack.schemas.models import ComputedResourceClaim
+    from gpustack.server.controllers import ModelController
+    from gpustack.server.services import ModelInstanceService
+
+    api = report_api
+    row = api.instance
+    row.role = 'router'
+    row.state = ModelInstanceStateEnum.STARTING
+    row.distributed_servers = DistributedServers()
+    row.port = 40000
+    row.ports = [40000]
+    row.computed_resource_claim = ComputedResourceClaim(ram=1024, cpu_millicores=2000)
+    api.session.get.side_effect = None
+    api.session.get.return_value = SimpleNamespace(
+        id=1,
+        cluster_id=1,
+        system_principal_id=10,
+        deleted_at=None,
+        state='ready',
+        unreachable=False,
+    )
+    model = new_model(1, 'test', huggingface_repo_id='org/repo', cluster_id=1)
+    model.replicas = 1
+    model.restart_on_error = restart_on_error
+    monkeypatch.setattr(routes.Model, 'one_by_id', AsyncMock(return_value=model))
+    monkeypatch.setattr(
+        routes.ModelInstance, 'all_by_field', AsyncMock(return_value=[row])
+    )
+    api.session.commit = AsyncMock()
+    service = ModelInstanceService(api.session)
+    api.service.prepare_router_cpu_recovery = service.prepare_router_cpu_recovery
+    monkeypatch.setattr(ModelInstanceService, 'update', api.service.update)
+
+    payload = row.model_dump(mode='json')
+    # A legacy Worker may not know the CPU field in the JSON claim.
+    payload['computed_resource_claim'].pop('cpu_millicores')
+    payload.update(
+        state='error',
+        state_message=(
+            "Pod was rejected: Node didn't have enough resource: cpu, "
+            "requested: 2000, used: 6575, capacity: 8000"
+        ),
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=api.app), base_url='http://test'
+    ) as client:
+        response = await client.put('/model-instances/7', json=payload)
+        assert response.status_code == 200, response.text
+        assert row.worker_id == 1
+        assert row.state == ModelInstanceStateEnum.ERROR
+        assert row.state_message == f"OutOfcpu: {payload['state_message']}"
+        assert row.computed_resource_claim.cpu_millicores == 2000
+        guard = row.distributed_servers.legacy_stop
+        if not restart_on_error:
+            assert guard is None
+            return
+        assert guard.worker_ids == [1]
+
+        # Verify the controller observes both the failure and its stop ACK.
+        await ModelController._sync_managed_model_instances(None, api.session, model)
+        assert row.worker_id == 1 and row.restart_count == 0
+        stale = {**payload, 'state': 'scheduled', 'restart_count': 1}
+        assert (await client.put('/model-instances/7', json=stale)).status_code == 409
+        response = await client.post(
+            '/model-instances/7/stop-confirmation',
+            json={'token': str(guard.token), 'restart_count': 0},
+        )
+        assert response.status_code == 200, response.text
+        await ModelController._sync_managed_model_instances(None, api.session, model)
+
+    assert row.state == ModelInstanceStateEnum.PENDING
+    assert row.state_message.startswith('OutOfcpu:')
+    assert row.restart_count == 1
+    assert row.worker_id is row.computed_resource_claim is row.port is row.ports is None
+    assert row.distributed_servers.legacy_stop is None
+    assert row.distributed_servers.router_cpu_rejection.worker_id == 1
 
 
 @pytest.mark.parametrize('headless', [False, True])

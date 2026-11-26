@@ -134,6 +134,12 @@ Sıralama tesadüfi değildir ve bilmeye değer çünkü bir grup geldiğinde g�
 
 Bu nedenle bir grup servis yapmadan önce bir süre `Partially ready` bildirir ve bu bir hatadan ziyade normal yoldur.
 
+### Router CPU yerleşimi { #router-cpu-placement }
+
+GPUStack, Router'ın CPU isteğini (varsayılan 2 çekirdek), Worker'ın bildirdiği kapasiteden diğer PD Router rezervasyonlarını düşerek kontrol eder. CPU, konteyner oluşturulmadan önce, yerleşim kesinleştiğinde ayrılır. CPU kapasitesi bildirmeyen Worker'lar seçilmez. Eski sürümlerde CPU rezervasyonu olmayan örnekler yeniden yerleştirildiklerinde hesaba katılır.
+
+Bu hesap yalnızca GPUStack rezervasyonlarını kapsar; Kubernetes düğümünün boş kapasitesini göstermez. Kubelet Pod'u `OutOfcpu` ile reddederse ve hata durumunda yeniden başlatma etkin, Worker kimliği de bağlıysa GPUStack nedeni saklar, eski Pod'un kaldırılmasını bekler ve yeniden denemede başka bir uygun Worker'ı tercih eder. Alternatif yoksa bekleme süresinden sonra aynı Worker yeniden denenebilir.
+
 ## Bir grubun durumunu okuma { #reading-a-groups-state }
 
 | Ne görüyorsun | Ne anlama geliyor |
@@ -201,16 +207,6 @@ NVIDIA Mooncake, çıkarım imajında aktarım motoru çalışma ortamını ve R
 ### Kubernetes'te: Pod'ların kümeden istediği şey { #on-kubernetes-what-the-pods-ask-the-cluster-for }
 
 Bir grubun üyelerinin ana bilgisayar ağı, ana bilgisayar bağlantı noktası, ana bilgisayar IPC'si ve cihaz bağlantılarına ihtiyacı vardır — dördünün birden aynı anda olması, `baseline` Pod Güvenlik Giriş seviyesinin izin verdiğinden daha fazladır. GPUStack, sahip olduğu ad alanlarını buna göre etiketler; Kendi getirdiğiniz bir kümede bunun ne anlama geldiğini ve *kapsamadığı* konuları da görmek için [Ad Alanları ve Pod Güvenlik Girişi](cluster-management.md#namespaces-and-pod-security-admission)'ye bakın.
-
-### Kubernetes'te CPU'yu dikkate alan Router yerleşimi { #kubernetes-router-cpu-placement }
-
-İşçiler, çalıştıkları Kubernetes düğümünde yeni kaynak istekleri için ne kadar CPU kaldığını bildirebilir. GPUStack bu bilgiyi hem PD grubu kapasite denetiminde hem de Router'ı yerleştirirken kullanır. Bu değer, düğümde tahsis edilebilir CPU'dan tüm ad alanlarındaki etkin Pod'ların CPU istekleri çıkarılarak hesaplanır; anlık CPU kullanımı değildir.
-
-Bu özelliği bir Kubernetes işçisinde etkinleştirmek için `GPUSTACK_WORKER_KUBERNETES_CPU_BUDGET_KUBECONFIG` değişkenini aynı küme için ayrılmış ve TLS doğrulaması etkin bir kubeconfig dosyasının yoluna ayarlayın. `GPUSTACK_RUNTIME_KUBERNETES_NODE_NAME` işçinin düğüm adını içermelidir (Helm chart bu ayarı zaten yapar). Ayrı kimliğe yalnızca düğüm için `get` ve tüm ad alanlarındaki çekirdek Pod kaynakları için `list` yetkisi verin. Küme proxy'sinin kullandığı işçi ServiceAccount yetkilerini genişletmeyin. Kubernetes çalışma zamanının bağlama noktasını çıkarım Pod'larına kopyalamaması için kubeconfig dosyasını ve kimlik bilgilerini bir yansıtılmış birim (projected volume) üzerinden bağlayın.
-
-Sunucuya yalnızca kullanılabilir CPU miktarı (millicore) ve ölçümün geçerlilik süresi bildirilir. Denetimi Router çalıştırabilecek tüm işçilerde uygulamak istiyorsanız her birini yapılandırın. Yapılandırılmamış işçiler mevcut yerleşim davranışını korur. Ölçümü kullanılamayan veya süresi dolmuş bir işçi, güncel bir ölçüm alınana kadar Router yerleşimi için seçilmez. Belirtilen kubeconfig dosyası geçersizse veya yoksa işçi yine başlar, ölçümün kullanılamadığını bildirir ve sonraki durum güncellemesinde dosyayı yeniden okumayı dener.
-
-Bu denetim kaynak ayırmaz; bir anlık görüntü kullanır. Başka Pod'lar ölçüm ile Router Pod'unun oluşturulması arasında CPU isterse Pod'un kabulüne Kubernetes karar verir.
 
 ### KV Aktarım Arayüzü { #the-kv-transfer-interface }
 

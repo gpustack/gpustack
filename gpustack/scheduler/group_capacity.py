@@ -40,9 +40,6 @@ from gpustack.policies.worker_filters.backend_framework_filter import (
 )
 from gpustack.policies.worker_filters.cluster_filter import ClusterFilter
 from gpustack.policies.worker_filters.gpu_matching_filter import GPUMatchingFilter
-from gpustack.policies.worker_filters.kubernetes_cpu_budget import (
-    filter_workers_by_cpu_budget,
-)
 from gpustack.policies.worker_filters.label_matching_filter import LabelMatchingFilter
 from gpustack.policies.worker_filters.local_path_filter import LocalPathFilter
 from gpustack.policies.worker_filters.pd_mode_filter import PDModeRuntimeFilter
@@ -54,7 +51,8 @@ from gpustack.schemas.models import (
     role_takes_no_accelerator,
 )
 from gpustack.schemas.workers import Worker
-from gpustack.policies.resource_view import ResourceView
+from gpustack.policies.resource_view import ResourceView, worker_cpu_millicores
+from gpustack.utils.unit import cores_to_millicores
 from gpustack.scheduler.offer_slot import _stand_in_for, count_offer_slots
 
 logger = logging.getLogger(__name__)
@@ -74,19 +72,12 @@ def _reports_no_memory(worker: Worker) -> bool:
 
 
 class _RoleProjection(NamedTuple):
-    """What `_eligible_for` worked out for a role, read back by two callers.
-
-    A NamedTuple rather than a bare tuple because the role-OWN fields read
-    before projection are a growing set — the accelerator-free flag, now
-    `ram_claim` — and a
-    positional tuple couples every read site, plus every test that builds one,
-    to that count. `ram_claim` defaults so a caller that only cares about
-    placement need not spell it.
-    """
+    """Projected model and resource requests that belong to the role itself."""
 
     model: Model
     cpu_only: bool
     ram_claim: Optional[int] = None
+    cpu_millicores: Optional[int] = None
 
 
 class GroupCapacity:
@@ -123,7 +114,6 @@ class GroupCapacity:
         self._committed_ports: Dict[int, int] = {}
         # role -> {worker_id: worker}, after that role's filters.
         self._eligible: Dict[Optional[str], Dict[int, Worker]] = {}
-        self._unknown_cpu_capacity: Dict[str, Set[int]] = {}
         self._projected: Dict[Optional[str], "_RoleProjection"] = {}
         # (role, worker_id) -> the candidates the count produced there, in the
         # order it produced them. See `_translate`.
@@ -243,8 +233,6 @@ class GroupCapacity:
         out: Dict[int, int] = {}
         for worker_id in worker_ids:
             self._spanning_port_demands.pop((role, worker_id), None)
-            if worker_id in self._unknown_cpu_capacity.get(role, ()):
-                continue
             worker = eligible.get(worker_id)
             if worker is None:
                 # Filtered out for this role — a measured, definite zero, not
@@ -269,9 +257,23 @@ class GroupCapacity:
                     role,
                 )
                 continue
+            if (
+                projected.cpu_millicores is not None
+                and worker_cpu_millicores(worker) is None
+            ):
+                self._remember_notes(
+                    role, [f"Worker {worker.name}: CPU capacity unavailable."]
+                )
+                continue
             offer = await count_offer_slots(
                 make_selector=lambda instances_now, p=projected: (
-                    self._selector(p.model, instances_now, p.cpu_only, p.ram_claim)
+                    self._selector(
+                        p.model,
+                        instances_now,
+                        p.cpu_only,
+                        p.ram_claim,
+                        p.cpu_millicores,
+                    )
                 ),
                 workers=[worker],
                 model_instances=instances,
@@ -518,7 +520,9 @@ class GroupCapacity:
 
         offer = await count_offer_slots(
             make_selector=lambda instances_now, p=self._projected[role]: (
-                self._selector(p.model, instances_now, p.cpu_only, p.ram_claim)
+                self._selector(
+                    p.model, instances_now, p.cpu_only, p.ram_claim, p.cpu_millicores
+                )
             ),
             workers=usable,
             model_instances=instances,
@@ -857,7 +861,9 @@ class GroupCapacity:
             out.append(_stand_in_for(offers[index], self._projected[role].model))
         return out
 
-    def _selector(self, model, instances, cpu_only, ram_claim=None):
+    def _selector(
+        self, model, instances, cpu_only, ram_claim=None, cpu_millicores=None
+    ):
         # Imported here rather than at module scope: `scheduler` imports a wide
         # slice of the policy stack, and this module is imported by a route.
         from gpustack.scheduler.scheduler import build_candidate_selector
@@ -868,6 +874,7 @@ class GroupCapacity:
             instances,
             cpu_only=cpu_only,
             ram_claim=ram_claim,
+            cpu_millicores=cpu_millicores,
             resource_view=self._resource_view.with_model_instances(instances),
         )
 
@@ -891,14 +898,13 @@ class GroupCapacity:
         cpu_only = role_takes_no_accelerator(self._model, role)
         # `resources` is role-OWN as well, and only the accelerator-free
         # branch consumes it — same read-before-projection reason.
-        role_resources = (
-            role_container_resources(self._model, role) if cpu_only else None
-        )
+        resources = role_container_resources(self._model, role) if cpu_only else None
         model = role_effective_model(self._model, role)
         self._projected[role] = _RoleProjection(
             model,
             cpu_only,
-            role_resources.memory if role_resources is not None else None,
+            resources.memory if resources is not None else None,
+            cores_to_millicores(resources.cpu) if resources is not None else None,
         )
 
         chain = WorkerFilterChain(
@@ -938,12 +944,6 @@ class GroupCapacity:
             # Repeating it beside a fleet we are deliberately treating as
             # wholly eligible would contradict the very list we return.
             messages = []
-
-        if role_resources is not None:
-            fit = filter_workers_by_cpu_budget(kept, role_resources.cpu)
-            kept = fit.workers
-            self._unknown_cpu_capacity[role] = fit.unknown_ids
-            messages.extend(fit.messages)
 
         # Deduplicated and stripped here rather than in `notes_for`, because
         # this runs once per role (the result is cached on `_eligible`) while
@@ -1010,7 +1010,13 @@ class GroupCapacity:
                 return []
             offer = await count_offer_slots(
                 make_selector=lambda instances_now, p=projected: (
-                    self._selector(p.model, instances_now, p.cpu_only, p.ram_claim)
+                    self._selector(
+                        p.model,
+                        instances_now,
+                        p.cpu_only,
+                        p.ram_claim,
+                        p.cpu_millicores,
+                    )
                 ),
                 workers=span,
                 model_instances=instances,

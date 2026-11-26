@@ -5,7 +5,6 @@ import logging
 import os
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from typing import Any, List, Tuple, Optional, Dict
 
 from gpustack_runtime.detector import ManufacturerEnum
@@ -49,7 +48,7 @@ from gpustack.schemas.principals import _platform_principal_id
 from gpustack.server.cache_service_resources import (
     cache_resource_reservations,
 )
-from gpustack.policies.resource_view import ResourceView
+from gpustack.policies.resource_view import ResourceView, cpu_allocated_by_worker
 from gpustack.scheduler.group_capacity import (
     GroupCapacity,
     attendant_demands,
@@ -188,39 +187,22 @@ async def evaluate_models(
     return results
 
 
-def _current_cpu_budgets(
-    model: ModelSpec, workers: List[Worker]
-) -> Dict[int, Optional[int]]:
-    if not any(
-        role_takes_no_accelerator(model, role.name) for role in (model.roles or [])
-    ):
-        return {}
-
-    now = datetime.now(timezone.utc)
-    budgets = {}
-    for worker in workers:
-        budget = worker.status.kubernetes_cpu_budget if worker.status else None
-        if budget is not None:
-            budgets[worker.id] = budget.available_at(now)
-    return budgets
+def _has_router(model: ModelSpec) -> bool:
+    return any(role_takes_no_accelerator(model, r.name) for r in (model.roles or []))
 
 
 def make_hashable_key(
     model: ModelSpec,
     workers: List[Worker],
     extra: Optional[Dict[str, Any]] = None,
-    *,
-    cpu_budgets: Optional[Dict[int, Optional[int]]] = None,
 ) -> str:
-    if cpu_budgets is None:
-        cpu_budgets = _current_cpu_budgets(model, workers)
+    has_router = _has_router(model)
     key_data = json.dumps(
         {
             "model": model.model_dump(mode="json"),
             # State outside the spec and the workers that a verdict depends
             # on, rendered by the caller.
             "extra": extra,
-            "cpu_budgets": cpu_budgets,
             # Excluded from model_dump (response-hidden field), but it
             # changes which Org-scoped backend versions the evaluation
             # sees — without it cached results would leak across Orgs.
@@ -230,8 +212,7 @@ def make_hashable_key(
                     mode="json",
                     exclude={
                         "status": {
-                            "cpu": True,
-                            "kubernetes_cpu_budget": True,
+                            "cpu": {"utilization_rate"} if has_router else True,
                             "swap": True,
                             "filesystem": True,
                             "os": True,
@@ -333,15 +314,18 @@ async def evaluate_model_with_cache(
         resource_view = ResourceView(
             model_instances, cache_resource_reservations(cache_instances)
         )
-        cpu_budgets = _current_cpu_budgets(model, workers)
         cache_key = make_hashable_key(
             model,
             workers,
             extra={
                 "cache_service": cache_service_verdict_key(cache_service),
                 "reservations": resource_view.reservation_key(),
+                "router_cpu": (
+                    cpu_allocated_by_worker(model_instances)
+                    if _has_router(model)
+                    else None
+                ),
             },
-            cpu_budgets=cpu_budgets,
         )
         if cache_key in evaluate_cache:
             logger.trace(
@@ -361,10 +345,7 @@ async def evaluate_model_with_cache(
                 resource_view=resource_view,
                 cache_instances=cache_instances,
             )
-            # A budget that expired while evaluating must not key a later
-            # verdict for a fresh sample of the same size.
-            if cpu_budgets == _current_cpu_budgets(model, workers):
-                evaluate_cache[cache_key] = result
+            evaluate_cache[cache_key] = result
     except Exception as e:
         logger.exception(
             f"Error evaluating model {model.name or model.readable_source}: {e}"

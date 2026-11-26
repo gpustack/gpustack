@@ -1300,14 +1300,24 @@ class InferenceServer(ABC):
     ) -> ContainerResources:
         """CPU and memory for a role that holds no weights — the router.
 
-        The router forwards requests without loading weights. Kubernetes uses
-        both numbers as requests and limits; Docker treats CPU as a share.
+        The only role whose footprint the platform knows outright: it forwards
+        requests and loads nothing, so a fixed floor is a better answer than an
+        estimate. Without this it declared *nothing*, which on Kubernetes is a
+        Pod with no requests — invisible to kubelet admission and, once the
+        ledger grows a CPU dimension, to placement as well.
+
+        Both numbers land in the container's requests and limits alike
+        (Guaranteed QoS on Kubernetes; a share rather than a cap on Docker).
+        Only `memory` also reaches the scheduler, as the role's RAM claim —
+        CPU is not a dimension the allocatable view has.
         """
         declared = role_container_resources(
             self._model_spec or self._model,
             getattr(self._model_instance, "role", None),
         )
-        resources["cpu"] = declared.cpu
+        claim = getattr(self._model_instance, "computed_resource_claim", None)
+        cpu = getattr(claim, "cpu_millicores", None)
+        resources["cpu"] = cpu / 1000 if cpu is not None else declared.cpu
         resources["memory"] = declared.memory
         return resources
 

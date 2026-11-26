@@ -12,18 +12,15 @@ from gpustack.client.worker_manager_clients import (
 from gpustack.config.config import Config
 from gpustack.extension import resolve_version_info
 from gpustack.schemas.workers import (
-    KubernetesCPUBudget,
     WorkerCreate,
     WorkerUpdate,
     WorkerRegistrationPublic,
-    WorkerStatusPublic,
 )
 from gpustack.schemas.config import PredefinedConfigNoDefaults
 from gpustack.security import API_KEY_PREFIX
 from gpustack.ssl_context import make_ssl_context
 from gpustack.utils import platform
 from gpustack.worker.collector import WorkerStatusCollector
-from gpustack.worker.kubernetes_cpu_budget import KubernetesCPUCollector
 from gpustack.config.registration import (
     registration_client,
     read_worker_token,
@@ -53,12 +50,10 @@ class WorkerManager:
         cfg: Config,
         is_embedded: bool,
         collector: WorkerStatusCollector,
-        cpu_collector: Optional[KubernetesCPUCollector] = None,
     ):
         self._is_embedded = is_embedded
         self._cfg = cfg
         self._collector = collector
-        self._cpu_collector = cpu_collector
         worker_token = read_worker_token(self._cfg.data_dir)
         if worker_token:
             self._prepare_clients(worker_token)
@@ -78,7 +73,7 @@ class WorkerManager:
         if self._status_client is None:
             return
         try:
-            workerStatus = self._collect_status()
+            workerStatus = self._collector.timed_collect(self._clientset)
         except Exception as e:
             logger.error(f"Failed to collect status for worker: {e}")
             return
@@ -86,14 +81,6 @@ class WorkerManager:
             self._status_client.create(workerStatus)
         except Exception as e:
             logger.error(f"Failed to update worker status: {e}")
-
-    def _collect_status(self, initial: bool = False) -> WorkerStatusPublic:
-        status = self._collector.timed_collect(self._clientset, initial=initial)
-        if self._cpu_collector is not None:
-            status.status.kubernetes_cpu_budget = (
-                KubernetesCPUBudget() if initial else self._cpu_collector.collect()
-            )
-        return status
 
     async def register_with_server(
         self,
@@ -131,7 +118,7 @@ class WorkerManager:
                 with open(os.path.join(self._cfg.data_dir, 'external_id'), 'r') as f:
                     external_id = f.read()
 
-            workerStatus = self._collect_status(initial=True)
+            workerStatus = self._collector.timed_collect(initial=True)
             # Set empty name if not specified to avoid validation error
             workerUpdate = WorkerUpdate(
                 name=name or "",
