@@ -1,9 +1,11 @@
+from copy import copy
 from datetime import datetime, timezone
-import json
 import logging
 import os
 import sys
 from typing import TYPE_CHECKING, Optional
+
+from pythonjsonlogger.json import JsonFormatter
 
 if TYPE_CHECKING:
     from gpustack.config.config import Config
@@ -18,7 +20,7 @@ TRACE_LEVEL = 5
 _TEXT_HANDLER_NAME = "gpustack-console"
 
 
-class _ApplicationLogFormatter(logging.Formatter):
+class _ApplicationLogFormatter(JsonFormatter):
     _fields = (
         "request_id",
         "pd_coordinator_id",
@@ -40,28 +42,34 @@ class _ApplicationLogFormatter(logging.Formatter):
     )
 
     def __init__(self, role: str):
-        super().__init__()
+        super().__init__(json_ensure_ascii=False)
         self.role = role
         self.identity: dict = {}
 
     def format(self, record: logging.LogRecord) -> str:
-        payload = {
-            "timestamp": datetime.fromtimestamp(
-                record.created, timezone.utc
-            ).isoformat(),
-            "severity": record.levelname,
-            "service": f"gpustack.{self.role}",
-            "logger": record.name,
-            "message": record.getMessage(),
-        }
+        if isinstance(record.msg, dict):
+            # Keep dictionary messages as text and protect the caller's mapping.
+            record = copy(record)
+            record.msg = str(record.msg)
+        return super().format(record)
+
+    def add_fields(
+        self, log_data: dict, record: logging.LogRecord, message_dict: dict
+    ) -> None:
+        log_data.update(
+            timestamp=datetime.fromtimestamp(record.created, timezone.utc).isoformat(),
+            severity=record.levelname,
+            service=f"gpustack.{self.role}",
+            logger=record.name,
+            message=record.message,
+        )
         if record.exc_info:
-            payload["exception"] = self.formatException(record.exc_info)
+            log_data["exception"] = message_dict["exc_info"]
         for field in self._fields:
             value = getattr(record, field, None)
             if isinstance(value, (str, int)):
-                payload[field] = value
-        payload.update(self.identity)
-        return json.dumps(payload, ensure_ascii=False)
+                log_data[field] = value
+        log_data.update(self.identity)
 
 
 class _ApplicationLogHandler(logging.StreamHandler):

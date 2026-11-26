@@ -14,7 +14,6 @@ import uvicorn
 
 from gpustack import logging as app_logging
 
-
 KUBERNETES_REST_LOGGERS = (
     "kubernetes.client.rest",
     "kubernetes_asyncio.client.rest",
@@ -109,7 +108,88 @@ def test_uvicorn_startup_keeps_structured_console_output(
     logging.getLogger("test.application").info("API started")
 
     assert handler in logging.getLogger().handlers
+    assert not handler._closed
     assert json.loads(capsys.readouterr().err)["message"] == "API started"
+
+
+def test_application_log_only_exports_allowed_fields():
+    context = {
+        "request_id": "request-1",
+        "pd_coordinator_id": "coordinator",
+        "trace_id": "a" * 32,
+        "span_id": "b" * 16,
+        "trace_flags": 1,
+        "cluster_id": 2,
+        "worker_id": 3,
+        "worker_name": "test-worker",
+        "model_id": 4,
+        "model_route_id": 5,
+        "model_instance_id": 6,
+        "owner_principal_id": "owner",
+        "restart_count": 0,
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "response_code": 200,
+        "duration": 12,
+    }
+    record = logging.makeLogRecord(
+        {
+            "name": "test.application",
+            "levelname": "INFO",
+            "created": 0,
+            "msg": "request %s",
+            "args": ("received",),
+            "authorization": "private token",
+            "unknown": "ignore this field",
+            "service": "overridden-service",
+            "exc_text": "cached exception without exc_info",
+            **context,
+        }
+    )
+    formatter = app_logging._ApplicationLogFormatter("server")
+    expected = {
+        "timestamp": "1970-01-01T00:00:00+00:00",
+        "severity": "INFO",
+        "service": "gpustack.server",
+        "logger": "test.application",
+        "message": "request received",
+        **context,
+    }
+
+    assert json.loads(formatter.format(record)) == expected
+
+    record.duration = 1.5
+    record.trace_id = {"value": "a" * 32}
+    record.worker_name = None
+    for field in ("duration", "trace_id", "worker_name"):
+        del expected[field]
+    assert json.loads(formatter.format(record)) == expected
+
+
+@pytest.mark.parametrize("exception_override", [None, "spoofed exception"])
+def test_application_log_treats_dictionary_message_as_text(
+    configure_logging, tmp_path, capsys, exception_override
+):
+    configure_logging(tmp_path)
+    logger = logging.getLogger("test.application")
+    message = {"request_id": "embedded-id", "some_key": "继续"}
+    if exception_override is not None:
+        message["exc_info"] = exception_override
+    original_message = message.copy()
+
+    try:
+        raise ValueError("test failure")
+    except ValueError:
+        logger.exception(message, stack_info=True, extra={"request_id": "real-id"})
+
+    payload = json.loads(capsys.readouterr().err)
+    assert payload["message"] == str(original_message)
+    assert message == original_message
+    assert "some_key" not in payload
+    assert "stack_info" not in payload
+    assert "exc_info" not in payload
+    assert payload["request_id"] == "real-id"
+    assert payload["exception"].endswith("ValueError: test failure")
 
 
 @pytest.mark.parametrize("role", ["server", "worker"])
@@ -136,10 +216,14 @@ def test_application_log_preserves_context_on_console(
                 "span_id": "b" * 16,
                 "trace_flags": 1,
                 "authorization": "never copy this field",
+                "worker_id": 99,
+                "worker_name": "record-worker",
+                "cluster_id": 98,
             },
         )
 
     console = capsys.readouterr().err
+    assert "继续" in console
     assert not (tmp_path / "application").exists()
     start, failure = [json.loads(line) for line in console.splitlines()]
     assert start["service"] == f"gpustack.{role}"
@@ -157,3 +241,7 @@ def test_application_log_preserves_context_on_console(
         assert failure["worker_id"] == 42
         assert failure["worker_name"] == "qa-worker"
         assert failure["cluster_id"] == 7
+    else:
+        assert failure["worker_id"] == 99
+        assert failure["worker_name"] == "record-worker"
+        assert failure["cluster_id"] == 98
