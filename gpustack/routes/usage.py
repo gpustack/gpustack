@@ -539,51 +539,71 @@ async def _group_member_user_ids(session, group_ids) -> set:
 
 
 def _filter_condition(group_by: str, item: UsageFilterItem):
-    value = item.identity.value
-    current = item.identity.current
+    value = (
+        item.identity.value
+        if item.identity and item.identity.value
+        else UsageIdentityValue()
+    )
+    current = (
+        item.identity.current
+        if item.identity and item.identity.current
+        else UsageIdentityCurrent()
+    )
     conditions = []
     if group_by == USAGE_GROUP_BY_USER:
-        conditions.append(
-            _null_safe_column_filter(ModelUsage.user_name, value.user_name)
-        )
-        if current is None or current.user_id is None:
-            conditions.append(ModelUsage.user_id.is_(None))
-        else:
+        if value.user_name is not None:
+            conditions.append(
+                _null_safe_column_filter(ModelUsage.user_name, value.user_name)
+            )
+        if current.user_id is not None:
             conditions.append(ModelUsage.user_id == current.user_id)
-    elif group_by == USAGE_GROUP_BY_ROUTE:
-        conditions.append(
-            _null_safe_column_filter(ModelUsage.model_route_name, value.route_name)
-        )
-        if current is None or current.route_id is None:
-            conditions.append(ModelUsage.model_route_id.is_(None))
         else:
+            conditions.append(ModelUsage.user_id.is_(None))
+            if value.user_name is None:
+                conditions.append(ModelUsage.user_name.is_(None))
+    elif group_by == USAGE_GROUP_BY_ROUTE:
+        if value.route_name is not None:
+            conditions.append(
+                _null_safe_column_filter(ModelUsage.model_route_name, value.route_name)
+            )
+        if current.route_id is not None:
             conditions.append(ModelUsage.model_route_id == current.route_id)
+        else:
+            conditions.append(ModelUsage.model_route_id.is_(None))
+            if value.route_name is None:
+                conditions.append(ModelUsage.model_route_name.is_(None))
     elif group_by == USAGE_GROUP_BY_ORGANIZATION:
         org_id = current.organization_id if current else None
         conditions.append(
             _null_safe_column_filter(ModelUsage.consumer_principal_id, org_id)
         )
     else:
-        conditions.extend(
-            [
-                _null_safe_column_filter(ModelUsage.user_name, value.user_name),
-                _null_safe_column_filter(ModelUsage.api_key_name, value.api_key_name),
-                _null_safe_column_filter(ModelUsage.access_key, value.access_key),
-            ]
-        )
+        if value.user_name is not None:
+            conditions.append(
+                _null_safe_column_filter(ModelUsage.user_name, value.user_name)
+            )
+        if value.api_key_name is not None:
+            conditions.append(
+                _null_safe_column_filter(ModelUsage.api_key_name, value.api_key_name)
+            )
+        if value.access_key is not None:
+            conditions.append(
+                _null_safe_column_filter(ModelUsage.access_key, value.access_key)
+            )
         if value.api_key_is_custom is not None:
             conditions.append(
                 _null_safe_column_filter(
                     ModelUsage.api_key_is_custom, value.api_key_is_custom
                 )
             )
-        if current is None or current.api_key_id is None:
+        if current.api_key_id is None:
             conditions.append(ModelUsage.api_key_id.is_(None))
         else:
             conditions.append(ModelUsage.api_key_id == current.api_key_id)
-            conditions.append(
-                _null_safe_column_filter(ModelUsage.user_id, current.user_id)
-            )
+            if current.user_id is not None:
+                conditions.append(
+                    _null_safe_column_filter(ModelUsage.user_id, current.user_id)
+                )
     return and_(*conditions)
 
 

@@ -1279,3 +1279,54 @@ async def test_get_usage_breakdown_organization_uses_snapshot_name_and_kind():
     assert by_id[11].label == "g1"
     assert by_id[11].deleted is False
     assert by_id[11].identity.value.organization_kind == "user"
+
+
+def test_usage_filter_request_normalizes_user_and_route_id_payloads():
+    """Verify that user and route filters submitted as flat id dicts or
+    partial identities parse without 422 errors and populate current IDs."""
+    # Flat {"user_id": 1}
+    req1 = UsageFilterRequest(users=[{"user_id": 1}])
+    assert req1.users[0].identity.current.user_id == 1
+    assert req1.users[0].identity.value.user_name is None
+
+    # {"identity": {"user_id": 1}}
+    req2 = UsageFilterRequest(users=[{"identity": {"user_id": 1}}])
+    assert req2.users[0].identity.current.user_id == 1
+    assert req2.users[0].identity.value.user_name is None
+
+    # {"identity": {"current": {"user_id": 1}}}
+    req3 = UsageFilterRequest(users=[{"identity": {"current": {"user_id": 1}}}])
+    assert req3.users[0].identity.current.user_id == 1
+
+    # Flat {"route_id": 5}
+    req4 = UsageFilterRequest(routes=[{"route_id": 5}])
+    assert req4.routes[0].identity.current.route_id == 5
+
+
+@pytest.mark.asyncio
+async def test_get_usage_breakdown_filters_by_user_id_without_requiring_null_user_name():
+    """Filtering by user_id alone should filter by ModelUsage.user_id and must
+    not force ModelUsage.user_name IS NULL."""
+    session = MagicMock()
+    session.exec = AsyncMock(
+        side_effect=[
+            _mock_exec_result([SimpleNamespace()]),
+            _mock_exec_result([0]),
+            _mock_exec_result([]),
+        ]
+    )
+    user = User(id=1, name="admin", is_admin=True)
+    request = UsageBreakdownRequest(
+        start_date=date(2026, 4, 1),
+        end_date=date(2026, 4, 2),
+        group_by=["user"],
+        filters=UsageFilterRequest(users=[{"user_id": 42}]),
+    )
+
+    await get_usage_breakdown(
+        session=session, user=user, ctx=_ctx_for(user), request=request
+    )
+
+    executed_sql = str(session.exec.call_args_list[0].args[0])
+    assert "model_usages.user_id = :user_id_1" in executed_sql
+    assert "user_name IS NULL" not in executed_sql
