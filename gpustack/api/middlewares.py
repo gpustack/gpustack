@@ -3,7 +3,7 @@ import functools
 import json
 import logging
 import time
-from typing import Type, Union
+from typing import Optional, Type, Union
 from fastapi import Request, Response, status
 from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
 from jwt import DecodeError, ExpiredSignatureError
@@ -167,15 +167,10 @@ async def process_request(
         response_body = b"".join([chunk async for chunk in response.body_iterator])
         try:
             usage = None
-            if (
-                response.headers.get("content-type")
-                .lower()
-                .startswith("application/json")
-            ):
+            content_type = (response.headers.get("content-type") or "").lower()
+            if content_type.startswith("application/json"):
                 response_dict = json.loads(response_body)
-                response_instance = response_class(**response_dict)
-                if hasattr(response_instance, "usage"):
-                    usage = response_instance.usage
+                usage = _extract_response_usage(response_class, response_dict)
 
             await record_model_usage(request, usage, operation)
         except Exception as e:
@@ -187,6 +182,20 @@ async def process_request(
         )
 
     return response
+
+
+def _extract_response_usage(response_class, response_dict):
+    try:
+        response_instance = response_class(**response_dict)
+        if hasattr(response_instance, "usage"):
+            return response_instance.usage
+    except Exception:
+        raw_usage = (
+            response_dict.get("usage") if isinstance(response_dict, dict) else None
+        )
+        if isinstance(raw_usage, dict):
+            return CompletionUsage.model_validate(raw_usage)
+    return None
 
 
 async def _resolve_direct_consumer_org(
@@ -245,7 +254,12 @@ async def record_model_usage(
             input_cached_tokens = getattr(prompt_token_details, "cached_tokens", 0) or 0
 
     user: User = request.state.user
-    model: Model = request.state.model
+    model: Optional[Model] = getattr(request.state, "model", None)
+    resolved_model_name = (
+        model.name
+        if model is not None
+        else getattr(request.state, "model_name", "unknown")
+    )
     api_key: ApiKey | None = getattr(request.state, "api_key", None)
 
     # Active tenant of this call. An api_key pins the consumer to its owner
@@ -281,7 +295,7 @@ async def record_model_usage(
         _warn_about_missing_start_time()
         started_at = now
     metric = ModelUsageMetrics(
-        model=model.name,
+        model=resolved_model_name,
         input_token=prompt_tokens,
         output_token=completion_tokens,
         total_token=total_tokens,
@@ -291,12 +305,15 @@ async def record_model_usage(
         started_at=int(started_at.timestamp() * 1000),
         completed_at=int(now.timestamp() * 1000),
         user_id=user.id if user is not None else None,
-        model_id=model.id,
+        model_id=model.id if model is not None else None,
         model_route_id=getattr(request.state, "model_route_id", None),
         # Capture cluster_id at request time so it survives a later model
         # delete; the unified flusher prefers this over re-reading the
         # live model row.
-        cluster_id=getattr(model, "cluster_id", None),
+        cluster_id=getattr(model, "cluster_id", None) if model is not None else None,
+        provider_id=getattr(request.state, "provider_id", None),
+        provider_name=getattr(request.state, "provider_name", None),
+        provider_type=getattr(request.state, "provider_type", None),
         access_key=api_key.access_key if api_key is not None else None,
         operation=operation,
         organization_id=organization_id,

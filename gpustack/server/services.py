@@ -91,9 +91,10 @@ logger = logging.getLogger(__name__)
 class RouteTargetResolution(NamedTuple):
     """Routing decision for a single ModelRouteTarget."""
 
-    model_id: int
+    model_id: Optional[int]
     overridden_model_name: Optional[str]
     weight: int
+    provider_id: Optional[int] = None
 
 
 class UserService:
@@ -929,9 +930,11 @@ class ModelRouteService:
                 model_id=target.model_id,
                 overridden_model_name=target.overridden_model_name,
                 weight=target.weight,
+                provider_id=getattr(target, "provider_id", None),
             )
             for target in targets
             if target.model_id is not None
+            or getattr(target, "provider_id", None) is not None
         ]
 
     @locked_cached()

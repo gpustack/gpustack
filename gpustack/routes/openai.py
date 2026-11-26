@@ -1,8 +1,20 @@
+import codecs
 import json
 import re
 import random
 import asyncio
-from typing import Any, AsyncGenerator, Coroutine, List, Optional, Tuple, Union, Dict
+import time
+from typing import (
+    Any,
+    AsyncGenerator,
+    Coroutine,
+    Dict,
+    List,
+    Optional,
+    Tuple,
+    TypeVar,
+    Union,
+)
 import aiohttp
 import logging
 
@@ -29,10 +41,16 @@ from gpustack import envs
 from gpustack.http_proxy.load_balancer import LoadBalancer
 from gpustack.routes.model_common import build_category_conditions
 from gpustack.schemas.models import Model, servable_instances
+from gpustack.schemas.model_provider import (
+    ANTHROPIC_API_VERSION,
+    ModelProvider,
+    ModelProviderTypeEnum,
+)
 from gpustack.utils.model_instance_workers import (
     get_model_instance_workloads,
     model_instance_endpoints,
 )
+from gpustack.utils.network import use_proxy_env_for_url
 from gpustack.schemas.model_routes import (
     ModelRoute,
     MyModel,
@@ -244,21 +262,7 @@ async def proxy_request_by_model(
                 is_openai_exception=True,
             )
         request.state.stream = stream
-        # Weighted target selection mirrors the Higress gateway path (ModelRouteTarget.weight).
-        # random.choices raises on an all-zero weight vector, so fall back to uniform there.
-        target_weights = [t.weight for t in route_targets]
-        if sum(target_weights) > 0:
-            target = random.choices(route_targets, weights=target_weights, k=1)[0]
-        else:
-            target = random.choice(route_targets)
-        model = await ModelService(session).get_by_id(target.model_id)
-        if not model:
-            raise NotFoundException(
-                message="Model not found",
-                is_openai_exception=True,
-            )
-        request.state.model = model
-        request.state.overridden_model_name = target.overridden_model_name
+        target = _select_weighted_target(route_targets)
 
         # Resolve the route id so downstream middleware (usage recording) can
         # attribute the request to the route it entered through. The lookup
@@ -266,21 +270,27 @@ async def proxy_request_by_model(
         model_route = await model_route_service.get_by_name(model_name)
         request.state.model_route_id = model_route.id if model_route else None
 
-        mutate_request(request, model_name, body_json, form_data)
-
-        instance = await get_running_instance(
-            session, model, target.overridden_model_name
-        )
-        instance, rank_endpoint = await _select_managed_endpoint(session, instance)
-        lookup_worker_id = (
-            rank_endpoint.worker_id if rank_endpoint else instance.worker_id
-        )
-        worker: Worker = await WorkerService(session).get_by_id(lookup_worker_id)
-        if not worker or getattr(worker, "deleted_at", None) is not None:
-            raise InternalServerErrorException(
-                message=f"Worker with ID {lookup_worker_id} not found",
-                is_openai_exception=True,
+        provider: Optional[ModelProvider] = None
+        target_provider_id = getattr(target, "provider_id", None)
+        if target_provider_id is not None:
+            provider = await _load_active_provider(session, target_provider_id)
+        else:
+            instance, rank_endpoint, worker = await _resolve_local_model_target(
+                session, request, model_name, target, body_json, form_data
             )
+
+    if provider is not None:
+        return await _proxy_to_provider(
+            request=request,
+            provider=provider,
+            target=target,
+            model_name=model_name,
+            endpoint=endpoint,
+            stream=stream,
+            body_json=body_json,
+            form_data=form_data,
+        )
+
     extra_headers = {
         router_header_key: (
             f"{rank_endpoint.registry_name}.static"
@@ -373,12 +383,46 @@ async def proxy_request_by_model(
         )
 
 
+_T = TypeVar("_T")
+
+
+async def _resolve_local_model_target(
+    session: AsyncSession,
+    request: Request,
+    model_name: str,
+    target: RouteTargetResolution,
+    body_json: Optional[dict],
+    form_data: Optional[aiohttp.FormData],
+):
+    model = await ModelService(session).get_by_id(target.model_id)
+    if not model:
+        raise NotFoundException(
+            message="Model not found",
+            is_openai_exception=True,
+        )
+    request.state.model = model
+    request.state.overridden_model_name = target.overridden_model_name
+
+    mutate_request(request, model_name, body_json, form_data)
+
+    instance = await get_running_instance(session, model, target.overridden_model_name)
+    instance, rank_endpoint = await _select_managed_endpoint(session, instance)
+    lookup_worker_id = rank_endpoint.worker_id if rank_endpoint else instance.worker_id
+    worker: Worker = await WorkerService(session).get_by_id(lookup_worker_id)
+    if not worker or getattr(worker, "deleted_at", None) is not None:
+        raise InternalServerErrorException(
+            message=f"Worker with ID {lookup_worker_id} not found",
+            is_openai_exception=True,
+        )
+    return instance, rank_endpoint, worker
+
+
 async def _request_until_disconnect(
     request: Request,
-    upstream: Coroutine[Any, Any, Tuple[aiohttp.ClientResponse, Optional[bytes]]],
-) -> Optional[Tuple[aiohttp.ClientResponse, Optional[bytes]]]:
+    upstream: Coroutine[Any, Any, _T],
+) -> Optional[_T]:
     # The inbound body has already been buffered, so receiving here cannot
-    # consume upload data needed by the worker request.
+    # consume upload data needed by the upstream request.
     async def wait_for_disconnect() -> None:
         while (await request.receive())["type"] != "http.disconnect":
             pass
@@ -575,15 +619,24 @@ def _error_chunk(error_response: OpenAIAPIErrorResponse, mid_stream: bool) -> st
     return f"data: {error_json}\n\n" if mid_stream else error_json
 
 
+_STRIPPED_REQUEST_HEADERS = frozenset(
+    {
+        "authorization",
+        "content-length",
+        "content-type",
+        "cookie",
+        "host",
+        "transfer-encoding",
+        "x-api-key",
+    }
+)
+
+
 def filter_headers(headers):
     return {
         key: value
         for key, value in headers.items()
-        if key.lower() != "content-length"
-        and key.lower() != "host"
-        and key.lower() != "content-type"
-        and key.lower() != "transfer-encoding"
-        and key.lower() != "authorization"
+        if key.lower() not in _STRIPPED_REQUEST_HEADERS
     }
 
 
@@ -694,3 +747,377 @@ def apply_qwen3_reranker_templates(body_json: dict):
         body_json["documents"] = [
             document_template.format(doc=doc, suffix=suffix) for doc in documents
         ]
+
+
+_EXCLUDED_PROVIDER_RESPONSE_HEADERS = frozenset(
+    {
+        "connection",
+        "content-encoding",
+        "content-length",
+        "keep-alive",
+        "set-cookie",
+        "transfer-encoding",
+    }
+)
+
+# Sampling and diffusion extensions sent by GPUStack's Playground or local
+# inference engines (vLLM, llama-box, vox-box) that hosted OpenAI-compatible
+# providers reject as unknown fields.
+_LOCAL_ENGINE_ONLY_FIELDS = frozenset(
+    {
+        "cfg_scale",
+        "chat_template_kwargs",
+        "guided_choice",
+        "guided_json",
+        "guided_regex",
+        "min_p",
+        "negative_prompt",
+        "repetition_penalty",
+        "sample_steps",
+        "sampler",
+        "sampling_method",
+        "schedule",
+        "strength",
+        "top_k",
+    }
+)
+
+# OpenAI Chat Completions fields that Gemini's /v1beta/openai/chat/completions
+# protobuf parser rejects with HTTP 400 INVALID_ARGUMENT ("Unknown name ...").
+_GEMINI_UNSUPPORTED_CHAT_FIELDS = frozenset(
+    {
+        "frequency_penalty",
+        "logit_bias",
+        "logprobs",
+        "metadata",
+        "presence_penalty",
+        "seed",
+        "service_tier",
+        "store",
+        "top_logprobs",
+        "user",
+    }
+)
+
+
+def _select_weighted_target(
+    route_targets: List[RouteTargetResolution],
+) -> RouteTargetResolution:
+    # Weighted target selection mirrors the Higress gateway path (ModelRouteTarget.weight).
+    # random.choices raises on an all-zero weight vector, so fall back to uniform there.
+    target_weights = [t.weight for t in route_targets]
+    if sum(target_weights) > 0:
+        return random.choices(route_targets, weights=target_weights, k=1)[0]
+    return random.choice(route_targets)
+
+
+def _strip_upstream_hop_headers(headers) -> Dict[str, str]:
+    return {
+        k: v
+        for k, v in headers.items()
+        if k.lower() not in _EXCLUDED_PROVIDER_RESPONSE_HEADERS
+    }
+
+
+async def _load_active_provider(
+    session: AsyncSession, provider_id: int
+) -> ModelProvider:
+    provider = await ModelProvider.one_by_id(session, provider_id)
+    if not provider or provider.deleted_at is not None or not provider.api_tokens:
+        raise ServiceUnavailableException(
+            message="No running instances available",
+            is_openai_exception=True,
+        )
+    return provider
+
+
+def _resolve_provider_upstream_url(provider: ModelProvider, endpoint: str) -> str:
+    base_url, chat_uri = provider.config.get_chat_url()
+    if not base_url:
+        raise ServiceUnavailableException(
+            message=f"Provider '{provider.name}' has no upstream endpoint configured",
+            is_openai_exception=True,
+        )
+    prefix = "/v1"
+    if chat_uri and chat_uri.endswith("/chat/completions"):
+        prefix = chat_uri[: -len("/chat/completions")]
+    elif chat_uri and chat_uri.endswith("/messages"):
+        prefix = chat_uri[: -len("/messages")]
+    return f"{base_url.rstrip('/')}{prefix}/{endpoint.lstrip('/')}"
+
+
+def _build_provider_auth_headers(provider: ModelProvider) -> Dict[str, str]:
+    token = random.choice(provider.api_tokens)
+    if provider.config.type == ModelProviderTypeEnum.CLAUDE:
+        version = (
+            getattr(provider.config, "claudeVersion", None) or ANTHROPIC_API_VERSION
+        )
+        return {
+            "x-api-key": token,
+            "anthropic-version": version,
+        }
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _sanitize_provider_body(
+    provider_type: ModelProviderTypeEnum,
+    endpoint: str,
+    body_json: Optional[dict],
+) -> Optional[dict]:
+    if body_json is None:
+        return None
+    disallowed = _LOCAL_ENGINE_ONLY_FIELDS
+    if (
+        provider_type == ModelProviderTypeEnum.GEMINI
+        and endpoint.lstrip("/") == "chat/completions"
+    ):
+        disallowed = disallowed | _GEMINI_UNSUPPORTED_CHAT_FIELDS
+    return {k: v for k, v in body_json.items() if v is not None and k not in disallowed}
+
+
+def _rewrite_provider_model(
+    model_name: str,
+    overridden_model_name: Optional[str],
+    body_json: Optional[dict],
+    form_data: Optional[aiohttp.FormData],
+) -> str:
+    target_model = overridden_model_name or model_name
+    if body_json is not None:
+        body_json["model"] = target_model
+    elif form_data is not None and target_model != model_name:
+        form_data.add_field("model", target_model)
+    return target_model
+
+
+def _select_provider_http_client(
+    request: Request, provider: ModelProvider, upstream_url: str
+) -> aiohttp.ClientSession:
+    no_proxy_client = getattr(request.app.state, "http_client_no_proxy", None)
+    if (
+        provider.proxy_url
+        or use_proxy_env_for_url(upstream_url)
+        or no_proxy_client is None
+    ):
+        return request.app.state.http_client
+    return no_proxy_client
+
+
+async def _proxy_to_provider(
+    request: Request,
+    provider: ModelProvider,
+    target: RouteTargetResolution,
+    model_name: str,
+    endpoint: str,
+    stream: bool,
+    body_json: Optional[dict],
+    form_data: Optional[aiohttp.FormData],
+):
+    target_model = _rewrite_provider_model(
+        model_name, target.overridden_model_name, body_json, form_data
+    )
+    request.state.model = None
+    request.state.model_name = target_model
+    request.state.provider_id = provider.id
+    request.state.provider_name = provider.name
+    request.state.provider_type = provider.config.type.value
+
+    upstream_url = _resolve_provider_upstream_url(provider, endpoint)
+    auth_headers = _build_provider_auth_headers(provider)
+    body_json = _sanitize_provider_body(provider.config.type, endpoint, body_json)
+    headers, data = _prepare_proxy_request(
+        request,
+        body_json,
+        form_data,
+        auth_headers,
+        add_stream_options=stream,
+    )
+    timeout = aiohttp.ClientTimeout(total=provider.timeout or envs.PROXY_TIMEOUT)
+    client = _select_provider_http_client(request, provider, upstream_url)
+    is_chat_completion = endpoint.lstrip("/") == "chat/completions"
+
+    if stream:
+        return StreamingResponseWithStatusCode(
+            _stream_provider_response(
+                client=client,
+                method=request.method,
+                url=upstream_url,
+                headers=headers,
+                data=data,
+                proxy_url=provider.proxy_url,
+                timeout=timeout,
+                fallback_model=target_model,
+                is_chat_completion=is_chat_completion,
+            ),
+            media_type="text/event-stream",
+        )
+
+    result = await _request_until_disconnect(
+        request,
+        _execute_provider_json_request(
+            client=client,
+            provider=provider,
+            method=request.method,
+            url=upstream_url,
+            headers=headers,
+            data=data,
+            timeout=timeout,
+        ),
+    )
+    if result is None:
+        return Response(status_code=499)
+    return result
+
+
+async def _execute_provider_json_request(
+    client: aiohttp.ClientSession,
+    provider: ModelProvider,
+    method: str,
+    url: str,
+    headers: Dict[str, str],
+    data: Optional[Union[bytes, aiohttp.FormData]],
+    timeout: aiohttp.ClientTimeout,
+) -> Response:
+    try:
+        async with client.request(
+            method=method,
+            url=url,
+            headers=headers,
+            data=data,
+            proxy=provider.proxy_url,
+            timeout=timeout,
+        ) as resp:
+            body = await resp.read()
+            return Response(
+                status_code=resp.status,
+                headers=_strip_upstream_hop_headers(resp.headers),
+                content=body,
+            )
+    except asyncio.TimeoutError as e:
+        msg = f"Request to provider '{provider.name}' timed out"
+        if str(e):
+            msg += f": {e}"
+        raise GatewayTimeoutException(message=msg, is_openai_exception=True)
+    except Exception as e:
+        msg = f"Provider request failed: {e}" if str(e) else "Provider request failed"
+        raise ServiceUnavailableException(message=msg, is_openai_exception=True)
+
+
+def _fill_chat_chunk_defaults(parsed: dict, fallback_model: str) -> None:
+    now_ts = int(time.time())
+    if not parsed.get("id"):
+        parsed["id"] = f"chatcmpl-{now_ts}"
+    if not parsed.get("object"):
+        parsed["object"] = "chat.completion.chunk"
+    if parsed.get("created") is None:
+        parsed["created"] = now_ts
+    if not parsed.get("model"):
+        parsed["model"] = fallback_model
+    if parsed.get("choices") is None:
+        parsed["choices"] = []
+
+
+def _normalize_sse_frame(
+    raw_event: str, fallback_model: str, is_chat_completion: bool = True
+) -> bytes:
+    stripped = raw_event.strip()
+    if not stripped.startswith("data:"):
+        return f"{raw_event}\n\n".encode("utf-8")
+    payload = stripped[5:].lstrip()
+    if payload == "[DONE]":
+        return b"data: [DONE]\n\n"
+    try:
+        parsed = json.loads(payload)
+    except Exception:
+        return f"data: {payload}\n\n".encode("utf-8")
+    if is_chat_completion and isinstance(parsed, dict) and "error" not in parsed:
+        _fill_chat_chunk_defaults(parsed, fallback_model)
+        serialized = json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
+        return f"data: {serialized}\n\n".encode("utf-8")
+    return f"data: {payload}\n\n".encode("utf-8")
+
+
+async def _iter_normalized_sse_frames(
+    resp, fallback_model: str, is_chat_completion: bool = True
+) -> AsyncGenerator[bytes, None]:
+    """Reassemble arbitrary TCP chunks into complete LF-delimited SSE frames.
+
+    ModelUsageMiddleware splits each yielded chunk on ``\\n\\n`` and drops the
+    trailing segment, so CRLF-delimited provider streams (e.g. Gemini) or SSE
+    events split across socket reads must be reassembled before yielding.
+    """
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    buf = ""
+    async for raw_chunk in resp.content.iter_any():
+        if not raw_chunk:
+            continue
+        buf += decoder.decode(raw_chunk, final=False)
+        if buf.endswith("\r"):
+            processable, buf = buf[:-1], "\r"
+        else:
+            processable, buf = buf, ""
+        buf = processable.replace("\r\n", "\n") + buf
+        while "\n\n" in buf:
+            event, buf = buf.split("\n\n", 1)
+            if event.strip():
+                yield _normalize_sse_frame(event, fallback_model, is_chat_completion)
+    buf += decoder.decode(b"", final=True)
+    buf = buf.replace("\r\n", "\n")
+    if buf.strip():
+        yield _normalize_sse_frame(buf, fallback_model, is_chat_completion)
+
+
+async def _stream_provider_response(
+    client: aiohttp.ClientSession,
+    method: str,
+    url: str,
+    headers: Dict[str, str],
+    data: Optional[Union[bytes, aiohttp.FormData]],
+    proxy_url: Optional[str],
+    timeout: aiohttp.ClientTimeout,
+    fallback_model: str = "unknown",
+    is_chat_completion: bool = True,
+) -> AsyncGenerator[Tuple[Union[bytes, str], Dict[str, str], int], None]:
+    yielded_any = False
+    try:
+        async with client.request(
+            method=method,
+            url=url,
+            headers=headers,
+            data=data,
+            proxy=proxy_url,
+            timeout=timeout,
+        ) as resp:
+            clean_headers = _strip_upstream_hop_headers(resp.headers)
+            if resp.status >= 400:
+                err_body = await resp.read()
+                yield err_body, clean_headers, resp.status
+                return
+            async for frame in _iter_normalized_sse_frames(
+                resp, fallback_model, is_chat_completion
+            ):
+                yielded_any = True
+                yield frame, clean_headers, resp.status
+    except aiohttp.ClientError as e:
+        logger.error(f"Error streaming from provider {url}: {e}", exc_info=True)
+        error_response = OpenAIAPIErrorResponse(
+            error=OpenAIAPIError(
+                message="Provider unavailable. Please retry after a brief wait.",
+                code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                type="ServiceUnavailable",
+            ),
+        )
+        yield _error_chunk(
+            error_response, yielded_any
+        ), {}, status.HTTP_503_SERVICE_UNAVAILABLE
+    except Exception as e:
+        logger.error(f"Error streaming from provider {url}: {e}", exc_info=True)
+        error_response = OpenAIAPIErrorResponse(
+            error=OpenAIAPIError(
+                message="Internal server error.",
+                code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                type="InternalServerError",
+            ),
+        )
+        yield _error_chunk(
+            error_response, yielded_any
+        ), {}, status.HTTP_500_INTERNAL_SERVER_ERROR
