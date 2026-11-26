@@ -619,31 +619,46 @@ def test_non_openai_wire_providers_require_gateway(config_factory):
 @pytest.mark.asyncio
 async def test_rewrite_provider_model_replaces_multipart_model_field():
     """Overriding the model on a multipart/form-data request replaces the
-    existing model part in place rather than appending a second model field."""
-    import aiohttp
+    existing model part via captured form_fields rather than appending a duplicate."""
+    captured_form = {}
+    app = FastAPI()
 
-    form_data = aiohttp.FormData()
-    form_data.add_field("model", "whisper-route")
-    form_data.add_field(
-        "file", b"audio-bytes", filename="clip.wav", content_type="audio/wav"
-    )
+    @app.post("/probe")
+    async def probe(request: Request):
+        model_name, _, body_json, form_data = await openai_route.parse_request_body(
+            request
+        )
+        target_model, updated_form = openai_route._rewrite_provider_model(
+            model_name,
+            "whisper-large-v3-turbo",
+            body_json,
+            form_data,
+            form_fields=getattr(request.state, "_form_fields", None),
+        )
+        captured_form["target_model"] = target_model
+        payload = updated_form()
+        serialized = bytearray()
 
-    target_model, updated_form = openai_route._rewrite_provider_model(
-        "whisper-route", "whisper-large-v3-turbo", None, form_data
-    )
+        class _Writer:
+            async def write(self, chunk: bytes) -> None:
+                serialized.extend(chunk)
 
-    assert target_model == "whisper-large-v3-turbo"
-    assert updated_form is not None
+        await payload.write(_Writer())
+        captured_form["raw"] = bytes(serialized)
+        return {"ok": True}
 
-    payload = updated_form()
-    serialized = bytearray()
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/probe",
+            data={"model": "whisper-route"},
+            files={"file": ("clip.wav", b"audio-bytes", "audio/wav")},
+        )
 
-    class _Writer:
-        async def write(self, chunk: bytes) -> None:
-            serialized.extend(chunk)
-
-    await payload.write(_Writer())
-    raw_multipart = bytes(serialized)
+    assert resp.status_code == 200
+    assert captured_form["target_model"] == "whisper-large-v3-turbo"
+    raw_multipart = captured_form["raw"]
     assert raw_multipart.count(b'name="model"') == 1
     assert b"whisper-large-v3-turbo" in raw_multipart
     assert b"whisper-route" not in raw_multipart

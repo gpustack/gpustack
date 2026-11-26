@@ -194,7 +194,10 @@ def _extract_response_usage(response_class, response_dict):
             response_dict.get("usage") if isinstance(response_dict, dict) else None
         )
         if isinstance(raw_usage, dict):
-            return CompletionUsage.model_validate(raw_usage)
+            try:
+                return CompletionUsage.model_validate(raw_usage)
+            except Exception:
+                pass
     return None
 
 

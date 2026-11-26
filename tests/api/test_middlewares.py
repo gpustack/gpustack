@@ -147,3 +147,14 @@ def test_extract_response_usage_falls_back_when_envelope_omits_id():
     assert usage.prompt_tokens == 4
     assert usage.completion_tokens == 6
     assert usage.total_tokens == 10
+
+
+def test_extract_response_usage_returns_none_on_invalid_usage_dict():
+    """Malformed or partial usage dicts never raise out of _extract_response_usage."""
+    from openai.types.chat import ChatCompletion
+
+    usage = middlewares._extract_response_usage(
+        ChatCompletion,
+        {"choices": [], "usage": {"prompt_tokens": 4}},
+    )
+    assert usage is None

@@ -471,19 +471,17 @@ async def parse_form_data(request: Request) -> Tuple[aiohttp.FormData, str, bool
         model_name = form.get("model")
         stream = to_bool(form.get("stream"))
 
-        form_data = aiohttp.FormData()
+        raw_fields = []
         for key, value in form.items():
             if isinstance(value, UploadFile):
-                form_data.add_field(
-                    key,
-                    await value.read(),
-                    filename=value.filename,
-                    content_type=value.content_type,
+                raw_fields.append(
+                    (key, await value.read(), value.filename, value.content_type)
                 )
             else:
-                form_data.add_field(key, value)
+                raw_fields.append((key, value, None, None))
 
-        return form_data, model_name, stream
+        request.state._form_fields = raw_fields
+        return _build_form_data(raw_fields), model_name, stream
     except Exception as e:
         raise BadRequestException(
             message=f"We could not parse the form body of your request: {e}",
@@ -908,26 +906,24 @@ def _sanitize_provider_body(
     return {k: v for k, v in body_json.items() if v is not None and k not in disallowed}
 
 
-def _replace_form_field(
-    form_data: aiohttp.FormData, field_name: str, new_value: str
+def _build_form_data(
+    fields: List[Tuple[str, Any, Optional[str], Optional[str]]],
+    override_field: Optional[Tuple[str, str]] = None,
 ) -> aiohttp.FormData:
     rebuilt = aiohttp.FormData()
+    override_name, override_value = override_field or (None, None)
     replaced = False
-    for type_options, part_headers, value in form_data._fields:
-        name = type_options.get("name")
-        if name == field_name:
+    for name, value, filename, content_type in fields:
+        if override_name is not None and name == override_name:
             if not replaced:
-                rebuilt.add_field(field_name, new_value)
+                rebuilt.add_field(override_name, override_value)
                 replaced = True
+        elif filename is not None or content_type is not None:
+            rebuilt.add_field(name, value, filename=filename, content_type=content_type)
         else:
-            rebuilt.add_field(
-                name,
-                value,
-                filename=type_options.get("filename"),
-                content_type=part_headers.get("Content-Type"),
-            )
-    if not replaced:
-        rebuilt.add_field(field_name, new_value)
+            rebuilt.add_field(name, value)
+    if override_name is not None and not replaced:
+        rebuilt.add_field(override_name, override_value)
     return rebuilt
 
 
@@ -936,12 +932,17 @@ def _rewrite_provider_model(
     overridden_model_name: Optional[str],
     body_json: Optional[dict],
     form_data: Optional[aiohttp.FormData],
+    form_fields: Optional[List[Tuple[str, Any, Optional[str], Optional[str]]]] = None,
 ) -> Tuple[str, Optional[aiohttp.FormData]]:
     target_model = overridden_model_name or model_name
     if body_json is not None:
         body_json["model"] = target_model
-    elif form_data is not None and target_model != model_name:
-        form_data = _replace_form_field(form_data, "model", target_model)
+    elif (
+        form_data is not None and target_model != model_name and form_fields is not None
+    ):
+        form_data = _build_form_data(
+            form_fields, override_field=("model", target_model)
+        )
     return target_model, form_data
 
 
@@ -969,7 +970,11 @@ async def _proxy_to_provider(
     form_data: Optional[aiohttp.FormData],
 ):
     target_model, form_data = _rewrite_provider_model(
-        model_name, target.overridden_model_name, body_json, form_data
+        model_name,
+        target.overridden_model_name,
+        body_json,
+        form_data,
+        form_fields=getattr(request.state, "_form_fields", None),
     )
     request.state.model = None
     request.state.model_name = target_model
