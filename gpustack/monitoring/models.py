@@ -29,13 +29,15 @@ from gpustack.utils.model_instance_workers import (
 )
 from .catalog import model_metric_definitions
 from .histogram_bounds import (
+    QUANTILES,
     all_in_first_bucket,
     apply_lower_bounds,
     ceiling_scopes,
-    censor_first_bucket_estimates,
+    first_bucket_ceiling,
+    group_key,
     histogram_lower_bounds,
+    is_first_bucket_estimate,
     requires_bound_check,
-    requires_first_bucket_check,
     trend_ceilings,
     trend_first_bucket_ceilings,
 )
@@ -51,6 +53,7 @@ from .queries import (
     build_histogram_components,
     build_histogram_query,
     build_histogram_cdf_query,
+    build_histogram_trend_components,
     build_ratio_query,
     cohort_identity,
     deduplicate_instant,
@@ -95,6 +98,20 @@ def _finite(value) -> Optional[float]:
 def _instant(entry) -> Optional[float]:
     value = entry.get('value') or []
     return _finite(value[1]) if len(value) == 2 else None
+
+
+def _histogram_range_samples(rows):
+    samples = defaultdict(lambda: defaultdict(list))
+    for row in rows:
+        labels = (row.get('metric') or {}).copy()
+        part = labels.pop('histogram_component', None)
+        if part is None:
+            continue
+        for timestamp, value in row.get('values') or ():
+            at = _finite(timestamp)
+            if at is not None:
+                samples[at][part].append({'metric': labels, 'value': (at, value)})
+    return samples
 
 
 def _validate_result(entries, ranged):
@@ -705,7 +722,9 @@ class _Collection:
         incompatible = False
         if groups:
             metric.reason = None
-            incompatible = self.histogram_summaries(metric, groups)
+            incompatible = self.histogram_summaries(
+                metric, groups, exact_zero=definition.key == 'tpot'
+            )
             metric.status = (
                 'available'
                 if any(group['count'] > 0 for group in groups.values())
@@ -741,6 +760,7 @@ class _Collection:
             self.numeric_status(metric)
             if incompatible or reason in (
                 'histogram_quantile_out_of_range',
+                'histogram_first_bucket_unresolved',
                 'histogram_bounds_unavailable',
                 'query_failed',
             ):
@@ -791,79 +811,137 @@ class _Collection:
         for (stat, _), entries in zip(requests, ranges):
             metric.series.extend(self.series(entries, stat))
         await self.histogram_trend_bounds(
-            definition, metric, scope, sums, counts, buckets, trend_scopes
+            definition, metric, sums, counts, buckets, trend_scopes
         )
 
-    async def histogram_trend_bounds(
-        self, definition, metric, scope, sums, counts, buckets, candidates
+    def histogram_first_bucket_points(self, rows, *, exact_zero):
+        points = {}
+        for timestamp, parts in _histogram_range_samples(rows).items():
+            groups = self.histogram_groups(
+                parts['sum'],
+                parts['count'],
+                parts['buckets'],
+                by_instance=self.view == 'instances',
+                validate_buckets=True,
+            )
+            for key, group in groups.items():
+                sample = key, timestamp
+                if exact_zero and self.histogram_is_exact_zero(group):
+                    points[sample] = 0.0
+                elif self.histogram_group_statistics(group)[1]:
+                    profiles = group['profiles']
+                    points[sample] = (
+                        first_bucket_ceiling(profiles)
+                        if all_in_first_bucket(profiles, group['count'])
+                        else None
+                    )
+        return points
+
+    def apply_histogram_first_bucket_trends(
+        self, metric, percentiles, summary_ceilings, rows, *, exact_zero, failed
     ):
+        points = self.histogram_first_bucket_points(rows, exact_zero=exact_zero)
+        censored, incomplete = False, False
+        for line in percentiles:
+            key = group_key(line.dimensions, self.view)
+            quantile = QUANTILES[line.statistic]
+            for index, (timestamp, value) in enumerate(line.points):
+                sample = key, timestamp
+                bound = points.get(sample)
+                if bound == 0:
+                    line.points[index] = timestamp, 0.0
+                elif bound is not None and is_first_bucket_estimate(
+                    value, bound, quantile
+                ):
+                    line.points[index] = timestamp, None
+                    censored = True
+                elif sample not in points and key in summary_ceilings:
+                    incomplete |= is_first_bucket_estimate(
+                        value, summary_ceilings[key], quantile
+                    )
+        if incomplete:
+            self.histogram_bounds_unavailable(metric, failed)
+        elif censored:
+            self.histogram_first_bucket_unresolved(metric)
+
+    @staticmethod
+    def histogram_bounds_unavailable(metric, failed):
+        if failed:
+            metric.reason = 'query_failed'
+        elif metric.reason not in ('query_failed', 'incompatible_histogram_buckets'):
+            metric.reason = 'histogram_bounds_unavailable'
+
+    @staticmethod
+    def histogram_first_bucket_unresolved(metric):
+        if metric.reason in (
+            None,
+            'no_samples',
+            'zero_observations',
+            'histogram_quantile_out_of_range',
+        ):
+            metric.reason = 'histogram_first_bucket_unresolved'
+
+    async def histogram_trend_bounds(
+        self, definition, metric, sums, counts, buckets, candidates
+    ):
+        percentiles = [line for line in metric.series if line.statistic in QUANTILES]
+        if not percentiles:
+            return
         groups = self.histogram_groups(
             sums, counts, buckets, by_instance=self.view == 'instances'
         )
         ceilings = trend_ceilings(groups)
-        first_buckets = trend_first_bucket_ceilings(groups)
-        check_tail = requires_bound_check(metric.series, ceilings, self.view)
-        check_first = requires_first_bucket_check(
-            metric.series, first_buckets, self.view
-        )
-        if not check_tail and not check_first:
-            return
+        check_tail = requires_bound_check(percentiles, ceilings, self.view)
+        exact_zero = definition.key == 'tpot'
         rows, failed = [], False
         try:
             for candidate in candidates:
+                query = build_histogram_trend_components(
+                    definition.family,
+                    candidate,
+                    self.rate_window,
+                    include_sum=exact_zero,
+                    profile=definition.query_profile,
+                )
                 populations = (
                     ceiling_scopes(candidate, ceilings, buckets) if check_tail else []
                 )
-                if check_first:
-                    populations.extend(
-                        item
-                        for item in ceiling_scopes(candidate, first_buckets, buckets)
-                        if item not in populations
-                    )
-                if not populations:
-                    continue
                 try:
-                    rows.extend(
-                        await self.read(
-                            build_histogram_cdf_query(
-                                definition.family,
-                                populations,
-                                self.rate_window,
-                                profile=definition.query_profile,
-                            ),
-                            ranged=True,
+                    if populations:
+                        query += ' or ' + build_histogram_cdf_query(
+                            definition.family,
+                            populations,
+                            self.rate_window,
+                            profile=definition.query_profile,
                         )
-                    )
+                    rows.extend(await self.read(query, ranged=True))
                 except _QUERY_ERRORS:
                     failed = True
         finally:
-            censored, incomplete = False, False
+            self.apply_histogram_first_bucket_trends(
+                metric,
+                percentiles,
+                trend_first_bucket_ceilings(groups),
+                rows,
+                exact_zero=exact_zero,
+                failed=failed,
+            )
             if check_tail:
                 censored, incomplete = apply_lower_bounds(
-                    metric.series, ceilings, rows, view=self.view
+                    percentiles, ceilings, rows, view=self.view
                 )
-            if check_first:
-                first_censored, first_incomplete = censor_first_bucket_estimates(
-                    metric.series, first_buckets, rows, view=self.view
-                )
-                censored |= first_censored
-                incomplete |= first_incomplete
-            if incomplete:
-                if failed:
-                    metric.reason = 'query_failed'
-                elif metric.reason not in (
-                    'query_failed',
-                    'incompatible_histogram_buckets',
+                if incomplete:
+                    self.histogram_bounds_unavailable(metric, failed)
+                elif censored and metric.reason in (
+                    None,
+                    'no_samples',
+                    'zero_observations',
                 ):
-                    metric.reason = 'histogram_bounds_unavailable'
-            elif censored and metric.reason in (
-                None,
-                'no_samples',
-                'zero_observations',
-            ):
-                metric.reason = 'histogram_quantile_out_of_range'
+                    metric.reason = 'histogram_quantile_out_of_range'
 
-    def histogram_groups(self, sums, counts, buckets, *, by_instance=False):
+    def histogram_groups(
+        self, sums, counts, buckets, *, by_instance=False, validate_buckets=False
+    ):
         groups, cohort_roles = {}, {}
         for row in counts:
             labels, value = row.get('metric') or {}, _instant(row)
@@ -872,34 +950,68 @@ class _Collection:
             role, identity = labels.get('role', ''), cohort_identity(labels)
             key = (role, self.instance_id(labels)) if by_instance else role
             group = groups.setdefault(
-                key, {'count': 0.0, 'sum': 0.0, 'profiles': {}, 'sum_profiles': set()}
+                key, {'count': 0.0, 'sum': 0.0, 'profiles': {}, 'sum_profiles': {}}
             )
             group['count'] += value
-            cohort_roles[identity] = key
+            cohort_roles[identity] = key, value
             if value > 0:
                 group['profiles'][identity] = {}
         for row in sums:
             identity = cohort_identity(row.get('metric') or {})
             value = _instant(row)
             if identity in cohort_roles and value is not None:
-                groups[cohort_roles[identity]]['sum'] += value
-                groups[cohort_roles[identity]]['sum_profiles'].add(identity)
+                key, _ = cohort_roles[identity]
+                groups[key]['sum'] += value
+                groups[key]['sum_profiles'][identity] = value
+        self.histogram_bucket_profiles(
+            groups, cohort_roles, buckets, by_instance, validate_buckets
+        )
+        return groups
+
+    def histogram_bucket_profiles(
+        self, groups, cohort_roles, buckets, by_instance, validate_buckets
+    ):
         for row in buckets:
             labels, value = row.get('metric') or {}, _instant(row)
             identity = cohort_identity(labels, omit=('le',))
-            if identity not in cohort_roles or value is None:
+            if value is None:
                 continue
             try:
                 bound = float(labels['le'])
             except (KeyError, TypeError, ValueError):
                 continue
-            profile = groups[cohort_roles[identity]]['profiles'].get(identity)
-            if profile is not None:
-                if bound in profile:
-                    groups[cohort_roles[identity]]['ambiguous_bounds'] = True
-                else:
-                    profile[bound] = value
-        return groups
+            if identity not in cohort_roles:
+                role = labels.get('role', '')
+                key = (role, self.instance_id(labels)) if by_instance else role
+                if validate_buckets and value != 0 and key in groups:
+                    groups[key]['ambiguous_bounds'] = True
+                continue
+            key, count = cohort_roles[identity]
+            group = groups[key]
+            if validate_buckets and count == 0 and value != 0:
+                group['ambiguous_bounds'] = True
+            if count == 0:
+                continue
+            profile = group['profiles'][identity]
+            if bound in profile or (
+                validate_buckets
+                and bound == math.inf
+                and not math.isclose(value, count, rel_tol=1e-9)
+            ):
+                group['ambiguous_bounds'] = True
+            else:
+                profile[bound] = value
+
+    @staticmethod
+    def histogram_is_exact_zero(group):
+        return (
+            group['count'] > 0
+            and group['sum'] == 0
+            and not group.get('ambiguous_bounds')
+            and all(
+                group['sum_profiles'].get(source) == 0 for source in group['profiles']
+            )
+        )
 
     @staticmethod
     def histogram_group_statistics(group):
@@ -917,32 +1029,39 @@ class _Collection:
             }, False
         return stats, compatible
 
-    def histogram_summaries(self, metric, groups):
+    def histogram_summaries(self, metric, groups, *, exact_zero=False):
         metric.summaries.clear()
         incompatible = False
         for role, group in sorted(groups.items()):
             stats, compatible = self.histogram_group_statistics(group)
-            incompatible |= group['count'] > 0 and not compatible
-            first_bucket_only = compatible and all_in_first_bucket(
-                group['profiles'], group['count']
+            all_zero = exact_zero and self.histogram_is_exact_zero(group)
+            incompatible |= group['count'] > 0 and not (compatible or all_zero)
+            first_bucket_only = (
+                compatible
+                and not all_zero
+                and all_in_first_bucket(group['profiles'], group['count'])
             )
             bounds = (
                 histogram_lower_bounds(group['profiles'], count=group['count'])
-                if compatible
+                if compatible and not all_zero
                 else {}
             )
-            if (bounds or first_bucket_only) and metric.reason in (None, 'no_samples'):
+            if first_bucket_only:
+                self.histogram_first_bucket_unresolved(metric)
+            elif bounds and metric.reason in (None, 'no_samples'):
                 metric.reason = 'histogram_quantile_out_of_range'
             for stat in HISTOGRAM_STATISTICS:
+                value = stats[stat]
+                if stat != 'avg':
+                    if all_zero:
+                        value = 0.0
+                    elif first_bucket_only or stat in bounds:
+                        value = None
                 metric.summaries.append(
                     MetricSummary(
                         statistic=stat,
                         dimensions=MetricDimensions(role=role or None),
-                        value=(
-                            None
-                            if stat in bounds or (first_bucket_only and stat != 'avg')
-                            else _finite(stats[stat])
-                        ),
+                        value=_finite(value),
                         lower_bound=bounds.get(stat),
                         sample_count=group['count'],
                     )

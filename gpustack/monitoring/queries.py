@@ -346,7 +346,12 @@ def build_histogram_query(
 
 
 def build_histogram_components(
-    name: str, scope: MetricQueryScope, seconds: int, *, profile: str = 'histogram'
+    name: str,
+    scope: MetricQueryScope,
+    seconds: int,
+    *,
+    summary: bool = True,
+    profile: str = 'histogram',
 ) -> Dict[str, str]:
     """Keep source and native rank identity until bucket compatibility is known."""
     name = _metric_name(name)
@@ -355,14 +360,40 @@ def build_histogram_components(
         raw = query_config.get_query_config().query(
             profile,
             'histogram',
-            'increase',
+            'increase' if summary else 'rate',
             family=name,
             part=suffix,
             selector=scope.selector(),
             window_seconds=seconds,
         )
-        queries[key] = scope.guard(raw, seconds)
+        queries[key] = scope.guard(raw, seconds if summary else None)
     return queries
+
+
+def build_histogram_trend_components(
+    name: str,
+    scope: MetricQueryScope,
+    seconds: int,
+    *,
+    include_sum: bool,
+    profile: str = 'histogram',
+) -> str:
+    """Read the native histogram components in a single range request."""
+    components = build_histogram_components(
+        name, scope, seconds, summary=False, profile=profile
+    )
+    parts = ('count', 'buckets', 'sum') if include_sum else ('count', 'buckets')
+    config = query_config.get_query_config()
+    return ' or '.join(
+        config.query(
+            profile,
+            'histogram',
+            'trend_component',
+            expression=components[part],
+            part=part,
+        )
+        for part in parts
+    )
 
 
 def build_histogram_cdf_query(

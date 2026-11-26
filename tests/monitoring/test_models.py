@@ -464,16 +464,52 @@ def _histogram_data(query, counts=10, other_bucket=None):
     return []
 
 
+def _histogram_range_component(part, labels, *values):
+    return {
+        'metric': {**labels, 'histogram_component': part},
+        'values': list(values),
+    }
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('view', ['aggregate', 'instances'])
-@pytest.mark.parametrize('zero_bucket', [None, 0, 10], ids=['absent', 'empty', 'full'])
+@pytest.mark.parametrize(
+    ('zero_bucket', 'all_zero'),
+    [(None, False), (0, False), (10, True), (None, True)],
+    ids=['absent', 'empty', 'full', 'vllm-exact-zero'],
+)
 async def test_first_bucket_tpot_keeps_average_without_fabricated_percentiles(
-    monkeypatch, view, zero_bucket
+    monkeypatch, view, zero_bucket, all_zero
 ):
     module = _collector()
     prefix = 'gpustack:time_per_output_token_seconds'
-    all_zero = zero_bucket == 10
     average = 0.0 if all_zero else 0.0032
+    later_average = 0.0 if all_zero else 0.008
+    bounds = (
+        '0.01',
+        '0.025',
+        '0.05',
+        '0.075',
+        '0.1',
+        '0.15',
+        '0.2',
+        '0.3',
+        '0.4',
+        '0.5',
+        '0.75',
+        '1.0',
+        '2.5',
+        '5.0',
+        '7.5',
+        '10.0',
+        '20.0',
+        '40.0',
+        '80.0',
+        '+Inf',
+    )
+    buckets = [_entry(10, le=bound) for bound in bounds]
+    if zero_bucket is not None:
+        buckets.insert(0, _entry(zero_bucket, le='0'))
 
     def instant(query):
         if prefix + '_count{' in query:
@@ -481,9 +517,6 @@ async def test_first_bucket_tpot_keeps_average_without_fabricated_percentiles(
         if prefix + '_sum{' in query:
             return [_entry(average * 10)]
         if prefix + '_bucket{' in query:
-            buckets = [_entry(10, le=bound) for bound in ('0.01', '0.02', '+Inf')]
-            if zero_bucket is not None:
-                buckets.insert(0, _entry(zero_bucket, le='0'))
             return buckets
         return []
 
@@ -491,31 +524,41 @@ async def test_first_bucket_tpot_keeps_average_without_fabricated_percentiles(
         if prefix + '_' not in query:
             return []
         labels = _entry(0)['metric']
-        if 'histogram_upper_bound' in query:
+        if 'histogram_component' in query:
+            later_buckets = {'0.01': '5'} if not all_zero else {}
             return [
-                {
-                    'metric': {**labels, 'histogram_upper_bound': '0.01'},
-                    'values': [[4910, '1'], [5000, '0.5']],
-                }
+                _histogram_range_component('count', labels, (4910, '10'), (5000, '10')),
+                _histogram_range_component(
+                    'sum', labels, (4910, average * 10), (5000, later_average * 10)
+                ),
+            ] + [
+                _histogram_range_component(
+                    'buckets',
+                    row['metric'],
+                    (4910, row['value'][1]),
+                    (5000, later_buckets.get(row['metric']['le'], row['value'][1])),
+                )
+                for row in buckets
             ]
         for quantile, interpolated, resolved in (
             ('0.5', 0.005, 0.01),
-            ('0.95', 0.0095, 0.019),
-            ('0.99', 0.0099, 0.0198),
+            ('0.95', 0.0095, 0.0235),
+            ('0.99', 0.0099, 0.0247),
         ):
             if f'histogram_quantile({quantile},' in query:
-                if all_zero:
+                if zero_bucket == 10:
                     interpolated = resolved = 0
+                elif all_zero:
+                    resolved = interpolated
                 return [
                     {
                         'metric': labels,
                         'values': [[4910, str(interpolated)], [5000, str(resolved)]],
                     }
                 ]
-        later_average = 0.0 if all_zero else 0.008
         return [{'metric': labels, 'values': [[4910, average], [5000, later_average]]}]
 
-    requests = _prometheus(monkeypatch, module, instant, ranges)
+    _prometheus(monkeypatch, module, instant, ranges)
     result = await module.collect_model_metrics(
         _model(),
         [_instance()],
@@ -531,15 +574,13 @@ async def test_first_bucket_tpot_keeps_average_without_fabricated_percentiles(
     metric = result.metrics['tpot']
     summaries = {s.statistic: s.value for s in metric.summaries}
     series = {line.statistic: line.points for line in metric.series}
-    cdf_queries = [query for _, query in requests if 'histogram_upper_bound' in query]
     if all_zero:
         assert metric.reason is None
         assert summaries == dict.fromkeys(('avg', 'p50', 'p95', 'p99'), 0)
         assert series == dict.fromkeys(summaries, [(4910, 0), (5000, 0)])
-        assert not cdf_queries
         return
 
-    assert metric.reason == 'histogram_quantile_out_of_range'
+    assert metric.reason == 'histogram_first_bucket_unresolved'
     assert summaries == {
         'avg': 0.0032,
         'p50': None,
@@ -549,20 +590,96 @@ async def test_first_bucket_tpot_keeps_average_without_fabricated_percentiles(
     assert series == {
         'avg': [(4910, 0.0032), (5000, 0.008)],
         'p50': [(4910, None), (5000, 0.01)],
-        'p95': [(4910, None), (5000, 0.019)],
-        'p99': [(4910, None), (5000, 0.0198)],
+        'p95': [(4910, None), (5000, 0.0235)],
+        'p99': [(4910, None), (5000, 0.0247)],
     }
-    assert len(cdf_queries) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('view', ['aggregate', 'instances'])
+async def test_first_bucket_trend_uses_each_points_active_layout(monkeypatch, view):
+    module = _collector()
+    prefix = 'gpustack:time_to_first_token_seconds'
+    labels = _entry(0)['metric']
+    old_labels = _entry(0, restart='1')['metric']
+
+    def instant(query):
+        if prefix + '_count{' in query:
+            return [_entry(100)]
+        if prefix + '_sum{' in query:
+            return [_entry(1)]
+        if prefix + '_bucket{' in query:
+            return [_entry(100, le=bound) for bound in ('0.01', '0.02', '+Inf')]
+        return []
+
+    def ranges(query):
+        if prefix + '_' not in query:
+            return []
+        if 'histogram_quantile(' in query:
+            return [
+                {
+                    'metric': labels,
+                    'values': [[4910, '0.005'], [4925, '0.0025'], [5000, '0.005']],
+                }
+            ]
+        if 'histogram_component' in query:
+            return (
+                [
+                    _histogram_range_component(
+                        'count', old_labels, (4910, '100'), (4925, '100')
+                    ),
+                    _histogram_range_component('count', labels, (5000, '100')),
+                ]
+                + [
+                    _histogram_range_component(
+                        'buckets',
+                        {**old_labels, 'le': bound},
+                        (4910, old),
+                        (4925, '100'),
+                    )
+                    for bound, old in [
+                        ('0.005', '50'),
+                        ('0.01', '100'),
+                        ('+Inf', '100'),
+                    ]
+                ]
+                + [
+                    _histogram_range_component(
+                        'buckets', {**labels, 'le': bound}, (5000, '100')
+                    )
+                    for bound in ('0.01', '0.02', '+Inf')
+                ]
+            )
+        return []
+
+    _prometheus(monkeypatch, module, instant, ranges)
+    result = await module.collect_model_metrics(
+        _model(),
+        [_instance()],
+        start=1400,
+        end=5000,
+        window_seconds=3600,
+        view=view,
+        statistics=('p50',),
+        section='llm',
+        client=object(),
+    )
+
+    assert result.metrics['ttft'].series[0].points == [
+        (4910, 0.005),
+        (4925, None),
+        (5000, None),
+    ]
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('view', ['aggregate', 'instances'])
 @pytest.mark.parametrize(
-    ('cdf_state', 'reason'),
+    ('bucket_state', 'reason'),
     [('missing', 'histogram_bounds_unavailable'), ('failed', 'query_failed')],
 )
-async def test_first_bucket_trend_reports_incomplete_cdf(
-    monkeypatch, view, cdf_state, reason
+async def test_first_bucket_trend_reports_incomplete_buckets(
+    monkeypatch, view, bucket_state, reason
 ):
     module = _collector()
 
@@ -570,21 +687,25 @@ async def test_first_bucket_trend_reports_incomplete_cdf(
         if 'gpustack:time_to_first_token_seconds_' not in query:
             return []
         labels = _entry(0)['metric']
-        if 'histogram_upper_bound' in query:
-            if cdf_state == 'failed':
-                raise OSError('CDF source unavailable')
-            return [
-                {
-                    'metric': {**labels, 'histogram_upper_bound': '0.1'},
-                    'values': [[4910, '1'], [5000, '0.5']],
-                }
-            ]
         if 'histogram_quantile(' in query:
             return [
                 {
                     'metric': labels,
                     'values': [[4910, '0.095'], [4925, '0.095'], [5000, '0.19']],
                 }
+            ]
+        if 'histogram_component' in query:
+            if bucket_state == 'failed':
+                raise OSError('Bucket source unavailable')
+            return [
+                _histogram_range_component(
+                    'count', labels, (4910, '10'), (4925, '10'), (5000, '10')
+                ),
+            ] + [
+                _histogram_range_component(
+                    'buckets', {**labels, 'le': bound}, (4910, '10'), (5000, later)
+                )
+                for bound, later in [('0.1', '5'), ('0.2', '10'), ('+Inf', '10')]
             ]
         return [
             {
@@ -611,7 +732,7 @@ async def test_first_bucket_trend_reports_incomplete_cdf(
     assert metric.reason == reason
     series = {line.statistic: line.points for line in metric.series}
     assert series['avg'] == [(4910, 0.03), (4925, 0.04), (5000, 0.1)]
-    verified = None if cdf_state == 'missing' else 0.095
+    verified = None if bucket_state == 'missing' else 0.095
     assert series['p95'] == [(4910, verified), (4925, 0.095), (5000, 0.19)]
 
 

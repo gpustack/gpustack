@@ -134,24 +134,10 @@ def requires_bound_check(
     )
 
 
-def _is_first_bucket_estimate(
+def is_first_bucket_estimate(
     value: Optional[float], bound: float, quantile: float
 ) -> bool:
     return value is not None and math.isclose(value, bound * quantile, rel_tol=1e-9)
-
-
-def requires_first_bucket_check(
-    series: Sequence[MetricSeries], ceilings: Mapping[object, float], view: str
-) -> bool:
-    return any(
-        (quantile := QUANTILES.get(line.statistic)) is not None
-        and (bound := ceilings.get(group_key(line.dimensions, view))) is not None
-        and any(
-            _is_first_bucket_estimate(value, bound, quantile)
-            for _, value in line.points
-        )
-        for line in series
-    )
 
 
 def _cdf_fractions(rows, ceilings, view):
@@ -219,30 +205,4 @@ def apply_lower_bounds(
                 points.append((timestamp, value))
         line.points = points
         line.lower_bounds = limits or None
-    return censored, incomplete
-
-
-def censor_first_bucket_estimates(
-    series: Sequence[MetricSeries],
-    ceilings: Mapping[object, float],
-    rows: Sequence[dict],
-    *,
-    view: str,
-) -> Tuple[bool, bool]:
-    fractions = _cdf_fractions(rows, ceilings, view)
-    censored, incomplete = False, False
-    for line in series:
-        quantile, key = QUANTILES.get(line.statistic), group_key(line.dimensions, view)
-        bound = ceilings.get(key)
-        if quantile is None or bound is None:
-            continue
-        for index, (timestamp, value) in enumerate(line.points):
-            if not _is_first_bucket_estimate(value, bound, quantile):
-                continue
-            fraction = fractions.get((key, timestamp))
-            if fraction is None:
-                incomplete = True
-            elif math.isclose(fraction, 1.0, rel_tol=1e-9):
-                line.points[index] = timestamp, None
-                censored = True
     return censored, incomplete

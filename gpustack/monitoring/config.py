@@ -165,6 +165,7 @@ _PROFILE_VARIABLES = {
         'p50': {'buckets'},
         'p95': {'buckets'},
         'p99': {'buckets'},
+        'trend_component': {'expression', 'part'},
         'bucket_population': {'expression'},
         'canonical_bucket': {'expression'},
         'paired_buckets': {'finite', 'count', 'infinite'},
