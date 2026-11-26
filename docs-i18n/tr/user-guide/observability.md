@@ -126,7 +126,7 @@ Dağıtım ayrıntılarındaki `Request Tracing` sekmesi başlangıçta son 24 s
 
 Günlük aktarımı etkin olduğunda Sunucu ve Worker'lar kapsayıcı konsoluna tek bir JSON akışı yazar. Alloy bu akışı desteklenen motor günlüğü biçimleriyle birlikte okur. Atılan kayıtları kontrol etmek için Alloy'un `otelcol_processor_filter_logs_filtered_total` metriğine `engine_format` veya `higress_format` bileşeniyle bakın. Motor filtresi, tanınan bir günlük öneki olmayan bağımsız düz metin satırlarını eler.
 
-İlgili aktarım etkinse ve motor ayarları izin veriyorsa GPUStack, vLLM `0.32.0` veya SGLang `0.5.22` kullanan uyumlu Runner imajlarına motor gözlemlenebilirlik ayarlarını otomatik ekler. Sürüm kontrolleri otomatik yapılandırma için geçerlidir. Diğer imajlar veya sürümler için telemetriyi motorun kendi ayarlarıyla yapılandırın.
+Standart vLLM ve SGLang başlatmalarında GPUStack, etkinleştirilen günlük ve iz aktarımını otomatik olarak yapılandırır. Yönetilen PD Router tarifleri, destekledikleri varsayılan gözlemlenebilirlik ayarlarını uygular. Açıkça belirtilen telemetri ayarları ve özel başlatma yapılandırmaları önceliklidir.
 
 Her izleme bileşeni span'leri doğrudan seçilen alıcıya gönderir. Günlük aktaran bileşenler günlük uç noktasına ulaşabilmelidir. İz aktaran Sunucu, Worker'lar, ağ geçitleri ve çıkarım kapsayıcıları iz uç noktasına ulaşabilmelidir. Alım bağlantısı şifresiz gRPC kullanır, bu nedenle güvenilen bir ağdaki adresi kullanın. Harici bir alıcıya geçmek veya izlemeyi devre dışı bırakmak yerleşik Tempo'yu durdurur.
 

@@ -126,7 +126,7 @@ Tempo 会在定期清理时移除过期的块。保留时间控制块的保留�
 
 启用日志上报后，Server 和 Worker 将日志以单一 JSON 流写入容器控制台。Alloy 同时读取该日志流和受支持格式的引擎日志。要检查丢弃的记录，请查看 Alloy 的 `otelcol_processor_filter_logs_filtered_total` 指标中的 `engine_format` 或 `higress_format` 组件。引擎过滤器会丢弃缺少可识别日志前缀的独立纯文本行。
 
-启用相应的上报且引擎设置允许时，GPUStack 会为使用 vLLM `0.32.0` 或 SGLang `0.5.22` 的兼容 Runner 镜像自动添加引擎可观测性设置。版本检查适用于自动配置。使用其他镜像或版本时，可以通过引擎自身的设置配置遥测。
+对于标准 vLLM 和 SGLang 启动方式，GPUStack 会自动配置已启用的日志和 Trace 上报。托管 PD Router 配方应用各自支持的可观测性默认设置。显式遥测设置和自定义启动配置优先。
 
 每个追踪组件直接将 Span 发送到选定的接收端。上报日志的组件必须能访问日志端点。上报 Trace 的 Server、Worker、网关和推理容器必须能访问追踪端点。写入连接使用明文 gRPC，请使用可信网络中的地址。切换到外部接收端或禁用追踪时，内置 Tempo 会停止。
 

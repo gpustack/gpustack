@@ -702,7 +702,7 @@ class SGLangServer(InferenceServer):
             and not self._model.run_command
         ):
             arguments.extend(
-                self._get_observability_arguments(image, user_backend_parameters, env)
+                self._get_observability_arguments(user_backend_parameters, env)
             )
         arguments.extend(user_backend_parameters)
 
@@ -727,17 +727,13 @@ class SGLangServer(InferenceServer):
         return arguments, injected
 
     def _get_observability_arguments(
-        self, image: str, user_args: List[str], env: Dict[str, str]
+        self, user_args: List[str], env: Dict[str, str]
     ) -> List[str]:
         """Build engine arguments and enable the request ID header in native logs."""
         config = self._config
         trace_endpoint = config.effective_trace_otlp_endpoint
-        dependencies = self._resolved_image_dependencies or {}
-        if (
-            not (config.log_otlp_endpoint or trace_endpoint)
-            or dependencies.get("sglang") != "0.5.22"
-            or image.rsplit("/", 1)[-1] != "runner:cuda13.0-sglang0.5.22"
-            or env.get("PYPI_PACKAGES_INSTALL")
+        if not (config.log_otlp_endpoint or trace_endpoint) or env.get(
+            "PYPI_PACKAGES_INSTALL"
         ):
             return []
 

@@ -168,7 +168,6 @@ class CustomServer(InferenceServer):
         if use_recipe_defaults:
             command_args = apply_router_observability(
                 source_model.disaggregation.mode,
-                image,
                 command_args,
                 env,
                 log_enabled=bool(self._config.log_otlp_endpoint),

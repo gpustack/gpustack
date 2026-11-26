@@ -65,7 +65,6 @@ launch_router(args)
 
 def apply_router_observability(
     mode: PDModeEnum,
-    image: str,
     args: List[str],
     env: Dict[str, str],
     *,
@@ -77,14 +76,10 @@ def apply_router_observability(
     if env.get("PYPI_PACKAGES_INSTALL"):
         return args
 
-    image_tag = image.rsplit("/", 1)[-1]
     options = {arg.partition("=")[0] for arg in args[1:]}
-    # These tags identify the tested bundled packages and launchers. JSON dispatch
-    # logs use sglang-router 0.3.2; the Python binding workaround uses vllm-router 0.1.16.
     if (
         mode == PDModeEnum.SGLANG_MOONCAKE
         and log_enabled
-        and image_tag == "runner:cuda13.0-sglang0.5.22"
         and args[:3] == ["python3", "-m", "sglang_router.launch_router"]
     ):
         if "--log-level" not in options:
@@ -95,7 +90,6 @@ def apply_router_observability(
     if (
         mode == PDModeEnum.VLLM_NIXL
         and trace_endpoint
-        and image_tag == "runner:cuda13.0-vllm0.32.0"
         and args[:1] == ["vllm-router"]
         and options.isdisjoint(("--enable-trace", "--otlp-traces-endpoint"))
         and not env.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")

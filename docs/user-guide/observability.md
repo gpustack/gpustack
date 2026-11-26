@@ -122,7 +122,7 @@ The `Request Tracing` tab in deployment details initially searches the last 24 h
 
 When log export is enabled, the Server and Workers write one JSON stream to the container console. Alloy reads that stream alongside supported engine log formats. To check for discarded records, use Alloy's `otelcol_processor_filter_logs_filtered_total` metric with the `engine_format` or `higress_format` component. The engine filter rejects standalone plain-text lines without a recognized log prefix.
 
-GPUStack automatically adds engine observability settings for compatible Runner images with vLLM `0.32.0` or SGLang `0.5.22` when the corresponding export is enabled and the engine settings allow it. The version checks apply to automatic configuration. For other images or versions, configure telemetry using the engine's own settings.
+For standard vLLM and SGLang launches, GPUStack automatically configures enabled log and trace export. Managed PD Router recipes apply their supported observability defaults. Explicit telemetry settings and custom launch configurations take precedence.
 
 Each tracing component sends spans directly to the selected receiver. The log endpoint must be reachable from the components that export logs. The trace endpoint must be reachable from the Server, Workers, gateways, and inference containers that export traces. The ingest connection uses plaintext gRPC, so use an address on a trusted network. Switching to an external receiver or disabling tracing stops built-in Tempo.
 

@@ -114,7 +114,8 @@ def test_managed_router_wraps_the_original_command(create_custom_workload, comma
         ({"mode": "vllm-nixl"}, False),
         ({"mode": "sglang-nixl"}, False),
         ({"role": "prefill"}, False),
-        ({"image": "gpustack/runner:cuda13.0-sglang0.5.21"}, False),
+        ({"image": "gpustack/runner:cuda13.0-sglang0.5.21"}, True),
+        ({"image": "mirror.example/team/sglang:custom"}, True),
         ({"router_image": "custom/runner:cuda13.0-sglang0.5.22"}, False),
         ({"model_image": "custom/runner:cuda13.0-sglang0.5.22"}, False),
         ({"router_command": "custom-router"}, False),
@@ -190,8 +191,17 @@ def test_managed_sglang_router_request_logging(
 
 
 @pytest.mark.parametrize("log_collection", [False, True])
+@pytest.mark.parametrize(
+    "image",
+    [
+        "mirror.example/team/runner:cuda13.0-vllm0.32.0",
+        "gpustack/runner:cuda13.0-vllm0.31.0",
+        "gpustack/runner:cuda13.0-vllm0.33.0",
+        "mirror.example/team/vllm:custom",
+    ],
+)
 def test_managed_vllm_router_launches_native_tracing(
-    create_custom_workload, monkeypatch, log_collection
+    create_custom_workload, monkeypatch, log_collection, image
 ):
     endpoint = "collector:4317"
     router_args = [
@@ -203,7 +213,7 @@ def test_managed_vllm_router_launches_native_tracing(
         "http://decode:8000",
     ]
     container = create_custom_workload(
-        image="mirror.example/team/runner:cuda13.0-vllm0.32.0",
+        image=image,
         arguments=["vllm-router", *router_args],
         trace_endpoint=endpoint,
         log_collection=log_collection,
@@ -247,8 +257,6 @@ def test_managed_vllm_router_launches_native_tracing(
     "overrides",
     [
         {"trace_endpoint": None},
-        {"image": "gpustack/runner:cuda13.0-vllm0.31.0"},
-        {"image": "gpustack/runner:cuda13.0-vllm0.33.0"},
         {"router_command": "vllm-router"},
         {"command": ["tini", "--"]},
         {"arguments": ["custom-launcher", "vllm-router"]},

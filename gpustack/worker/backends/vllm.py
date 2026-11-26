@@ -1590,7 +1590,7 @@ class VLLMServer(InferenceServer):
             and not ctx.is_omni
         ):
             arguments.extend(
-                self._get_observability_arguments(image, user_backend_parameters, env)
+                self._get_observability_arguments(user_backend_parameters, env)
             )
         arguments.extend(user_backend_parameters)
 
@@ -1618,16 +1618,12 @@ class VLLMServer(InferenceServer):
         return arguments, injected
 
     def _get_observability_arguments(
-        self, image: str, user_args: List[str], env: Dict[str, str]
+        self, user_args: List[str], env: Dict[str, str]
     ) -> List[str]:
         config = self._config
         trace_endpoint = config.effective_trace_otlp_endpoint
-        dependencies = self._resolved_image_dependencies or {}
-        if (
-            not (config.log_otlp_endpoint or trace_endpoint)
-            or dependencies.get("vllm") != "0.32.0"
-            or image.rsplit("/", 1)[-1] != "runner:cuda13.0-vllm0.32.0"
-            or env.get("PYPI_PACKAGES_INSTALL")
+        if not (config.log_otlp_endpoint or trace_endpoint) or env.get(
+            "PYPI_PACKAGES_INSTALL"
         ):
             return []
 

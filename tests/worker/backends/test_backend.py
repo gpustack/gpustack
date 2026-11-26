@@ -332,18 +332,35 @@ def test_sglang_managed_tracing_preserves_cli_service_name(tmp_path):
 @pytest.mark.parametrize(
     "engine,overrides",
     [
-        ("vllm", {"version_override": "0.31.0"}),
-        ("sglang", {"version_override": "0.5.21"}),
-        ("vllm", {"image_override": "third-party/runner:cuda13.0-vllm0.32.0"}),
-        ("sglang", {"image_override": "third-party/runner:cuda13.0-sglang0.5.22"}),
         ("vllm", {"run_command": "custom-serve /models/llm"}),
         ("sglang", {"entrypoint": ["custom-serve"]}),
     ],
 )
-def test_engine_observability_skips_unverified_launches(tmp_path, engine, overrides):
+def test_engine_observability_preserves_custom_launches(tmp_path, engine, overrides):
     launch, _ = _capture_observable_engine_launch(tmp_path, engine, **overrides)
     assert _NATIVE_LOG_FLAGS[engine][0] not in launch["command_args"]
     assert "--otlp-traces-endpoint" not in launch["command_args"]
+
+
+@pytest.mark.parametrize(
+    "engine,overrides",
+    [
+        ("vllm", {"version_override": "0.31.0"}),
+        ("sglang", {"version_override": "0.5.21"}),
+        ("vllm", {"image_override": "third-party/runner:cuda13.0-vllm0.32.0"}),
+        ("sglang", {"image_override": "third-party/runner:cuda13.0-sglang0.5.22"}),
+        ("vllm", {"image_override": "third-party/vllm:custom"}),
+        ("sglang", {"image_override": "third-party/sglang:custom"}),
+    ],
+)
+def test_engine_observability_is_not_pinned_to_image_or_version(
+    tmp_path, engine, overrides
+):
+    launch, injected = _capture_observable_engine_launch(tmp_path, engine, **overrides)
+    assert all(flag in launch["command_args"] for flag in _NATIVE_LOG_FLAGS[engine])
+    assert "--otlp-traces-endpoint" in launch["command_args"]
+    assert _TRACE_COLLECTOR in launch["command_args"]
+    assert any("--otlp-traces-endpoint" in item for item in injected)
 
 
 def test_engine_trace_endpoint_comes_from_worker_config(tmp_path, monkeypatch):
