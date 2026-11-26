@@ -702,7 +702,8 @@ async def _search_candidates(
     exact = None
     if trace_id and trace_id not in seen:
         payload, exact = await asyncio.gather(
-            search, _exact_trace_candidate(client, base_url, trace_id)
+            search,
+            _exact_trace_candidate(client, base_url, trace_id, model_id=model_id),
         )
     else:
         payload = await search
@@ -748,14 +749,20 @@ async def _detail_batches(
 
 
 async def _exact_trace_candidate(
-    client: aiohttp.ClientSession, base_url: str, trace_id: str
+    client: aiohttp.ClientSession,
+    base_url: str,
+    trace_id: str,
+    *,
+    model_id: Optional[int] = None,
 ) -> Optional[dict]:
     detail = await _tempo_get(client, f"{base_url}/api/traces/{trace_id}")
     if detail is None:
         return None
     try:
         spans = _detail_spans(detail)
-        if spans:
+        # Direct lookups from a query or cursor bypass the model-scoped Tempo
+        # search. Require a visible branch before admitting the trace to a page.
+        if spans and (model_id is None or _requests(spans, model_id)):
             return {
                 "traceID": trace_id,
                 "startTimeUnixNano": min(span.start for span in spans),
@@ -917,7 +924,7 @@ async def search_request_trace_page(
                 if partial and not any(t["traceID"] == partial for t in candidates):
                     # A newer candidate can shift the unfinished trace out of search.
                     if resumed := await _exact_trace_candidate(
-                        client, base_url, partial
+                        client, base_url, partial, model_id=model_id
                     ):
                         candidates.append(resumed)
                 candidates.sort(
@@ -963,7 +970,7 @@ def _display_span(span: _Span, start: int, parent: Optional[_Span]) -> RequestTr
         role = "engine"
     return RequestTraceSpan(
         id=span.id,
-        parent_id=span.parent_id,
+        parent_id=parent.id if parent else None,
         name=span.name[:160],
         service=span.service[:100],
         role=role,

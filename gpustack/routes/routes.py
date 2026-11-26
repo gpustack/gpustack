@@ -256,6 +256,7 @@ model_routers = [
         "router": request_traces.router,
         "prefix": "/models",
         "tags": ["Models"],
+        "dependencies": _org_owner_only,
     },
     {
         "router": model_instances.router,

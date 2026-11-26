@@ -9,6 +9,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.api.exceptions import (
     BadRequestException,
+    ForbiddenException,
     NotFoundException,
     ServiceUnavailableException,
 )
@@ -35,12 +36,17 @@ from gpustack.observability.request_traces import (
 )
 from gpustack.schemas.model_usage_details import ModelUsageDetails
 from gpustack.schemas.models import Model
-from gpustack.server.deps import PlatformAdminDep, SessionDep
+from gpustack.schemas.principals import PrincipalType
+from gpustack.server.deps import SessionDep, TenantContextDep
 
 
 async def _trace_model(
-    ctx: PlatformAdminDep, session: SessionDep, id: Annotated[int, Path(gt=0)]
+    ctx: TenantContextDep, session: SessionDep, id: Annotated[int, Path(gt=0)]
 ) -> int:
+    if ctx.user.kind == PrincipalType.SYSTEM:
+        raise ForbiddenException(
+            message="Model request traces require a user principal"
+        )
     model = await Model.one_by_id(session, id)
     assert_resource_visible(ctx, model, not_found_message="Model not found")
     return id
@@ -120,7 +126,7 @@ async def get_capabilities(model_id: TraceModelDep) -> RequestTraceCapabilities:
 async def list_traces(
     request: Request,
     model_id: TraceModelDep,
-    ctx: PlatformAdminDep,
+    ctx: TenantContextDep,
     session: SessionDep,
     window: str = "24h",
     q: Optional[str] = None,
@@ -185,7 +191,7 @@ def _decode_cursor(cursor: str, now: int) -> TracePagePosition:
 async def get_trace(
     request: Request,
     model_id: TraceModelDep,
-    ctx: PlatformAdminDep,
+    ctx: TenantContextDep,
     session: SessionDep,
     trace_id: Annotated[str, Path(pattern=f"^{TRACE_ID}$")],
     request_id: Optional[str] = None,

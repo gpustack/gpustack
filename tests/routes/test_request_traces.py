@@ -9,22 +9,33 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from gpustack.api.auth import get_current_user
 from gpustack.api.exceptions import register_handlers
 from gpustack.api.tenant import TenantContext, get_tenant_context
 from gpustack.config.config import Config
+from gpustack.observability import request_traces as tempo_request_traces
 from gpustack.routes import request_traces
-from gpustack.schemas.principals import PrincipalType
+from gpustack.routes.routes import management_router
+from gpustack.schemas.principals import OrgRole, PrincipalType
 from gpustack.server.app import create_app
 from gpustack.server.db import get_session
 
+_TRACE_URL = "/v2/models/42/request-traces"
+_TRACE_ID = "abcd0000000000000000000000000000"
+
+
+@pytest.fixture(scope="module")
+def trace_app():
+    app = FastAPI()
+    app.include_router(management_router)
+    register_handlers(app)
+    return app
+
 
 @pytest.fixture
-def trace_client(monkeypatch):
-    app = FastAPI()
-    app.include_router(request_traces.router, prefix="/models")
-    register_handlers(app)
+def trace_client(monkeypatch, trace_app):
     ctx = TenantContext(
-        user=SimpleNamespace(kind=PrincipalType.USER),
+        user=SimpleNamespace(id=7, kind=PrincipalType.USER),
         is_platform_admin=True,
         current_principal_id=11,
         org_role=None,
@@ -34,16 +45,19 @@ def trace_client(monkeypatch):
         get_trace_query_url=Mock(return_value=None),
         log_otlp_endpoint=None,
     )
-    app.dependency_overrides[get_tenant_context] = lambda: ctx
-    app.dependency_overrides[get_session] = lambda: None
+    trace_app.dependency_overrides[get_current_user] = lambda: ctx.user
+    trace_app.dependency_overrides[get_tenant_context] = lambda: ctx
+    trace_app.dependency_overrides[get_session] = lambda: None
     monkeypatch.setattr(request_traces, "get_global_config", lambda: cfg)
     monkeypatch.setattr(
         request_traces.Model,
         "one_by_id",
         AsyncMock(return_value=SimpleNamespace(owner_principal_id=11)),
     )
-    with TestClient(app) as client:
+    trace_app.state.http_client_no_proxy = None
+    with TestClient(trace_app) as client:
         yield client, ctx, cfg
+    trace_app.dependency_overrides.clear()
 
 
 @pytest.mark.parametrize("tracing", [False, True])
@@ -55,7 +69,7 @@ def test_capabilities_report_trace_availability(trace_client, tracing, logs):
         cfg.get_trace_query_url.return_value = "http://tempo:3200"
     if logs:
         cfg.log_otlp_endpoint = "https://loki.test/otlp/v1/logs"
-    response = client.get("/models/42/request-traces/capabilities")
+    response = client.get(f"{_TRACE_URL}/capabilities")
     assert response.status_code == 200
     assert response.json() == {
         "tracing_enabled": tracing,
@@ -63,17 +77,145 @@ def test_capabilities_report_trace_availability(trace_client, tracing, logs):
     }
 
 
+@pytest.mark.parametrize("suffix", ["/capabilities", "", f"/{_TRACE_ID}"])
 @pytest.mark.parametrize(
-    "suffix", ["/capabilities", "", "/abcd0000000000000000000000000000"]
+    "role,principal_id,personal,is_admin,system,expected",
+    [
+        (OrgRole.OWNER, 11, False, False, None, 200),
+        (OrgRole.OWNER, 12, False, False, None, 404),
+        (OrgRole.MEMBER, 11, False, False, None, 403),
+        (None, 11, True, False, None, 403),
+        (None, 11, False, True, None, 200),
+        (None, 12, False, True, None, 404),
+        (None, None, False, True, None, 200),
+        (None, None, False, False, "worker", 403),
+        (None, None, False, False, "server", 403),
+    ],
 )
-def test_query_routes_check_platform_role_and_model_visibility(trace_client, suffix):
-    client, ctx, _ = trace_client
-    url = "/models/42/request-traces" + suffix
+def test_query_routes_check_role_and_model_visibility(
+    trace_client, suffix, role, principal_id, personal, is_admin, system, expected
+):
+    client, ctx, cfg = trace_client
+    ctx.org_role = role
+    ctx.current_principal_id = principal_id
+    ctx.current_is_personal_scope = personal
+    ctx.is_platform_admin = is_admin
+    if personal:
+        ctx.user.id = principal_id
+    if system:
+        ctx.user.kind = PrincipalType.SYSTEM
+        ctx.user.name = "system/worker/test"
+        ctx.user.id = None if system == "server" else 7
+    # Capabilities is available without Tempo. The list and detail resolve
+    # caller/model visibility before checking the missing Tempo configuration.
+    client.app.state.http_client_no_proxy = object()
+    if expected == 200 and suffix != "/capabilities":
+        expected = 503
+    assert client.get(_TRACE_URL + suffix).status_code == expected
+    if expected in (403, 404):
+        cfg.get_trace_query_url.assert_not_called()
+
+
+@pytest.mark.parametrize("view", ["list", "detail"])
+def test_owner_only_gets_own_branch_of_exact_trace(trace_client, monkeypatch, view):
+    client, ctx, cfg = trace_client
     ctx.is_platform_admin = False
-    assert client.get(url).status_code == 403
-    ctx.is_platform_admin = True
-    ctx.current_principal_id = 12
-    assert client.get(url).status_code == 404
+    ctx.org_role = OrgRole.OWNER
+    cfg.effective_trace_otlp_endpoint = "tempo:4317"
+    cfg.get_trace_query_url.return_value = "http://tempo:3200"
+    client.app.state.http_client_no_proxy = object()
+    now = time.time_ns()
+    own_span_id = "0000000000000002"
+    foreign_span_id = "0000000000000001"
+
+    def span(span_id, parent_id, model_id, request_id):
+        return {
+            "spanId": span_id,
+            "parentSpanId": parent_id,
+            "name": request_id,
+            "startTimeUnixNano": str(now - 500_000_000),
+            "endTimeUnixNano": str(now),
+            "attributes": [
+                {"key": "gpustack.model_id", "value": {"intValue": model_id}},
+                {"key": "gpustack.request_id", "value": {"stringValue": request_id}},
+            ],
+        }
+
+    payload = {
+        "batches": [
+            {
+                "resource": {
+                    "attributes": [
+                        {
+                            "key": "service.name",
+                            "value": {"stringValue": "gpustack.server"},
+                        },
+                    ],
+                },
+                "scopeSpans": [
+                    {
+                        "spans": [
+                            span(foreign_span_id, None, 99, "foreign-request"),
+                            span(own_span_id, foreign_span_id, 42, "own-request"),
+                        ],
+                    },
+                ],
+            }
+        ]
+    }
+
+    async def get_tempo(_client, url, params=None):
+        if url.endswith("/api/search"):
+            assert "span.gpustack.model_id=42" in params["q"]
+            assert 'resource.gpustack.model_id="42"' in params["q"]
+            return {"traces": []}
+        assert url == f"http://tempo:3200/api/traces/{_TRACE_ID}"
+        return payload
+
+    monkeypatch.setattr(tempo_request_traces, "_tempo_get", get_tempo)
+    session = SimpleNamespace(
+        exec=AsyncMock(return_value=[("own-request", 8, True, 9, 10)])
+    )
+    client.app.dependency_overrides[get_session] = lambda: session
+
+    detail_url = f"{_TRACE_URL}/{_TRACE_ID}"
+    response = (
+        client.get(_TRACE_URL, params={"q": _TRACE_ID})
+        if view == "list"
+        else client.get(detail_url)
+    )
+    assert response.status_code == 200, response.text
+    result = response.json()
+    if view == "list":
+        (row,) = result["items"]
+    else:
+        row = result["request"]
+        (own_span,) = result["spans"]
+        assert own_span["id"] == own_span_id
+        assert own_span["parent_id"] is None
+        assert result["span_count"] == 1
+        assert (
+            client.get(
+                detail_url, params={"entry_span_id": foreign_span_id}
+            ).status_code
+            == 404
+        )
+        assert (
+            client.get(detail_url, params={"request_id": "foreign-request"}).status_code
+            == 404
+        )
+    assert row["request_id"] == "own-request"
+    assert row["entry_span_id"] == own_span_id
+    assert row["request_metrics"] == {
+        "ttft_ms": 8,
+        "input_tokens": 9,
+        "output_tokens": 10,
+    }
+    session.exec.assert_awaited_once()
+    statement = session.exec.await_args.args[0].compile()
+    assert statement.params["model_id_1"] == 42
+    assert statement.params["owner_principal_id_1"] == 11
+    assert statement.params["request_id_1"] == ["own-request"]
 
 
 def test_custom_trace_query_preserves_exact_time_bounds(trace_client, monkeypatch):
@@ -86,9 +228,7 @@ def test_custom_trace_query_preserves_exact_time_bounds(trace_client, monkeypatc
     end = int(time.time()) - 300
     start = end - 23
 
-    response = client.get(
-        "/models/42/request-traces", params={"start": start, "end": end}
-    )
+    response = client.get(_TRACE_URL, params={"start": start, "end": end})
     assert response.status_code == 200
     position = search.await_args.kwargs["position"]
     assert (position.start, position.end) == (start, end)
@@ -118,9 +258,7 @@ def test_trace_list_accepts_copied_identifiers(
     search = AsyncMock(return_value=request_traces.RequestTracePage(items=[]))
     monkeypatch.setattr(request_traces, "search_request_trace_page", search)
 
-    response = client.get(
-        "/models/42/request-traces", params={"q": identifier, "page_size": 10}
-    )
+    response = client.get(_TRACE_URL, params={"q": identifier, "page_size": 10})
     assert response.status_code == 200
     assert search.await_args.kwargs["identifier"] == expected
 
@@ -133,9 +271,7 @@ def test_unknown_identifier_returns_empty_page(trace_client, monkeypatch):
     search = AsyncMock(return_value={"traces": []})
     monkeypatch.setattr("gpustack.observability.request_traces._tempo_get", search)
 
-    response = client.get(
-        "/models/42/request-traces", params={"q": "chatcmpl-example", "page_size": 10}
-    )
+    response = client.get(_TRACE_URL, params={"q": "chatcmpl-example", "page_size": 10})
     assert response.status_code == 200
     assert response.json()["items"] == []
     assert response.json()["next_cursor"] is None
@@ -153,7 +289,7 @@ def test_trace_list_defaults_to_a_single_page(trace_client, monkeypatch):
     search = AsyncMock(return_value={"traces": []})
     monkeypatch.setattr("gpustack.observability.request_traces._tempo_get", search)
 
-    response = client.get("/models/42/request-traces")
+    response = client.get(_TRACE_URL)
 
     assert response.status_code == 200
     page = response.json()
@@ -173,11 +309,13 @@ def test_trace_queries_use_the_dedicated_tls_client(
     cfg.get_trace_query_url.return_value = "https://tempo:3200"
     client.app.state.http_client_no_proxy = object()
     tls_client = object() if credentials_available else None
-    client.app.state.tempo_query_client = tls_client
+    monkeypatch.setattr(
+        client.app.state, "tempo_query_client", tls_client, raising=False
+    )
     search = AsyncMock(return_value=request_traces.RequestTracePage(items=[]))
     monkeypatch.setattr(request_traces, "search_request_trace_page", search)
 
-    response = client.get("/models/42/request-traces", params={"page_size": 10})
+    response = client.get(_TRACE_URL, params={"page_size": 10})
 
     if credentials_available:
         assert response.status_code == 200
@@ -241,12 +379,12 @@ def test_trace_search_supports_the_monitoring_presets(
     search = AsyncMock(return_value=request_traces.RequestTracePage(items=[]))
     monkeypatch.setattr(request_traces, "search_request_trace_page", search)
 
-    response = client.get("/models/42/request-traces", params={"window": window})
+    response = client.get(_TRACE_URL, params={"window": window})
     assert response.status_code == 200
     position = search.await_args.kwargs["position"]
     assert position.end - position.start == seconds
 
-    response = client.get("/models/42/request-traces", params={"window": "8d"})
+    response = client.get(_TRACE_URL, params={"window": "8d"})
     assert response.status_code == 400
     assert search.await_count == 1
 
@@ -264,7 +402,7 @@ def test_invalid_trace_range_never_queries_tempo(trace_client, monkeypatch, offs
         for key, offset in zip(("start", "end"), offsets)
         if offset is not None
     }
-    response = client.get("/models/42/request-traces", params=params)
+    response = client.get(_TRACE_URL, params=params)
     assert response.status_code == 400
     search.assert_not_awaited()
 
@@ -277,7 +415,7 @@ def test_cursor_pins_24_hour_window(trace_client, monkeypatch):
     query = AsyncMock(return_value=request_traces.RequestTracePage(items=[]))
     monkeypatch.setattr(request_traces, "search_request_trace_page", query)
     expected_now = int(time.time()) - 60
-    url = "/models/42/request-traces"
+    url = _TRACE_URL
     with monkeypatch.context() as patch:
         patch.setattr(
             request_traces, "time", SimpleNamespace(time=lambda: expected_now)
@@ -316,7 +454,7 @@ def test_dense_trace_cursor_fits_an_8_kib_request_line(trace_client, monkeypatch
         partial="b" * 32,
         offset=7,
     )
-    url = "/models/42/request-traces"
+    url = _TRACE_URL
     response = client.get(url, params={"cursor": position.encode()})
     assert response.status_code == 200
     assert len(b"GET " + response.request.url.raw_path + b" HTTP/1.1\r\n") < 8192
@@ -334,10 +472,7 @@ def test_trace_cursor_rejects_invalid_packed_ids(trace_client, seen):
     payload = {"start": before - 300, "end": before, "before": before, "seen": seen}
     cursor = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
 
-    assert (
-        client.get("/models/42/request-traces", params={"cursor": cursor}).status_code
-        == 400
-    )
+    assert client.get(_TRACE_URL, params={"cursor": cursor}).status_code == 400
 
 
 @pytest.mark.parametrize("view", ["page", "detail"])
@@ -377,7 +512,7 @@ def test_trace_views_use_gateway_request_metrics(trace_client, monkeypatch, view
     )
     client.app.dependency_overrides[get_session] = lambda: session
 
-    url = "/models/42/request-traces"
+    url = _TRACE_URL
     params = {}
     if view == "detail":
         monkeypatch.setattr(
@@ -455,7 +590,7 @@ def test_native_trace_detail_selects_the_entry_without_querying_usage(
     monkeypatch.setattr(request_traces, "get_request_trace", lookup)
     session = SimpleNamespace(exec=AsyncMock())
     client.app.dependency_overrides[get_session] = lambda: session
-    url = f"/models/42/request-traces/{trace_id}"
+    url = f"{_TRACE_URL}/{trace_id}"
 
     response = client.get(
         url, params={"entry_span_id": entry_span_id.upper(), "request_id": "Tenant/001"}

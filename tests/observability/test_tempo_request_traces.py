@@ -887,6 +887,56 @@ def _paged_tempo_client(candidates, traces):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("lookup", ["identifier", "cursor"])
+async def test_foreign_trace_cannot_advance_the_model_cursor(monkeypatch, lookup):
+    monkeypatch.setattr(request_traces, "_IDENTIFIER_SEARCH_BATCH_SIZE", 1)
+    monkeypatch.setattr(request_traces, "_TRACE_DETAIL_BATCH_SIZE", 1)
+    own = _candidate(1, 102 * _NS)
+    (own_batch,) = _candidate_batches(own)
+    own_span = own_batch["scopeSpans"][0]["spans"][0]
+    own_span["attributes"].extend(_attributes(**{"gpustack.request_id": _TRACE}))
+    foreign_batch = _span(
+        "gpustack.worker",
+        2,
+        None,
+        "POST inference proxy",
+        102,
+        2,
+        **{"gpustack.model_id": 78, "gpustack.request_id": _OTHER_REQUEST},
+    )
+    foreign_span = foreign_batch["scopeSpans"][0]["spans"][0]
+    foreign_span["startTimeUnixNano"] = str(102 * _NS + 500_000_000)
+    client = _paged_tempo_client([own], {"1": [own_batch], _TRACE: [foreign_batch]})
+    position = TracePagePosition(
+        start=1,
+        end=200,
+        before=103,
+        partial=_TRACE if lookup == "cursor" else None,
+    )
+
+    page = await search_request_trace_page(
+        client,
+        "http://tempo",
+        42,
+        position=position,
+        page_size=1,
+        identifier=_TRACE if lookup == "identifier" else None,
+        outcome=None,
+        instance_id=None,
+        no_engine=False,
+    )
+
+    assert [row.trace_id for row in page.items] == ["1"]
+    assert page.next_cursor
+    next_position = TracePagePosition.model_validate_json(
+        base64.urlsafe_b64decode(page.next_cursor)
+    )
+    assert next_position.before == 103
+    assert next_position.seen == ["1"]
+    assert next_position.partial is None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("budget, expected", [(100, ["1"]), (10, [])])
 async def test_filtered_page_scans_more_candidates_within_budget(
     monkeypatch, budget, expected
