@@ -115,11 +115,22 @@ warning.
 | `GPUSTACK_HIGRESS_EXT_AUTH_TIMEOUT_MS`                | Gateway authentication call timeout, in milliseconds.    | `gateway_plugin.gpustack-ext-auth.config.authz.timeout`    | `30000`                              | Server     |
 | `GPUSTACK_GATEWAY_AI_STATISTICS_PLUGIN_CONTENT_TYPES` | Comma-separated content types metered for token usage.   | `gateway_plugin.ai-statistics.config.enable_content_types` | `application/json,text/event-stream` | Server     |
 
+### Inference Observability Configuration
+
+| Variable | Description | Default | Scope |
+| --- | --- | --- | --- |
+| `GPUSTACK_DISABLE_TRACING` | Disable GPUStack-managed trace export and embedded Tempo. | `false` | Server & Worker |
+| `GPUSTACK_TRACE_OTLP_ENDPOINT` | External OTLP/gRPC `host:port` for trace export. Setting it replaces the default embedded Tempo receiver. | — | Server & Worker |
+| `GPUSTACK_TRACE_ADVERTISE_ENDPOINT` | OTLP/gRPC `host:port` advertised in new Worker registration commands. Set it when Workers cannot reach the default ingest address. | — | Server |
+| `GPUSTACK_TRACE_QUERY_URL` | Tempo HTTP(S) base URL for querying traces in deployment details. | — | Server |
+| `GPUSTACK_LOG_OTLP_ENDPOINT` | Full OTLP/HTTP logs ingest URL, such as `http://<collector-host>:4318/v1/logs`. Setting it enables structured log export. | — | Server & Worker |
+| `GPUSTACK_LOG_REDACT_PATTERNS` | A JSON array of non-empty RE2 patterns to mask matches in exported logs. See [Redact Exported Logs](user-guide/observability.md#redact-exported-logs). | `[]` | Server & Worker |
+
 ### Trace Storage Configuration
 
-| Variable | Description | Default | Applies to |
+| Variable | Description | Default | Scope |
 | --- | --- | --- | --- |
-| `GPUSTACK_BUILTIN_TEMPO_MAX_RETAINED_BYTES` | Capacity of searchable blocks in built-in Tempo. Set a positive integer in bytes. Invalid values log a warning and use the default. See [Inference Logs and Traces](user-guide/observability.md#inference-logs-and-traces). | `30000000000` | Server |
+| `GPUSTACK_BUILTIN_TEMPO_RETENTION` | Block retention for embedded Docker Tempo. Use a positive Go duration such as `72h`. An invalid value logs a warning and falls back to `168h`. See [Inference Logs and Traces](user-guide/observability.md#inference-logs-and-traces). | `168h` | Server |
 
 ### Usage Tracking Configuration
 

@@ -88,16 +88,34 @@ If you need to customize Higress parameters, refer to the [Higress documentation
 
 ### Observability
 
-When log export is enabled, Alloy stores Kubernetes log read positions in an
-`emptyDir`. Replacing the Alloy Pod, including during a rollout or reschedule,
-can replay logs that Kubernetes still retains.
+Setting `logging.endpoint` enables the release's Alloy Deployment using
+`grafana/alloy:v1.22.0`. The chart mounts the Alloy ConfigMap at
+`/etc/gpustack/logging`. Alloy stores Kubernetes log read positions in an
+`emptyDir`. Replacing its Pod can replay logs that Kubernetes still retains.
 
-For built-in Tempo query mTLS, a live Helm upgrade reuses the generated Secret.
-Offline rendering creates fresh certificates because it cannot read the Secret
-from the cluster. For GitOps, create a Secret with `ca.crt`, `server.crt`,
-`server.key`, `client.crt`, and `client.key`, then set
-`tracing.tempo.queryTLSSecretName`. To renew certificates, sign them with the
-same CA, create a new Secret, and update the Helm value to roll the Server Pods.
+With tracing enabled and `tracing.endpoint` empty, the Server release runs a
+separate `grafana/tempo:2.10.10` Deployment. It reads the mounted ConfigMap at
+`/etc/tempo/config.yaml` and stores the WAL and blocks under `/var/tempo`.
+By default, Tempo uses an `emptyDir` and replacing its Pod discards traces stored
+there. Set `tracing.tempo.existingClaim` to an existing PVC in the
+release namespace to retain traces across Pod replacements. The volume must be
+writable by UID or group `10001`. The default Tempo volume works without a
+StorageClass. Upgrading from a release that ran Tempo in a Server Pod leaves
+the old `<data_dir>/tempo` files on the Server volume and starts Tempo on its
+own volume.
+
+Tempo removes aged blocks during periodic cleanup. Total disk use depends on
+ingest volume, WAL, compaction, and blocks pending deletion.
+
+All Server Pods query Tempo via
+`https://<release>-tempo.<namespace>.svc.<cluster-domain>:3200` with mTLS, including
+when there is one Server. Trace producers send OTLP/gRPC to the Tempo Service on
+port `4317`. A live Helm upgrade reuses the generated query Secret. Offline
+rendering generates fresh certificates. For GitOps, create a Secret with
+`ca.crt`, `server.crt`, `server.key`, `client.crt`, and `client.key`, then set
+`tracing.tempo.queryTLSSecretName`. The server certificate must cover the full
+Tempo Service DNS name. To renew certificates, sign them with the same CA,
+create a new Secret, and update the Helm value to roll the Tempo and Server Pods.
 
 ### GPUStack Helm Chart Parameters
 
@@ -126,9 +144,14 @@ same CA, create a new Secret, and update the Helm value to roll the Server Pods.
 | server.externalDatabaseURL               | null                              | External database connection string                                       |
 | server.dataVolume.hostPath               | null                              | Host path for data volume; if set, uses hostPath instead of PVC           |
 | server.dataVolume.size                   | `100Gi`                           | PVC storage request per Server replica. An explicit empty value falls back to `10Gi`. |
-| tracing.tempo.retention                  | `168h`                            | Maximum age of searchable blocks in built-in Tempo. Use a positive Go duration such as `72h`. Invalid values fall back to `168h`. |
-| tracing.tempo.maxRetainedBytes           | `30000000000`                     | Total capacity of searchable blocks in built-in Tempo, in bytes. Tempo evicts the oldest blocks when this limit is exceeded, even if they have not expired. |
-| tracing.tempo.queryTLSSecretName          | `""`                              | Existing built-in Tempo query mTLS Secret for a multi-replica Server release. |
+| logging.endpoint                         | `""`                              | Full OTLP/HTTP logs ingest URL. A value enables the release's Alloy Deployment. |
+| tracing.enabled                          | true                              | Enable GPUStack-managed tracing. |
+| tracing.endpoint                         | `""`                              | OTLP/gRPC `host:port` for traces. A value overrides built-in Tempo. Worker-only releases need an explicit receiver address. |
+| tracing.queryURL                         | `""`                              | Tempo HTTP(S) base URL for trace queries. The built-in Service URL is used by default when the release deploys Tempo. |
+| tracing.advertiseEndpoint                | `""`                              | Override the OTLP/gRPC address in generated Worker registration commands. |
+| tracing.tempo.retention                  | `168h`                            | Built-in Tempo block retention. Use a positive Go duration such as `72h`. Invalid or empty values use `168h`. |
+| tracing.tempo.existingClaim               | `""`                              | Existing PVC for built-in Tempo. An empty value selects `emptyDir`. |
+| tracing.tempo.queryTLSSecretName          | `""`                              | Existing mTLS Secret for built-in Tempo queries. |
 | server.apiPort                           | 30080                             | API service port                                                          |
 | server.metricsPort                       | 10161                             | Metrics port                                                              |
 | server.environmentConfig                 | {}                                | Extra environment variables for GPUStack server                           |
@@ -212,6 +235,10 @@ helm install -n gpustack-system gpustack-server oci://registry-1.docker.io/gpust
 One value covers every image. `higress-core` reads `global.hub` natively (the Istio convention it inherits), and the `gpustack-operator` chart — along with the Kueue / NFD / CSI charts vendored under it — accepts it as an alias for the `global.imageRegistry` its own tree uses.
 
 The `image.repository` values include the namespace (e.g. `gpustack/gpustack`), so `global.hub` only needs the registry host. Mirrors that flatten namespaces are not covered by it: those need the per-image `repository` values overridden individually.
+
+Tempo and Alloy also use `global.hub`, which defaults to `docker.io`. For a
+private registry, mirror `grafana/tempo:2.10.10` and `grafana/alloy:v1.22.0` under
+their existing `grafana` namespace.
 
 > `global.hub` reaches the `gpustack-operator` sub-chart tree through an alias that chart added in **0.8.7**. When this chart is pinned to an older operator — check the dependency version in `Chart.yaml` — a mirrored install with `worker.enabled=true` needs one more value, or the operator, Kueue, NFD and the CSI drivers keep pulling from Docker Hub:
 >

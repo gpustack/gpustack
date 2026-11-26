@@ -105,23 +105,26 @@ sudo docker compose -f docker-compose.external-observability.yaml up -d
 
 ## 推論ログとトレース { #inference-logs-and-traces }
 
-レスポンスヘッダーの `X-GPUStack-Request-Id` を使って、推論ログとトレースを検索できます。ログまたはトレースを構成すると、組み込みゲートウェイがこのヘッダーを追加します。Docker のサーバーと Helm のサーバーリリースは、デフォルトで組み込み Tempo にトレースをエクスポートします。ログは別途設定し、ログ用エンドポイントを指定します。
+レスポンスヘッダーの `X-GPUStack-Request-Id` を使って、推論ログとトレースを検索できます。ログまたはトレースを構成すると、組み込みゲートウェイがこのヘッダーを追加します。Docker のサーバーは、デフォルトで組み込み Tempo にトレースをエクスポートします。Helm のサーバーリリースでは、デフォルトで専用の Tempo ワークロードがデプロイされます。ログは別途設定し、ログ用エンドポイントを指定します。
 
 | トレースの送信先・設定 | Docker | Helm |
 | --- | --- | --- |
 | 組み込み Tempo | サーバーでデフォルト | サーバーリリースでデフォルト |
 | 外部の OTLP/gRPC レシーバー | `GPUSTACK_TRACE_OTLP_ENDPOINT` を設定 | `tracing.endpoint` を設定 |
-| 組み込み Tempo の保持期間（デフォルトは `168h`） | `GPUSTACK_BUILTIN_TEMPO_RETENTION` を設定 | `tracing.tempo.retention` を設定 |
-| 組み込み Tempo の容量（デフォルトは 30 GB） | `GPUSTACK_BUILTIN_TEMPO_MAX_RETAINED_BYTES` を設定 | `tracing.tempo.maxRetainedBytes` を設定 |
+| 組み込み Tempo のブロック保持期間（デフォルトは `168h`） | `GPUSTACK_BUILTIN_TEMPO_RETENTION` を設定 | `tracing.tempo.retention` を設定 |
 | 無効 | `GPUSTACK_DISABLE_TRACING=true` を設定 | `tracing.enabled=false` を設定 |
 
-組み込み Tempo は、保持期間と容量のうち先に達した上限に従ってデータを削除します。定期クリーンアップでは、デフォルトで 7 日より古いブロックを削除します。検索可能なブロックが設定容量を超えた場合は、合計サイズが上限内に収まるまで古いブロックから削除します。容量はバイト単位の正の整数で指定します。例えば、12 GB なら `12000000000` を設定します。書き込み先行ログ（WAL）、コンパクション、削除待ちのブロックに必要なディスク容量も確保してください。
+Tempo は定期クリーンアップで保持期間を過ぎたブロックを削除します。保持期間はブロックの経過時間を基準にします。ディスクの使用量は、取り込まれるトレースの量や、書き込み先行ログ（WAL）、コンパクション、削除待ちのブロックに必要な容量によって変わります。
 
-デプロイの詳細画面にある `Request Tracing` タブでは、最初に直近 24 時間を検索します。結果をページ単位で確認するか、GPUStack や Tempo に表示される Request ID または Trace ID をそのまま貼り付けて検索できます。ログのエクスポートを設定している場合は、リクエスト詳細から Request ID をコピーし、ログ基盤で検索してください。外部 Tempo を使う場合は、`GPUSTACK_TRACE_QUERY_URL` または `tracing.queryURL` でクエリーエンドポイントを設定します。
+保持ブロックの必要容量は、1 秒あたりに取り込むトレース件数に、トレース 1 件あたりのディスク上の平均ブロックサイズ（バイト単位）と保持秒数を掛けて見積もります。計算例として、毎秒 10 リクエスト、サンプリング率 100%、サンプリングしたリクエストあたりトレース 1 件、トレース 1 件あたりのブロックサイズを 1,000 バイトと仮定します。ブロックの容量は 1 日あたり約 864 MB、7 日間で約 6.05 GB です。仮に 50% の余裕を加えると約 9.1 GB です。実際の利用を代表するワークロードで、トレース 1 件あたりのブロックサイズと WAL、コンパクション、削除待ちのブロックのピーク使用量を計測し、必要容量と余裕を決めてください。
+
+デプロイの詳細画面にある `Request Tracing` タブでは、最初に直近 24 時間を検索します。トレースの表示には、組織のオーナーロールまたはプラットフォーム管理者権限が必要です。GPUStack はデプロイのメトリクスと同じモデルの参照範囲のルールを適用します。結果をページ単位で確認するか、GPUStack や Tempo に表示される Request ID または Trace ID をそのまま貼り付けて検索できます。ログのエクスポートを設定している場合は、リクエスト詳細から Request ID をコピーし、ログ基盤で検索してください。外部 Tempo を使う場合は、`GPUSTACK_TRACE_QUERY_URL` または `tracing.queryURL` でクエリーエンドポイントを設定します。
 
 ログのエクスポートを有効にすると、サーバーとワーカーは JSON 形式のログをコンテナーのコンソールに出力します。Alloy はこのログと、対応する形式のエンジンログを読み取ります。破棄されたレコードを確認するには、Alloy の `otelcol_processor_filter_logs_filtered_total` メトリクスを `engine_format` または `higress_format` コンポーネントで確認します。エンジンのフィルターは、認識できるログプレフィックスを持たない単独のプレーンテキスト行を除外します。
 
-各トレースコンポーネントは、選択したレシーバーにスパンを直接送信します。ログエンドポイントには、ログをエクスポートする GPUStack コンテナーから到達できる必要があります。トレースエンドポイントには、トレースをエクスポートするサーバー、ワーカー、ゲートウェイ、推論コンテナーから到達できる必要があります。トレースの接続には平文の gRPC を使うため、信頼できるネットワークのアドレスを指定してください。外部レシーバーに切り替えたりトレースを無効にしたりすると、組み込み Tempo は停止します。既存のトレースファイルは、サーバーのデータボリュームのライフサイクルに従います。
+対応するエクスポートが有効で、エンジンの設定が許可している場合、GPUStack は vLLM `0.32.0` または SGLang `0.5.22` を使用する互換性のある Runner イメージに可観測性の設定を自動で追加します。バージョンチェックは自動設定に適用されます。ほかのイメージやバージョンでテレメトリーを使うには、エンジン側で設定してください。
+
+各トレースコンポーネントは、選択したレシーバーにスパンを直接送信します。ログエンドポイントには、ログをエクスポートするコンポーネントから到達できる必要があります。トレースエンドポイントには、トレースをエクスポートするサーバー、ワーカー、ゲートウェイ、推論コンテナーから到達できる必要があります。取り込みには平文の gRPC を使うため、信頼できるネットワークのアドレスを指定してください。外部レシーバーに切り替えたりトレースを無効にしたりすると、組み込み Tempo は停止します。
 
 ### Docker の設定 { #configure-docker }
 
@@ -129,7 +132,7 @@ sudo docker compose -f docker-compose.external-observability.yaml up -d
 2. 外部レシーバーにトレースを送る場合は、サーバーと個別に起動する各ワーカーに `GPUSTACK_TRACE_OTLP_ENDPOINT=<collector-host>:4317` を設定します。リモートワーカーで組み込み Tempo を使う場合は、[既存の Docker ワーカーでトレースを有効にする](../upgrade/cluster.md#enable-tracing-on-existing-docker-workers)を参照してください。
 3. `<collector-host>` をコンテナーから到達できる名前またはアドレスに置き換えます。`docker run -e` または Compose ファイルの `environment` で変数を渡し、コンテナーを再作成します。
 
-組み込み Tempo の容量を変更するには、サーバーに `GPUSTACK_BUILTIN_TEMPO_MAX_RETAINED_BYTES` を設定し、コンテナーを再作成します。
+Docker は GPUStack コンテナー内で Tempo と Alloy を実行します。Tempo は WAL とブロックを `<data_dir>/tempo` 配下に保存し、ループバックでクエリーを受け付けます。トレースファイルは、サーバーのデータボリュームのライフサイクルに従います。ブロックの保持期間を変更するには、サーバーに `GPUSTACK_BUILTIN_TEMPO_RETENTION` を設定し、コンテナーを再作成します。
 
 ### Helm の設定 { #configure-helm }
 
@@ -146,11 +149,13 @@ sudo docker compose -f docker-compose.external-observability.yaml up -d
 
 組み込み Higress ゲートウェイは、デフォルトで JSON 形式のアクセスログを書き込みます。形式を変えるには、Helm values の `higress-core.meshConfig.accessLogEncoding` と `higress-core.meshConfig.accessLogFormat` を設定します。
 
-Chart は、デフォルトでサーバーレプリカごとに `100Gi` のデータ PVC を要求します。組み込み Tempo は最初のサーバーレプリカのデータボリュームを使います。このボリュームには、有効な場合の PostgreSQL を含め、ほかのサーバーデータも保存されます。`30 GB` の保持上限が対象とするのは、検索可能な Tempo ブロックです。`server.dataVolume.size` を選んだり `server.dataVolume.hostPath` を使ったりする場合は、Tempo の WAL とコンパクション用ファイルを含め、ボリューム上の全データに必要な容量を確保してください。上限を変えるには、サーバーリリースの Helm values に `tracing.tempo.maxRetainedBytes` を設定し、リリースをアップグレードします。
+Tempo と Alloy のイメージは `global.hub` を使用します。デフォルトは `docker.io` です。プライベートレジストリーへミラーリングする場合は、`grafana/tempo` と `grafana/alloy` のリポジトリーパスを維持してください。
 
-サーバーレプリカが 1 つの場合、組み込み Tempo はループバックインターフェースでのみクエリーを受け付けます。複数レプリカでは、Chart がクエリーサービスの相互 TLS 用 Secret を用意し、サーバー Pod がその Secret を使って Tempo に問い合わせます。ワーカーと推論エンジンは引き続き OTLP ポートからトレースを送信します。
+チャートはサーバー Pod から独立して Tempo を実行し、デフォルトで `/var/tempo` に `emptyDir` をマウントします。Tempo Pod を置き換えると、このボリュームに保存したトレースは失われます。Pod の置き換え後もトレースを保持するには、リリースと同じ名前空間にある既存の PVC を `tracing.tempo.existingClaim` に指定します。ボリュームへの書き込みを UID またはグループ `10001` に許可してください。ブロックの保持期間を変更するには、`tracing.tempo.retention` を設定してリリースをアップグレードします。 保持期間が空または無効な場合は `168h` が使われます。
 
-複数レプリカの GitOps デプロイでは、サーバーリリースの名前空間に Secret を作成し、その名前を `tracing.tempo.queryTLSSecretName` に設定します。Secret には `ca.crt`、`server.crt`、`server.key`、`client.crt`、`client.key` を含めます。サーバー証明書は `<release>-tempo.<namespace>.svc.<cluster-domain>` をカバーする必要があります。サーバー証明書とクライアント証明書の更新には同じ CA を使います。更新した証明書でサーバー Pod を順次置き換えるには、新しい Secret を作成して Helm values の名前を更新します。
+すべてのサーバー Pod は、サーバーが 1 つのリリースでも、相互 TLS を使って `https://<release>-tempo.<namespace>.svc.<cluster-domain>:3200` の組み込み Tempo に問い合わせます。チャートはクエリー用 TLS Secret をデフォルトで作成します。ワーカーと推論エンジンは Service の OTLP/gRPC ポート `4317` にトレースを送信します。
+
+GitOps デプロイでは、サーバーリリースの名前空間に Secret を作成し、その名前を `tracing.tempo.queryTLSSecretName` に設定します。Secret には `ca.crt`、`server.crt`、`server.key`、`client.crt`、`client.key` を含めます。サーバー証明書は `<release>-tempo.<namespace>.svc.<cluster-domain>` をカバーする必要があります。サーバー証明書とクライアント証明書の更新には同じ CA を使います。新しい Secret を作成して Helm values の名前を更新すると、Tempo とサーバーの Pod が新しい証明書で更新されます。
 
 トレースのエクスポート先を変更した後は、稼働中のモデルインスタンスを再起動するか、再デプロイします。
 

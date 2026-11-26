@@ -123,6 +123,7 @@ gpustack start [OPTIONS]
 | `--saml-sp-attribute-prefix` değer               | (boş)                                          | --external-auth-\* ile belirtilen öznitelikleri almak için SAML servis sağlayıcısı öznitelik öneki. |
 | `--gateway-concurrency` değer                    | `16`                                             | Yerleşik ağ geçidinin eş zamanlı bağlantı sayısı. |
 | `--disable-builtin-observability`                | `False`                                          | Yerleşik Grafana ve Prometheus servislerini devre dışı bırakır. |
+| `--trace-query-url` value | (boş) | Dağıtım ayrıntılarından Tempo'yu sorgulamak için HTTP(S) temel URL'si. |
 | `--builtin-prometheus-port` değer                | `19090`                                          | Yerleşik Prometheus servisinin portu. |
 | `--builtin-grafana-port` değer                   | `13000`                                          | Yerleşik Grafana servisinin portu. |
 | `--prometheus-url` değer                         | (boş)                                          | Sorgulanacak harici Prometheus'un temel URL'si. Ayarlanmazsa etkin olan yerleşik servis kullanılır. Gözlemlenebilirliği kendi yığınına devreden bir dağıtımda metriklere bağlı özellikleri (model ve PD panoları, bant genişliği öz denetimi) çalışır tutmak için ayarlayın. |

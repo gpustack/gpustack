@@ -20,6 +20,12 @@ Aşağıdaki yükseltme talimatları yalnızca Helm aracılığıyla dağıtıla
 
     Harici bir veritabanı (`server.externalDatabaseURL`) kullanıyorsanız, bunun yerine veritabanı sağlayıcınızın yedekleme prosedürünü izleyin.
 
+## Helm yükseltmelerinde iz depolama { #trace-storage-on-helm-upgrades }
+
+Yerleşik Tempo ayrı bir iş yükü olarak çalışır. Daha önce Tempo'nun Sunucu Pod'u içinde çalıştığı bir sürümü yükselttiğinizde yeni Tempo iş yükü kendi birimini kullanır. Helm, eski `<data_dir>/tempo` dosyalarını Sunucu veri biriminde bırakır. Geçmiş izleri korumanız gerekiyorsa bu dosyaları ayrıca yedekleyin.
+
+Yeni Tempo Pod'u varsayılan olarak `emptyDir` kullanır ve her Pod değişiminde boş iz depolamasıyla başlar. Sonraki Pod değişimlerinde izleri korumak için yükseltmeden önce `tracing.tempo.existingClaim` değerini mevcut bir PVC'ye ayarlayın. Bkz. [Helm'i Yapılandırma](../user-guide/observability.md#configure-helm).
+
 ## Sürümü Yükseltme { #upgrade-the-release }
 
 Yükseltmenin bilinen, tekrarlanabilir bir sürüme ulaşması için hedef sürümü her zaman `--version <chart-version>` ile sabitleyin (chart sürümü GPUStack sürümüyle eşleşir, örneğin `2.2.0`) ve başlangıçta kullandığınız aynı `-f values.yaml` (ve/veya `--set`) işaretleriyle yükleme değerlerini yeniden kullanın ya da daha önce uygulanan değerleri korumak için `--reuse-values` kullanın. Sürüm adı, kurulum sırasında izlediğiniz dokümana bağlıdır: eski talimatlarda `gpustack`, güncel olanlarda `gpustack-server` kullanılır. Bu nedenle aşağıdaki komut, adı ad alanındaki StatefulSet'lerin `meta.helm.sh/release-name` ek açıklamalarından otomatik olarak türetir (GPUStack kümeleri aracılığıyla kaydedilen yalnızca çalışan sürümleri StatefulSet'e sahip olmadığından desenle dışlanır) ve yalnızca tam olarak bir eşleşen sürüm bulunduğunda yükseltmeyi çalıştırır:

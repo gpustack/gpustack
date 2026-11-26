@@ -105,23 +105,26 @@ If you already have an external Prometheus/Grafana stack, you can configure it m
 
 ## Inference Logs and Traces
 
-Use the `X-GPUStack-Request-Id` response header to look up inference logs and traces. The bundled gateway adds this header when logging or tracing is configured. Docker servers and Helm server releases export traces to built-in Tempo by default. Log export is independent and requires a log endpoint.
+Use the `X-GPUStack-Request-Id` response header to look up inference logs and traces. The bundled gateway adds this header when logging or tracing is configured. Docker servers export traces to embedded Tempo by default. Helm Server releases deploy a dedicated Tempo workload by default. Log export is independent and requires a log endpoint.
 
-| Trace destination | Docker | Helm |
+| Trace destination or setting | Docker | Helm |
 | --- | --- | --- |
 | Built-in Tempo | Default on the Server | Default in a Server release |
 | External OTLP/gRPC receiver | Set `GPUSTACK_TRACE_OTLP_ENDPOINT` | Set `tracing.endpoint` |
-| Built-in Tempo retention age (default `168h`) | Set `GPUSTACK_BUILTIN_TEMPO_RETENTION` | Set `tracing.tempo.retention` |
-| Built-in Tempo capacity (default 30 GB) | Set `GPUSTACK_BUILTIN_TEMPO_MAX_RETAINED_BYTES` | Set `tracing.tempo.maxRetainedBytes` |
+| Built-in Tempo block retention (default `168h`) | Set `GPUSTACK_BUILTIN_TEMPO_RETENTION` | Set `tracing.tempo.retention` |
 | Disabled | Set `GPUSTACK_DISABLE_TRACING=true` | Set `tracing.enabled=false` |
 
-Built-in Tempo evicts data when either limit is reached first. During periodic cleanup, it removes blocks older than seven days by default. If searchable blocks exceed the configured capacity, it evicts the oldest blocks until their total size is within the limit. Set the capacity as a positive integer in bytes, such as `12000000000` for 12 GB. Allow additional disk space for the write-ahead log (WAL), compaction, and blocks pending deletion.
+Tempo removes expired blocks during periodic cleanup. Retention controls block age. Total disk use depends on the volume of traces received and the space required by the write-ahead log (WAL), compaction, and blocks pending deletion.
 
-The `Request Tracing` tab in deployment details initially searches the last 24 hours. Page through the results or paste the Request ID or Trace ID as it appears in GPUStack or Tempo. When log export is configured, copy the Request ID from the request detail and search for it in your log backend. For external Tempo, set the query endpoint using `GPUSTACK_TRACE_QUERY_URL` or `tracing.queryURL`.
+Estimate the space for retained blocks by multiplying the ingested trace rate by the average on-disk block bytes per trace and the retention duration in seconds. For a worked example, assume 10 requests per second, 100% sampling, one trace per sampled request, and 1,000 on-disk block bytes per trace. That gives about 864 MB of blocks per day, or 6.05 GB over seven days. Adding an illustrative 50% headroom brings the estimate to about 9.1 GB. Measure block bytes per trace and peak space for WAL, compaction, and pending deletions under a representative workload to size the volume and its headroom.
+
+The `Request Tracing` tab in deployment details initially searches the last 24 hours. Viewing traces requires the organization Owner role or platform administrator access. GPUStack applies the same model visibility rules as deployment metrics. Page through the results or paste the Request ID or Trace ID as it appears in GPUStack or Tempo. When log export is configured, copy the Request ID from the request detail and search for it in your log backend. For external Tempo, set the query endpoint using `GPUSTACK_TRACE_QUERY_URL` or `tracing.queryURL`.
 
 When log export is enabled, the Server and Workers write one JSON stream to the container console. Alloy reads that stream alongside supported engine log formats. To check for discarded records, use Alloy's `otelcol_processor_filter_logs_filtered_total` metric with the `engine_format` or `higress_format` component. The engine filter rejects standalone plain-text lines without a recognized log prefix.
 
-Each tracing component sends spans directly to the selected receiver. The log endpoint must be reachable from the GPUStack containers that export logs. The trace endpoint must be reachable from the Server, Workers, gateways, and inference containers that export traces. The tracing connection uses plaintext gRPC, so use an address on a trusted network. Switching to an external receiver or disabling tracing stops the built-in instance. Existing trace files follow the lifecycle of the Server data volume.
+GPUStack automatically adds engine observability settings for compatible Runner images with vLLM `0.32.0` or SGLang `0.5.22` when the corresponding export is enabled and the engine settings allow it. The version checks apply to automatic configuration. For other images or versions, configure telemetry using the engine's own settings.
+
+Each tracing component sends spans directly to the selected receiver. The log endpoint must be reachable from the components that export logs. The trace endpoint must be reachable from the Server, Workers, gateways, and inference containers that export traces. The ingest connection uses plaintext gRPC, so use an address on a trusted network. Switching to an external receiver or disabling tracing stops built-in Tempo.
 
 ### Configure Docker
 
@@ -129,7 +132,7 @@ Each tracing component sends spans directly to the selected receiver. The log en
 2. To export traces to an external receiver, set `GPUSTACK_TRACE_OTLP_ENDPOINT=<collector-host>:4317` on the Server and each separate Worker. To use built-in Tempo with remote Workers, see [Enable Tracing on Existing Docker Workers](../upgrade/cluster.md#enable-tracing-on-existing-docker-workers).
 3. Replace `<collector-host>` with a name or address reachable from those containers. Pass the variables with `docker run -e` or under `environment` in your Compose file, then recreate the containers.
 
-To change the built-in Tempo capacity, set `GPUSTACK_BUILTIN_TEMPO_MAX_RETAINED_BYTES` on the Server and recreate its container.
+Docker runs Tempo and Alloy inside the GPUStack container. Tempo stores its WAL and blocks under `<data_dir>/tempo` and serves queries on loopback. Trace files follow the lifecycle of the Server data volume. To change block retention, set `GPUSTACK_BUILTIN_TEMPO_RETENTION` on the Server and recreate its container.
 
 ### Configure Helm
 
@@ -146,11 +149,13 @@ To change the built-in Tempo capacity, set `GPUSTACK_BUILTIN_TEMPO_MAX_RETAINED_
 
 The bundled Higress gateway writes JSON access logs by default. To change its format, set `higress-core.meshConfig.accessLogEncoding` and `higress-core.meshConfig.accessLogFormat` in the Helm values.
 
-The Chart requests a `100Gi` data PVC per Server replica by default. Built-in Tempo uses the first Server replica's data volume, which also holds other Server data, including PostgreSQL when enabled. The `30 GB` retention threshold counts only searchable Tempo blocks. When choosing `server.dataVolume.size` or using `server.dataVolume.hostPath`, allow space for all data on the volume, including Tempo's WAL and compaction files. To change the threshold, set `tracing.tempo.maxRetainedBytes` in the Server release's Helm values and upgrade the release.
+The Tempo and Alloy images use `global.hub`, which defaults to `docker.io`. For private mirrors, keep the `grafana/tempo` and `grafana/alloy` repository paths.
 
-With a single Server replica, built-in Tempo accepts queries only on the loopback interface. In a multi-replica release, the Chart provisions a Secret for mutual TLS on the query service, and the Server Pods use it to query Tempo. Workers and inference engines continue to send traces over the OTLP port.
+The Chart runs Tempo separately from the Server Pods and mounts an `emptyDir` at `/var/tempo` by default. Replacing the Tempo Pod discards traces stored on this volume. To persist traces across Pod replacements, set `tracing.tempo.existingClaim` to an existing PVC in the release namespace. The volume must be writable by UID or group `10001`. To change block retention, set `tracing.tempo.retention` and upgrade the release. An empty or invalid retention value uses `168h`.
 
-For multi-replica GitOps deployments, create a Secret in the Server release's namespace and set `tracing.tempo.queryTLSSecretName` to its name. Include `ca.crt`, `server.crt`, `server.key`, `client.crt`, and `client.key`. The server certificate must cover `<release>-tempo.<namespace>.svc.<cluster-domain>`. Use the same CA when renewing the server and client certificates. Create a new Secret and update its name in the Helm values to roll the Server Pods with the renewed certificates.
+All Server Pods query built-in Tempo at `https://<release>-tempo.<namespace>.svc.<cluster-domain>:3200` using mutual TLS, including releases with a single Server. The Chart provisions a query TLS Secret by default. Workers and inference engines send traces to the Service's OTLP/gRPC port `4317`.
+
+For GitOps deployments, create a Secret in the Server release's namespace and set `tracing.tempo.queryTLSSecretName` to its name. Include `ca.crt`, `server.crt`, `server.key`, `client.crt`, and `client.key`. The server certificate must cover `<release>-tempo.<namespace>.svc.<cluster-domain>`. Use the same CA when renewing the server and client certificates. Create a new Secret and update its name in the Helm values to roll the Tempo and Server Pods with the renewed certificates.
 
 Restart or redeploy running model instances after changing their trace export endpoint.
 

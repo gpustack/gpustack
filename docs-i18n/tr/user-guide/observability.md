@@ -109,23 +109,26 @@ Zaten harici bir Prometheus/Grafana yığınınız varsa, bunu manuel olarak yap
 
 ## Çıkarım Günlükleri ve İzleri { #inference-logs-and-traces }
 
-Bir isteğin günlüklerini ve izlerini bulmak için `X-GPUStack-Request-Id` yanıt başlığını kullanın. Yerleşik ağ geçidi, günlük veya iz aktarımı yapılandırıldığında bu başlığı ekler. Docker sunucuları ve Helm sunucu sürümleri varsayılan olarak izleri yerleşik Tempo'ya gönderir. Günlük aktarımı ayrı yapılandırılır ve bir günlük alıcısı uç noktası gerektirir.
+Çıkarım günlüklerini ve izlerini bulmak için `X-GPUStack-Request-Id` yanıt başlığını kullanın. Günlük veya izleme yapılandırıldığında paketle gelen ağ geçidi bu başlığı ekler. Docker sunucuları varsayılan olarak izleri gömülü Tempo'ya aktarır. Helm sunucu sürümleri varsayılan olarak ayrı bir Tempo iş yükü dağıtır. Günlük aktarımı ayrı yapılandırılır ve bir günlük uç noktası gerektirir.
 
-| İz hedefi | Docker | Helm |
+| İz hedefi veya ayarı | Docker | Helm |
 | --- | --- | --- |
 | Yerleşik Tempo | Sunucuda varsayılan | Sunucu sürümünde varsayılan |
-| Harici OTLP/gRPC alıcısı | `GPUSTACK_TRACE_OTLP_ENDPOINT` değerini ayarlayın | `tracing.endpoint` değerini ayarlayın |
-| Yerleşik Tempo saklama süresi (varsayılan `168h`) | `GPUSTACK_BUILTIN_TEMPO_RETENTION` değerini ayarlayın | `tracing.tempo.retention` değerini ayarlayın |
-| Yerleşik Tempo kapasitesi (varsayılan 30 GB) | `GPUSTACK_BUILTIN_TEMPO_MAX_RETAINED_BYTES` değerini ayarlayın | `tracing.tempo.maxRetainedBytes` değerini ayarlayın |
-| İzleme devre dışı | `GPUSTACK_DISABLE_TRACING=true` değerini ayarlayın | `tracing.enabled=false` değerini ayarlayın |
+| Harici OTLP/gRPC alıcısı | `GPUSTACK_TRACE_OTLP_ENDPOINT` ayarlayın | `tracing.endpoint` ayarlayın |
+| Yerleşik Tempo bloklarının saklama süresi (varsayılan `168h`) | `GPUSTACK_BUILTIN_TEMPO_RETENTION` ayarlayın | `tracing.tempo.retention` ayarlayın |
+| Devre dışı | `GPUSTACK_DISABLE_TRACING=true` ayarlayın | `tracing.enabled=false` ayarlayın |
 
-Yerleşik Tempo, iki sınırdan birine ulaşıldığında verileri siler. Varsayılan olarak düzenli temizlikte yedi günden eski bloklar kaldırılır. Aranabilir blokların toplam boyutu sınırı aşarsa Tempo, toplam boyut sınırın altına inene kadar en eski blokları kaldırır. Kapasiteyi bayt cinsinden pozitif bir tam sayı olarak ayarlayın. Örneğin 12 GB için `12000000000` kullanın. Ön yazma günlüğü (WAL), sıkıştırma işlemleri ve silinmeyi bekleyen bloklar için ek disk alanı ayırın.
+Tempo, saklama süresi dolan blokları düzenli temizlik sırasında siler. Saklama süresi, blokların yaşını belirler. Toplam disk kullanımı, alınan izlerin hacmine ve önden yazma günlüğü (WAL), blok birleştirme ve silinmeyi bekleyen bloklar için gereken alana bağlıdır.
 
-Dağıtım ayrıntılarındaki `Request Tracing` sekmesi başlangıçta son 24 saati tarar. Sonuçlar arasında sayfa sayfa ilerleyin veya Request ID ya da Trace ID değerini GPUStack ya da Tempo'da göründüğü biçimde yapıştırın. Günlük aktarımı yapılandırılmışsa istek ayrıntısından Request ID değerini kopyalayıp günlük sisteminizde arayın. Harici Tempo için sorgu uç noktasını `GPUSTACK_TRACE_QUERY_URL` veya `tracing.queryURL` ile ayarlayın.
+Saklanan blokların kaplayacağı alanı hesaplamak için saniyede alınan iz sayısını, iz başına diskteki ortalama blok baytı ve saniye cinsinden saklama süresiyle çarpın. Örnek hesapta saniyede 10 istek, %100 örnekleme, örneklenen istek başına bir iz ve iz başına diskte 1.000 blok baytı varsayın. Bu, günde yaklaşık 864 MB ve yedi günde yaklaşık 6,05 GB blok alanı demektir. Örnek olarak %50 ek alan ayrıldığında toplam yaklaşık 9,1 GB olur. Gerekli birim kapasitesini ve ek alanı belirlemek için temsili bir iş yükünde iz başına blok baytını ve WAL, blok birleştirme ve silinmeyi bekleyen blokların en yüksek alan kullanımını ölçün.
 
-Günlük aktarımı etkinleştirildiğinde sunucu ve çalışanlar konteyner konsoluna tek bir JSON akışı yazar. Alloy bu akışı ve desteklenen biçimlerdeki motor günlüklerini okur. Atılan kayıtları kontrol etmek için `engine_format` veya `higress_format` bileşeninin Alloy `otelcol_processor_filter_logs_filtered_total` metriğini kullanın. Motor filtresi, tanınan bir günlük öneki olmayan bağımsız düz metin satırlarını eler.
+Dağıtım ayrıntılarındaki `Request Tracing` sekmesi başlangıçta son 24 saati arar. İzleri görüntülemek için kuruluş sahibi rolü veya platform yöneticisi yetkisi gerekir. GPUStack, dağıtım metrikleriyle aynı model görünürlüğü kurallarını uygular. Sonuçlar arasında gezinin veya İstek Kimliğini ya da İz Kimliğini GPUStack veya Tempo'da göründüğü biçimde yapıştırın. Günlük aktarımı yapılandırılmışsa istek ayrıntılarındaki İstek Kimliğini kopyalayıp günlük arka ucunuzda arayın. Harici Tempo için sorgu uç noktasını `GPUSTACK_TRACE_QUERY_URL` veya `tracing.queryURL` ile ayarlayın.
 
-Her izleme bileşeni span'leri doğrudan seçilen alıcıya gönderir. Günlük uç noktasına, günlük aktaran GPUStack konteynerlerinden erişilebilmelidir. İz uç noktasına, iz aktaran sunucu, çalışan, ağ geçidi ve çıkarım konteynerlerinden erişilebilmelidir. İz aktarımı şifrelenmemiş gRPC kullanır. Güvenilen bir ağdaki bir adresi kullanın. Harici alıcıya geçildiğinde veya izleme kapatıldığında yerleşik Tempo durur. Mevcut iz dosyaları sunucu veri biriminin yaşam döngüsünü izler.
+Günlük aktarımı etkin olduğunda Sunucu ve Worker'lar kapsayıcı konsoluna tek bir JSON akışı yazar. Alloy bu akışı desteklenen motor günlüğü biçimleriyle birlikte okur. Atılan kayıtları kontrol etmek için Alloy'un `otelcol_processor_filter_logs_filtered_total` metriğine `engine_format` veya `higress_format` bileşeniyle bakın. Motor filtresi, tanınan bir günlük öneki olmayan bağımsız düz metin satırlarını eler.
+
+İlgili aktarım etkinse ve motor ayarları izin veriyorsa GPUStack, vLLM `0.32.0` veya SGLang `0.5.22` kullanan uyumlu Runner imajlarına motor gözlemlenebilirlik ayarlarını otomatik ekler. Sürüm kontrolleri otomatik yapılandırma için geçerlidir. Diğer imajlar veya sürümler için telemetriyi motorun kendi ayarlarıyla yapılandırın.
+
+Her izleme bileşeni span'leri doğrudan seçilen alıcıya gönderir. Günlük aktaran bileşenler günlük uç noktasına ulaşabilmelidir. İz aktaran Sunucu, Worker'lar, ağ geçitleri ve çıkarım kapsayıcıları iz uç noktasına ulaşabilmelidir. Alım bağlantısı şifresiz gRPC kullanır, bu nedenle güvenilen bir ağdaki adresi kullanın. Harici bir alıcıya geçmek veya izlemeyi devre dışı bırakmak yerleşik Tempo'yu durdurur.
 
 ### Docker'ı Yapılandırma { #configure-docker }
 
@@ -133,7 +136,7 @@ Her izleme bileşeni span'leri doğrudan seçilen alıcıya gönderir. Günlük 
 2. İzleri harici bir alıcıya aktarmak için sunucuda ve her ayrı çalışanda `GPUSTACK_TRACE_OTLP_ENDPOINT=<collector-host>:4317` değerini ayarlayın. Uzak çalışanlarla yerleşik Tempo'yu kullanmak için [Mevcut Docker Çalışanlarında İzlemeyi Etkinleştirme](../upgrade/cluster.md#enable-tracing-on-existing-docker-workers) bölümüne bakın.
 3. `<collector-host>` yerine bu konteynerlerin erişebildiği bir ad veya adres yazın. Değişkenleri `docker run -e` ile ya da Compose dosyanızdaki `environment` altında iletin, ardından konteynerleri yeniden oluşturun.
 
-Yerleşik Tempo kapasitesini değiştirmek için sunucuda `GPUSTACK_BUILTIN_TEMPO_MAX_RETAINED_BYTES` değerini ayarlayıp sunucu konteynerini yeniden oluşturun.
+Docker, Tempo ve Alloy'u GPUStack kapsayıcısında çalıştırır. Tempo, WAL ve blokları `<data_dir>/tempo` altında saklar ve sorguları yalnızca loopback üzerinden kabul eder. İz dosyaları sunucu veri biriminin yaşam döngüsünü izler. Blok saklama süresini değiştirmek için Sunucu'da `GPUSTACK_BUILTIN_TEMPO_RETENTION` değerini ayarlayıp kapsayıcıyı yeniden oluşturun.
 
 ### Helm'i Yapılandırma { #configure-helm }
 
@@ -150,11 +153,13 @@ Yerleşik Tempo kapasitesini değiştirmek için sunucuda `GPUSTACK_BUILTIN_TEMP
 
 Yerleşik Higress ağ geçidi varsayılan olarak JSON biçiminde erişim günlüğü yazar. Biçimi değiştirmek için Helm values dosyasında `higress-core.meshConfig.accessLogEncoding` ve `higress-core.meshConfig.accessLogFormat` değerlerini ayarlayın.
 
-Chart varsayılan olarak her sunucu replikası için `100Gi` boyutunda bir veri PVC'si ister. Yerleşik Tempo, etkinse PostgreSQL dâhil diğer sunucu verilerini de barındıran ilk sunucu replikasının veri birimini kullanır. `30 GB` saklama eşiği yalnızca aranabilir Tempo bloklarını hesaba katar. `server.dataVolume.size` değerini seçerken veya `server.dataVolume.hostPath` kullanırken Tempo'nun WAL ve sıkıştırma dosyaları dâhil birimdeki tüm veriler için yer ayırın. Eşiği değiştirmek için sunucu sürümünün Helm values dosyasında `tracing.tempo.maxRetainedBytes` değerini ayarlayın ve sürümü yükseltin.
+Tempo ve Alloy imajları, varsayılan değeri `docker.io` olan `global.hub` ayarını kullanır. Özel bir kayıt defterine yansıtırken `grafana/tempo` ve `grafana/alloy` depo yollarını koruyun.
 
-Tek sunucu replikası varsa yerleşik Tempo sorguları yalnızca loopback arayüzünden kabul eder. Birden fazla replikalı sürümde chart, sorgu hizmetinde karşılıklı TLS için bir Secret oluşturur. Sunucu Pod'ları Tempo sorgularında bu Secret'ı kullanır. Çalışanlar ve çıkarım motorları izleri OTLP portu üzerinden göndermeye devam eder.
+Chart, Tempo'yu Sunucu Pod'larından ayrı çalıştırır ve varsayılan olarak `/var/tempo` yoluna bir `emptyDir` bağlar. Tempo Pod'u değiştirildiğinde bu birimde saklanan izler kaybolur. Pod değişimlerinde izleri korumak için `tracing.tempo.existingClaim` değerini sürümün ad alanındaki mevcut bir PVC'ye ayarlayın. Birim, `10001` UID'si veya grubu tarafından yazılabilir olmalıdır. Blok saklama süresini değiştirmek için `tracing.tempo.retention` değerini ayarlayın ve sürümü yükseltin. Saklama süresi boş veya geçersizse `168h` kullanılır.
 
-Birden fazla replikalı GitOps dağıtımlarında sunucu sürümünün ad alanında bir Secret oluşturun ve adını `tracing.tempo.queryTLSSecretName` olarak ayarlayın. `ca.crt`, `server.crt`, `server.key`, `client.crt` ve `client.key` anahtarlarını ekleyin. Sunucu sertifikası `<release>-tempo.<namespace>.svc.<cluster-domain>` adını kapsamalıdır. Sunucu ve istemci sertifikalarını yenilerken aynı CA'yı kullanın. Yenilenen sertifikalarla sunucu Pod'larının yeniden oluşturulması için yeni bir Secret oluşturun ve Helm values dosyasında Secret adını güncelleyin.
+Tek Sunuculu sürümler dahil tüm Sunucu Pod'ları, karşılıklı TLS ile `https://<release>-tempo.<namespace>.svc.<cluster-domain>:3200` adresindeki yerleşik Tempo'yu sorgular. Chart varsayılan olarak sorgu için bir TLS Secret oluşturur. Worker'lar ve çıkarım motorları izleri Service'in OTLP/gRPC `4317` portuna gönderir.
+
+GitOps dağıtımlarında, Sunucu sürümünün ad alanında bir Secret oluşturun ve adını `tracing.tempo.queryTLSSecretName` olarak ayarlayın. `ca.crt`, `server.crt`, `server.key`, `client.crt` ve `client.key` dosyalarını ekleyin. Sunucu sertifikası `<release>-tempo.<namespace>.svc.<cluster-domain>` adını kapsamalıdır. Sunucu ve istemci sertifikalarını yenilerken aynı CA'yı kullanın. Tempo ve Sunucu Pod'larını yenilenen sertifikalarla yeniden başlatmak için yeni bir Secret oluşturun ve Helm değerlerindeki adını güncelleyin.
 
 İz aktarım uç noktasını değiştirdikten sonra çalışan model örneklerini yeniden başlatın veya yeniden dağıtın.
 

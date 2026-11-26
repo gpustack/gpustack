@@ -55,6 +55,9 @@ gpustack start [OPTIONS]
 | `--trusted-proxy-cidrs` value               | (empty)                                | 部署在网关前面的代理的 CIDR 网段(可重复指定多个)。客户端 IP 解析会从右侧遍历 `X-Forwarded-For` 并穿过这些代理;未设置时,仅使用网关自身观测到的地址,客户端提供的转发头无法伪造源地址。仅当前置代理自身会追加 `X-Forwarded-For` 时才应配置对应网段。 |
 | `--service-discovery-name` value            | (empty)                                | DNS 中的服务发现服务名称。仅在使用服务发现部署到 Kubernetes 时有效。                     |
 | `--namespace` value                         | (empty)                                | GPUStack 部署网关路由规则和模型实例所使用的 Kubernetes 命名空间。                                                |
+| `--disable-tracing` | `False` | 禁用 GPUStack 管理的追踪上报和内置 Tempo。 |
+| `--trace-otlp-endpoint` value | (empty) | 将 Trace 上报到外部接收端的 OTLP/gRPC `host:port`。配置后替代内置 Tempo。 |
+| `--log-otlp-endpoint` value | (empty) | 启用结构化日志采集和上报的完整 OTLP/HTTP 日志 URL，例如 `http://<collector-host>:4318/v1/logs`。 |
 
 ### Server 选项 { #server-options }
 
@@ -120,6 +123,7 @@ gpustack start [OPTIONS]
 | `--saml-sp-attribute-prefix` value               | (empty)                                          | SAML 服务提供方属性前缀，用于获取 --external-auth-\* 指定的属性。                                                                                                                                                                                                                                         |
 | `--gateway-concurrency` value                    | `16`                                             | 内置网关的并发连接数。                                                                                                                                                                                                                                                                                    |
 | `--disable-builtin-observability`                | `False`                                          | 禁用内置 Grafana 和 Prometheus 服务。                                                                                                                                                                                                                                                                                             |
+| `--trace-query-url` value | (empty) | 部署详情查询 Tempo 使用的 HTTP(S) 基础 URL。 |
 | `--builtin-prometheus-port` value                | `19090`                                          | 内置 Prometheus 服务端口。                                                                                                                                                                                                                                                                                                     |
 | `--builtin-grafana-port` value                   | `13000`                                          | 内置 Grafana 服务端口。                                                                                                                                                                                                                                                                                                        |
 | `--prometheus-url` value                         | (empty)                                          | 用于查询的外部 Prometheus 基础 URL。未设置时，若内置服务已启用，则使用内置服务。对于使用自有可观测性体系的部署，可设置此选项，以继续使用依赖指标的功能（模型与 PD 仪表盘、带宽自检）。                                                                             |
