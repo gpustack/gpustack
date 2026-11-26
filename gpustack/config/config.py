@@ -379,7 +379,6 @@ class Config(WorkerConfig, BaseSettings):
     trace_advertise_endpoint: Optional[str] = None
     trace_query_url: Optional[str] = None
     trace_query_tls_dir: Optional[str] = None
-    builtin_tempo_tls_dir: Optional[str] = None
     builtin_tempo_otlp_port: int = Field(default=4317, gt=0, le=65535)
     builtin_tempo_http_port: int = Field(default=3200, gt=0, le=65535)
     builtin_tempo_grpc_port: int = Field(default=9095, gt=0, le=65535)

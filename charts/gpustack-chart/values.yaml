@@ -114,9 +114,9 @@ tracing:
   advertiseEndpoint: ""
   tempo:
     retention: 168h
-    # Capacity limit for searchable blocks in bytes.
-    maxRetainedBytes: 30000000000
-    # Optional existing mTLS Secret for built-in Tempo queries in HA releases.
+    # Use an existing PVC for trace data. An empty value uses emptyDir.
+    existingClaim: ""
+    # Optional existing mTLS Secret for built-in Tempo queries.
     queryTLSSecretName: ""
 server:
   # Deploy the GPUStack server (control plane) from this release.

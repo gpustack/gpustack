@@ -377,15 +377,8 @@ imagePullSecrets:
 {{- printf "%s.%s.svc.%s" (include "gpustack.tempoName" .) .Release.Namespace .Values.clusterDomain -}}
 {{- end -}}
 
-{{/* Keep a single Tempo instance on the first Server Pod's data volume. */}}
-{{- define "gpustack.tempoPodName" -}}
+{{- define "gpustack.builtinTempoEnabled" -}}
 {{- if and .Values.tracing.enabled .Values.server.enabled (not .Values.tracing.endpoint) -}}
-{{- printf "%s-server-0" .Release.Name -}}
-{{- end -}}
-{{- end -}}
-
-{{- define "gpustack.tempoQueryTLS" -}}
-{{- if and (include "gpustack.tempoPodName" .) (gt (int (.Values.server.replicas | default 1)) 1) -}}
 true
 {{- end -}}
 {{- end -}}

@@ -1,4 +1,5 @@
 import argparse
+from functools import partial
 from pathlib import Path
 import json
 import re
@@ -9,6 +10,8 @@ import yaml
 from gpustack.cmd import prerun
 from gpustack.cmd.prerun import check_ports_availability, prepare_s6_overlay
 from gpustack.config.config import Config
+from gpustack.gateway import embedded_config
+from gpustack.observability import alloy, tempo
 
 HIGRESS_CONFIGMAP_PATH = Path("configmaps/higress-config.yaml")
 HIGRESS_FILTER_PATH = Path("envoyfilters/gpustack-otel-tracing.yaml")
@@ -45,7 +48,6 @@ def test_builtin_tempo_config_and_service(tmp_path, monkeypatch):
     run_dir = tmp_path / "run"
     monkeypatch.setenv("GPUSTACK_RUN_DIR", str(run_dir))
     monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
-    monkeypatch.delenv("GPUSTACK_BUILTIN_TEMPO_MAX_RETAINED_BYTES", raising=False)
     cfg = Config(
         data_dir=str(tmp_path / "data"),
         gateway_mode="disabled",
@@ -55,7 +57,7 @@ def test_builtin_tempo_config_and_service(tmp_path, monkeypatch):
     )
     s6_base = tmp_path / "s6-rc.d"
     service = s6_base / "user" / "contents.d" / "tempo"
-    active = prerun.prepare_builtin_tempo(cfg)
+    active = tempo.prepare_builtin_tempo(cfg)
     services = prerun.determine_enabled_services(cfg, tempo_active=active)
     prepare_s6_overlay(services, [], s6_base)
 
@@ -77,10 +79,7 @@ def test_builtin_tempo_config_and_service(tmp_path, monkeypatch):
         "wal": {"path": str(tmp_path / "data" / "tempo" / "wal")},
         "local": {"path": str(tmp_path / "data" / "tempo" / "blocks")},
     }
-    assert config["compactor"]["compaction"] == {
-        "block_retention": "168h",
-        "max_retained_bytes": 30_000_000_000,
-    }
+    assert config["compactor"]["compaction"] == {"block_retention": "168h"}
     assert config["ingester"]["flush_all_on_shutdown"] is True
     assert {
         port
@@ -97,64 +96,13 @@ def test_builtin_tempo_config_and_service(tmp_path, monkeypatch):
     assert cfg.effective_trace_otlp_endpoint.endswith(":13417")
 
     external = cfg.model_copy(update={"trace_otlp_endpoint": "collector:4317"})
-    active = prerun.prepare_builtin_tempo(external)
+    active = tempo.prepare_builtin_tempo(external)
     services = prerun.determine_enabled_services(external, tempo_active=active)
     prepare_s6_overlay(services, [], s6_base)
     assert not service.exists()
     assert "tempo" not in prerun.ports_for_services(external).values()
 
 
-@pytest.mark.parametrize("run_dir", [None, ""])
-def test_helm_tempo_uses_default_run_dir(tmp_path, monkeypatch, run_dir):
-    if run_dir is None:
-        monkeypatch.delenv("GPUSTACK_RUN_DIR", raising=False)
-    else:
-        monkeypatch.setenv("GPUSTACK_RUN_DIR", run_dir)
-    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes")
-    monkeypatch.setenv("GPUSTACK_BUILTIN_TEMPO_POD", "gpustack-server-0")
-    cfg = Config(
-        data_dir=str(tmp_path / "data"),
-        gateway_mode="disabled",
-        server_id="gpustack-server-0",
-        trace_otlp_endpoint="gpustack-tempo:4317",
-    )
-    paths = []
-    monkeypatch.setattr(
-        prerun, "_write_yaml_atomically", lambda path, _content: paths.append(path)
-    )
-
-    assert prerun.prepare_builtin_tempo(cfg)
-    assert paths == [Path("/run/gpustack/tempo/config.yaml")]
-
-
-@pytest.mark.parametrize(
-    "value,expected",
-    [
-        ("12000000000", 12_000_000_000),
-        ("30 GB", 30_000_000_000),
-        ("0", 30_000_000_000),
-        ("-1", 30_000_000_000),
-        (str(2**64), 30_000_000_000),
-    ],
-)
-def test_builtin_tempo_max_retained_bytes(
-    tmp_path, monkeypatch, caplog, value, expected
-):
-    run_dir = tmp_path / "run"
-    env_name = "GPUSTACK_BUILTIN_TEMPO_MAX_RETAINED_BYTES"
-    monkeypatch.setenv("GPUSTACK_RUN_DIR", str(run_dir))
-    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
-    monkeypatch.setenv(env_name, value)
-    cfg = Config(data_dir=str(tmp_path / "data"), gateway_mode="disabled")
-
-    assert prerun.prepare_builtin_tempo(cfg)
-
-    config = yaml.safe_load((run_dir / "tempo" / "config.yaml").read_text())
-    assert config["compactor"]["compaction"]["max_retained_bytes"] == expected
-    assert (env_name in caplog.text) is (value != str(expected))
-
-
-@pytest.mark.parametrize("helm", [False, True])
 @pytest.mark.parametrize(
     "value,expected",
     [
@@ -169,20 +117,15 @@ def test_builtin_tempo_max_retained_bytes(
         ("9223372036854775808ns", "168h"),
     ],
 )
-def test_builtin_tempo_retention(tmp_path, monkeypatch, caplog, helm, value, expected):
+def test_builtin_tempo_retention(tmp_path, monkeypatch, caplog, value, expected):
     run_dir = tmp_path / "run"
     env_name = "GPUSTACK_BUILTIN_TEMPO_RETENTION"
     monkeypatch.setenv("GPUSTACK_RUN_DIR", str(run_dir))
     monkeypatch.setenv(env_name, value)
     monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
-    monkeypatch.delenv("GPUSTACK_BUILTIN_TEMPO_POD", raising=False)
-    if helm:
-        monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes")
-        monkeypatch.setenv("GPUSTACK_BUILTIN_TEMPO_POD", "gpustack-server-0")
-        monkeypatch.setenv("GPUSTACK_SERVER_ID", "gpustack-server-0")
     cfg = Config(data_dir=str(tmp_path / "data"), gateway_mode="disabled")
 
-    assert prerun.prepare_builtin_tempo(cfg)
+    assert tempo.prepare_builtin_tempo(cfg)
 
     config = yaml.safe_load((run_dir / "tempo" / "config.yaml").read_text())
     assert config["compactor"]["compaction"]["block_retention"] == expected
@@ -198,7 +141,7 @@ def test_disable_tracing_environment_skips_tempo_service_and_ports(
     monkeypatch.setenv("GPUSTACK_DISABLE_TRACING", "true")
     cfg = Config(data_dir=str(tmp_path / "data"), gateway_mode="disabled")
 
-    assert not prerun.prepare_builtin_tempo(cfg)
+    assert not tempo.prepare_builtin_tempo(cfg)
     assert not (run_dir / "tempo").exists()
     assert "tempo" not in prerun.ports_for_services(cfg).values()
     assert cfg.effective_trace_otlp_endpoint is None
@@ -223,7 +166,7 @@ def test_tempo_config_write_failure_skips_service_without_aborting_prerun(
     def fail_to_write(path, content):
         raise PermissionError("Tempo config is not writable")
 
-    monkeypatch.setattr(prerun, "_write_yaml_atomically", fail_to_write)
+    monkeypatch.setattr(tempo, "write_text_atomically", fail_to_write)
 
     prerun.run(argparse.Namespace(s6_base_path=str(s6_base)))
 
@@ -231,69 +174,28 @@ def test_tempo_config_write_failure_skips_service_without_aborting_prerun(
     assert not (s6_base / "user" / "contents.d" / "tempo").exists()
 
 
-@pytest.mark.parametrize(
-    "server_id,disable_tracing,expected",
-    [
-        ("gpustack-server-0", False, True),
-        ("gpustack-server-1", False, False),
-        ("gpustack-server-0", True, False),
-    ],
-)
-@pytest.mark.parametrize("tls", [False, True])
-def test_helm_tempo_uses_the_selected_servers_data_dir(
-    tmp_path, monkeypatch, server_id, disable_tracing, expected, tls
-):
+def test_helm_servers_use_the_service_without_a_container_tempo(tmp_path, monkeypatch):
     run_dir = tmp_path / "run"
-    data_dir = tmp_path / "server-data"
     monkeypatch.setenv("GPUSTACK_RUN_DIR", str(run_dir))
     monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kubernetes")
-    monkeypatch.setenv("GPUSTACK_SERVER_ID", server_id)
-    monkeypatch.setenv("GPUSTACK_BUILTIN_TEMPO_POD", "gpustack-server-0")
-    monkeypatch.setenv("GPUSTACK_BUILTIN_TEMPO_RETENTION", "12h")
-    monkeypatch.setenv("GPUSTACK_BUILTIN_TEMPO_MAX_RETAINED_BYTES", "12000000000")
-    tls_dir = tmp_path / "tempo-tls"
-    if tls:
-        monkeypatch.setenv("GPUSTACK_BUILTIN_TEMPO_TLS_DIR", str(tls_dir))
     endpoint = "gpustack-tempo.inference.svc.cluster.local:4317"
+    query_url = "https://gpustack-tempo.inference.svc.cluster.local:3200"
     cfg = Config(
-        data_dir=str(data_dir),
+        data_dir=str(tmp_path / "server-data"),
         gateway_mode="disabled",
         trace_otlp_endpoint=endpoint,
-        disable_tracing=disable_tracing,
+        trace_query_url=query_url,
     )
 
-    active = prerun.prepare_builtin_tempo(cfg)
+    active = tempo.prepare_builtin_tempo(cfg)
     services = prerun.determine_enabled_services(cfg, tempo_active=active)
-    assert active is expected
-    assert ("tempo" in services) is expected
-    assert (prerun.ports_for_services(cfg).get(4317) == "tempo") is expected
-    assert "tempo" not in prerun.determine_dependency_services(cfg)
-    assert cfg.effective_trace_otlp_endpoint == (None if disable_tracing else endpoint)
-    config_path = run_dir / "tempo" / "config.yaml"
-    assert config_path.exists() is expected
-    if expected:
-        config = yaml.safe_load(config_path.read_text())
-        if tls:
-            assert config["server"]["http_listen_address"] == "0.0.0.0"
-            assert config["server"]["http_tls_config"] == {
-                "cert_file": str(tls_dir / "server.crt"),
-                "key_file": str(tls_dir / "server.key"),
-                "client_ca_file": str(tls_dir / "ca.crt"),
-                "client_auth_type": "RequireAndVerifyClientCert",
-            }
-        else:
-            assert config["server"]["http_listen_address"] == "127.0.0.1"
-            assert "http_tls_config" not in config["server"]
-        assert config["storage"]["trace"] == {
-            "backend": "local",
-            "blocklist_poll": "1m",
-            "wal": {"path": str(data_dir / "tempo" / "wal")},
-            "local": {"path": str(data_dir / "tempo" / "blocks")},
-        }
-        assert config["compactor"]["compaction"] == {
-            "block_retention": "12h",
-            "max_retained_bytes": 12_000_000_000,
-        }
+
+    assert not active
+    assert "tempo" not in services
+    assert "tempo" not in prerun.ports_for_services(cfg).values()
+    assert not (run_dir / "tempo" / "config.yaml").exists()
+    assert cfg.effective_trace_otlp_endpoint == endpoint
+    assert cfg.get_trace_query_url() == query_url
 
 
 def _one_gpustack_port(monkeypatch):
@@ -326,7 +228,7 @@ def collector_path(tmp_path, monkeypatch):
     template = (
         Path(__file__).parents[2] / "pack/rootfs/etc/gpustack/logging/docker.alloy.tmpl"
     )
-    monkeypatch.setattr(prerun, "ALLOY_LOG_TEMPLATE", template)
+    monkeypatch.setattr(alloy, "ALLOY_LOG_TEMPLATE", template)
     return run / "logging" / "config.alloy"
 
 
@@ -342,10 +244,10 @@ def test_log_collector_is_independent_of_builtin_observability(
         f"18 16 8:1 /var/lib/docker/containers/{container_id}/hostname /etc/hostname "
         "rw,relatime - ext4 /dev/root rw\n"
     )
-    monkeypatch.setattr(prerun, "_DOCKER_MOUNTINFO", mountinfo)
+    monkeypatch.setattr(alloy, "_DOCKER_MOUNTINFO", mountinfo)
     monkeypatch.setenv("HOSTNAME", "custom-hostname")
     monkeypatch.setattr(
-        prerun.runtime_envs,
+        alloy.runtime_envs,
         "GPUSTACK_RUNTIME_DOCKER_HOST",
         "http+unix:///run/docker-alt.sock",
     )
@@ -362,7 +264,7 @@ def test_log_collector_is_independent_of_builtin_observability(
         token="test" if worker else None,
     )
 
-    assert prerun.prepare_log_collection(cfg)
+    assert alloy.prepare_log_collection(cfg)
     assert "alloy" in prerun.determine_enabled_services(cfg, logs_active=True)
     assert "prometheus" not in prerun.determine_enabled_services(cfg, logs_active=True)
     assert collector_path.stat().st_mode & 0o777 == 0o600
@@ -390,14 +292,14 @@ def test_log_collector_is_independent_of_builtin_observability(
 def test_missing_docker_identity_keeps_file_sources(
     tmp_path, monkeypatch, collector_path, caplog
 ):
-    monkeypatch.setattr(prerun, "_DOCKER_MOUNTINFO", tmp_path / "missing-mountinfo")
+    monkeypatch.setattr(alloy, "_DOCKER_MOUNTINFO", tmp_path / "missing-mountinfo")
     cfg = Config(
         data_dir=str(tmp_path / "data"),
         log_dir=str(tmp_path / "logs"),
         gateway_mode="embedded",
         log_otlp_endpoint="http://collector/v1/logs",
     )
-    assert prerun.prepare_log_collection(cfg)
+    assert alloy.prepare_log_collection(cfg)
     rendered = collector_path.read_text()
     assert (
         "Unable to identify this Docker container for application logs" in caplog.text
@@ -414,11 +316,14 @@ def embedded_gateway(tmp_path, monkeypatch):
     templates = (
         Path(__file__).parents[2] / "pack/rootfs/etc/gpustack/data/defaultConfig"
     )
-    monkeypatch.setattr(prerun, "HIGRESS_DEFAULT_CONFIG", templates)
+    monkeypatch.setattr(embedded_config, "HIGRESS_DEFAULT_CONFIG", templates)
     monkeypatch.setenv("GPUSTACK_RUN_DIR", str(tmp_path / "run"))
     monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
     cfg = Config(data_dir=str(tmp_path / "data"), gateway_mode="embedded")
-    return cfg, Path(cfg.higress_base_dir()) / "apiserver", templates
+    prepare = partial(
+        embedded_config.prepare_gateway_config, config_path=tmp_path / "gateway.env"
+    )
+    return cfg, Path(cfg.higress_base_dir()) / "apiserver", templates, prepare
 
 
 @pytest.mark.parametrize(
@@ -432,10 +337,8 @@ def embedded_gateway(tmp_path, monkeypatch):
 def test_embedded_otel_filter_address_and_request_id(
     embedded_gateway, endpoint, host, discovery
 ):
-    cfg, apiserver, _ = embedded_gateway
-    prerun.prepare_gateway_config(
-        cfg.model_copy(update={"trace_otlp_endpoint": endpoint})
-    )
+    cfg, apiserver, _, prepare = embedded_gateway
+    prepare(cfg.model_copy(update={"trace_otlp_endpoint": endpoint}))
     config = yaml.safe_load((apiserver / HIGRESS_FILTER_PATH).read_text())
     cluster_patch, hcm_patch, router_patch, routes_patch = config["spec"][
         "configPatches"
@@ -474,19 +377,17 @@ def test_embedded_otel_filter_address_and_request_id(
 
 
 def test_disabled_tracing_leaves_fresh_higress_data_alone(embedded_gateway):
-    cfg, apiserver, _ = embedded_gateway
-    prerun.prepare_gateway_config(cfg.model_copy(update={"disable_tracing": True}))
+    cfg, apiserver, _, prepare = embedded_gateway
+    prepare(cfg.model_copy(update={"disable_tracing": True}))
     assert not apiserver.exists()
 
 
 def test_embedded_logs_only_keeps_request_id_after_disabling_tracing(embedded_gateway):
-    cfg, apiserver, _ = embedded_gateway
+    cfg, apiserver, _, prepare = embedded_gateway
     logs = cfg.model_copy(update={"log_otlp_endpoint": "http://collector:4318/v1/logs"})
-    prerun.prepare_gateway_config(
-        logs.model_copy(update={"trace_otlp_endpoint": "collector:4317"})
-    )
+    prepare(logs.model_copy(update={"trace_otlp_endpoint": "collector:4317"}))
 
-    prerun.prepare_gateway_config(logs.model_copy(update={"disable_tracing": True}))
+    prepare(logs.model_copy(update={"disable_tracing": True}))
     config = yaml.safe_load((apiserver / HIGRESS_FILTER_PATH).read_text())
     manager_patch, route_patch = config["spec"]["configPatches"]
     manager = manager_patch["patch"]["value"]["typed_config"]
@@ -504,25 +405,25 @@ def test_embedded_logs_only_keeps_request_id_after_disabling_tracing(embedded_ga
     assert mesh["accessLogEncoding"] == "JSON"
     assert "traceparent" not in json.loads(mesh["accessLogFormat"])
 
-    prerun.prepare_gateway_config(cfg.model_copy(update={"disable_tracing": True}))
+    prepare(cfg.model_copy(update={"disable_tracing": True}))
     configmap = yaml.safe_load((apiserver / HIGRESS_CONFIGMAP_PATH).read_text())
     assert yaml.safe_load(configmap["data"]["mesh"])["accessLogEncoding"] == "TEXT"
 
 
 def test_disabling_tracing_removes_filter_even_without_configmap(embedded_gateway):
-    cfg, apiserver, _ = embedded_gateway
+    cfg, apiserver, _, prepare = embedded_gateway
     filter_path = apiserver / HIGRESS_FILTER_PATH
     filter_path.parent.mkdir(parents=True)
     filter_path.write_text("stale generated resource")
 
-    prerun.prepare_gateway_config(cfg.model_copy(update={"disable_tracing": True}))
+    prepare(cfg.model_copy(update={"disable_tracing": True}))
 
     assert not filter_path.exists()
     assert not (apiserver / HIGRESS_CONFIGMAP_PATH).exists()
 
 
 def test_embedded_tracing_preserves_operator_access_log_format(embedded_gateway):
-    cfg, apiserver, templates = embedded_gateway
+    cfg, apiserver, templates, prepare = embedded_gateway
     configmap_path = apiserver / HIGRESS_CONFIGMAP_PATH
     configmap_path.parent.mkdir(parents=True)
     configmap = yaml.safe_load((templates / HIGRESS_CONFIGMAP_PATH).read_text())
@@ -532,13 +433,11 @@ def test_embedded_tracing_preserves_operator_access_log_format(embedded_gateway)
     current_config = yaml.safe_dump(configmap)
     configmap_path.write_text(current_config)
 
-    prerun.prepare_gateway_config(
-        cfg.model_copy(update={"trace_otlp_endpoint": "collector.example:4317"})
-    )
+    prepare(cfg.model_copy(update={"trace_otlp_endpoint": "collector.example:4317"}))
     assert (apiserver / HIGRESS_FILTER_PATH).exists()
     assert configmap_path.read_text() == current_config
 
-    prerun.prepare_gateway_config(cfg.model_copy(update={"disable_tracing": True}))
+    prepare(cfg.model_copy(update={"disable_tracing": True}))
     assert not (apiserver / HIGRESS_FILTER_PATH).exists()
     assert configmap_path.read_text() == current_config
 
@@ -555,7 +454,7 @@ def test_embedded_tracing_preserves_operator_access_log_format(embedded_gateway)
 def test_embedded_log_collection_reports_incompatible_format(
     embedded_gateway, caplog, encoding, access_log_format, valid
 ):
-    cfg, apiserver, templates = embedded_gateway
+    cfg, apiserver, templates, prepare = embedded_gateway
     configmap_path = apiserver / HIGRESS_CONFIGMAP_PATH
     configmap_path.parent.mkdir(parents=True)
     configmap = yaml.safe_load((templates / HIGRESS_CONFIGMAP_PATH).read_text())
@@ -566,9 +465,7 @@ def test_embedded_log_collection_reports_incompatible_format(
     contents = yaml.safe_dump(configmap)
     configmap_path.write_text(contents)
 
-    prerun.prepare_gateway_config(
-        cfg.model_copy(update={"log_otlp_endpoint": "http://collector/v1/logs"})
-    )
+    prepare(cfg.model_copy(update={"log_otlp_endpoint": "http://collector/v1/logs"}))
 
     assert configmap_path.read_text() == contents
     assert (
@@ -579,7 +476,7 @@ def test_embedded_log_collection_reports_incompatible_format(
 def test_embedded_gateway_reconfigures_tracing_without_replacing_existing_settings(
     embedded_gateway,
 ):
-    cfg, root, templates = embedded_gateway
+    cfg, root, templates, prepare = embedded_gateway
     cm_path = root / HIGRESS_CONFIGMAP_PATH
     cm_path.parent.mkdir(parents=True)
     original = yaml.safe_load((templates / HIGRESS_CONFIGMAP_PATH).read_text())
@@ -588,9 +485,7 @@ def test_embedded_gateway_reconfigures_tracing_without_replacing_existing_settin
     original["data"]["mesh"] = yaml.safe_dump(mesh)
     cm_path.write_text(yaml.safe_dump(original))
 
-    prerun.prepare_gateway_config(
-        cfg.model_copy(update={"trace_otlp_endpoint": "collector.internal:4317"})
-    )
+    prepare(cfg.model_copy(update={"trace_otlp_endpoint": "collector.internal:4317"}))
     envoy_path = root / HIGRESS_FILTER_PATH
     assert envoy_path.exists()
     updated = yaml.safe_load(cm_path.read_text())
@@ -600,17 +495,17 @@ def test_embedded_gateway_reconfigures_tracing_without_replacing_existing_settin
     assert updated_mesh["accessLogEncoding"] == "JSON"
     assert "%REQ(TRACEPARENT):55%" in updated_mesh["accessLogFormat"]
 
-    prerun.prepare_gateway_config(cfg.model_copy(update={"disable_tracing": True}))
+    prepare(cfg.model_copy(update={"disable_tracing": True}))
     assert not envoy_path.exists()
     restored = yaml.safe_load(cm_path.read_text())
     assert yaml.safe_load(restored["data"]["mesh"]) == mesh
 
 
 def test_embedded_gateway_defaults_to_builtin_tempo(embedded_gateway):
-    cfg, root, _ = embedded_gateway
+    cfg, root, _, prepare = embedded_gateway
     cfg = cfg.model_copy(update={"advertise_address": "192.0.2.10"})
 
-    prerun.prepare_gateway_config(cfg)
+    prepare(cfg)
 
     config = yaml.safe_load((root / HIGRESS_FILTER_PATH).read_text())
     cluster = config["spec"]["configPatches"][0]["patch"]["value"]
@@ -626,7 +521,7 @@ def test_disabled_collector_removes_stale_config_and_service(tmp_path, collector
     collector_path.write_text("stale")
     cfg = Config(data_dir=str(tmp_path / "data"), log_otlp_endpoint=None)
 
-    assert not prerun.prepare_log_collection(cfg)
+    assert not alloy.prepare_log_collection(cfg)
     assert not collector_path.exists()
     assert "alloy" not in prerun.determine_enabled_services(cfg)
 
@@ -656,7 +551,7 @@ def test_invalid_otlp_settings_skip_collector_without_logging_secrets(
         log_otlp_authorization=authorization,
     )
 
-    assert not prerun.prepare_log_collection(cfg)
+    assert not alloy.prepare_log_collection(cfg)
     assert not collector_path.exists()
     assert "private" not in caplog.text
 
@@ -679,7 +574,7 @@ def test_docker_rejects_invalid_redaction_configuration(
         log_otlp_endpoint="http://collector/v1/logs",
     )
 
-    assert not prerun.prepare_log_collection(cfg)
+    assert not alloy.prepare_log_collection(cfg)
     assert not collector_path.exists()
     assert message in caplog.text
     assert "secret" not in caplog.text
@@ -692,12 +587,14 @@ def test_helm_logging_does_not_start_a_container_collector(tmp_path, collector_p
         log_pod_release="inference",
     )
 
-    assert not prerun.prepare_log_collection(cfg)
+    assert not alloy.prepare_log_collection(cfg)
     assert not collector_path.exists()
 
 
-def test_vllm_pd_logs_keep_native_engine_and_coordinator_ids(collector_path):
-    pipeline = prerun.ALLOY_LOG_TEMPLATE.with_name("common.alloy").read_text()
+def test_vllm_pd_logs_keep_native_engine_and_coordinator_ids():
+    pipeline = (
+        Path(__file__).parents[2] / "charts/gpustack-chart/files/alloy/common.alloy"
+    ).read_text()
     (coordinator_pattern,) = re.findall(
         r"value = `(\(\?P<pd_coordinator_id>[^`]+)`", pipeline
     )
@@ -738,8 +635,10 @@ def test_vllm_pd_logs_keep_native_engine_and_coordinator_ids(collector_path):
 
 
 @pytest.mark.parametrize("bootstrap_room", [0, 6_721_395_813_317_762_539, None])
-def test_sglang_pd_attempt_id_preserves_bootstrap_room(collector_path, bootstrap_room):
-    pipeline = prerun.ALLOY_LOG_TEMPLATE.with_name("common.alloy").read_text()
+def test_sglang_pd_attempt_id_preserves_bootstrap_room(bootstrap_room):
+    pipeline = (
+        Path(__file__).parents[2] / "charts/gpustack-chart/files/alloy/common.alloy"
+    ).read_text()
     pattern, replacement = re.search(
         r'replace_pattern\(log\.cache\["engine_json"\], '
         r'("(?:[^"\\]|\\.)*"), ("(?:[^"\\]|\\.)*")\)',

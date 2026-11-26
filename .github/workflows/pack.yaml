@@ -382,7 +382,6 @@ jobs:
         run: |
           helm dependency update charts/gpustack-chart
           helm lint charts/gpustack-chart
-          helm lint charts/gpustack-chart --set-string logging.endpoint=http://collector:4318/v1/logs
 
       - name: Helm package
         run: |

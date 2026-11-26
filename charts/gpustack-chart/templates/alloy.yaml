@@ -1,4 +1,17 @@
 {{- if .Values.logging.endpoint }}
+{{- $common := required "Missing Alloy common config" (.Files.Get "files/alloy/common.alloy") }}
+{{- $pipeline := required "Missing Alloy Kubernetes config" (.Files.Get "files/alloy/kubernetes.alloy") }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-alloy
+  namespace: {{ .Release.Namespace }}
+data:
+  common.alloy: |
+    {{- $common | nindent 4 }}
+  kubernetes.alloy: |
+    {{- $pipeline | nindent 4 }}
+---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -48,6 +61,8 @@ spec:
       app: {{ .Release.Name }}-alloy
   template:
     metadata:
+      annotations:
+        checksum/config: {{ cat $common $pipeline | sha256sum }}
       labels:
         app: {{ .Release.Name }}-alloy
     spec:
@@ -63,9 +78,8 @@ spec:
         runAsNonRoot: true
       containers:
         - name: alloy
-          image: {{ printf "%s:%s" (include "gpustack.image" .) (include "gpustack.imageTag" .) | quote }}
+          image: {{ printf "%s/grafana/alloy:v1.22.0" (include "gpustack.hub" .) | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["/usr/local/bin/alloy"]
           args:
             - run
             - --disable-reporting
@@ -108,12 +122,18 @@ spec:
               cpu: 25m
               memory: 64Mi
           volumeMounts:
+            - name: alloy-config
+              mountPath: /etc/gpustack/logging
+              readOnly: true
             - name: alloy-state
               mountPath: /var/lib/alloy
             {{- with (include "gpustack.loggingCaMount" . | trim) }}
             {{- . | nindent 12 }}
             {{- end }}
       volumes:
+        - name: alloy-config
+          configMap:
+            name: {{ .Release.Name }}-alloy
         - name: alloy-state
           emptyDir: {}
         {{- with (include "gpustack.loggingCaVolume" . | trim) }}

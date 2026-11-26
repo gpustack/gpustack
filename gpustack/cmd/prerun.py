@@ -1,30 +1,18 @@
 import os
 import sys
 import argparse
-from decimal import Decimal, ROUND_DOWN
-from glob import escape as escape_glob
-import json
 import logging
 from pathlib import Path
-import re
 from shutil import move
-from string import Template
-from tempfile import NamedTemporaryFile
-from typing import List, Dict, Optional
-from urllib.parse import urlsplit
+from typing import List, Dict
 
-import yaml
-from gpustack_runtime import envs as runtime_envs
 from gpustack.config.config import Config
 from gpustack.schemas.config import GatewayModeEnum
 from gpustack.envs import MIGRATION_DATA_DIR, DATA_MIGRATION
 from gpustack.logging import setup_logging
-from gpustack.gateway.client.networking_istio_io_v1alpha3_api import (
-    HIGRESS_CONFIGMAP,
-    HIGRESS_DEFAULT_CONFIG,
-    configure_higress_access_log_context,
-    get_ingress_tracing_envoyfilter,
-)
+from gpustack.gateway.embedded_config import prepare_gateway_config
+from gpustack.observability.alloy import prepare_log_collection
+from gpustack.observability.tempo import prepare_builtin_tempo
 from gpustack.cmd.start import (
     start_cmd_options,
     parse_args,
@@ -46,26 +34,8 @@ from gpustack.utils.s6_services import (
     all_services,
     gpustack_service_name,
 )
-from gpustack.worker.log_export import ENGINE_LOG_EXPORT_DIR
 
 logger = logging.getLogger(__name__)
-ALLOY_LOG_TEMPLATE = Path("/etc/gpustack/logging/docker.alloy.tmpl")
-_DOCKER_MOUNTINFO = Path("/proc/self/mountinfo")
-_DOCKER_CONTAINER_MOUNT = re.compile(r"/containers/([0-9a-f]{64})/[^/]+$")
-_HIGRESS_TRACING_FILTER = "gpustack-otel-tracing"
-_TEMPO_DURATION_PART = re.compile(
-    r"([0-9]+(?:\.[0-9]*)?|\.[0-9]+)(ns|us|µs|μs|ms|s|m|h)"
-)
-_TEMPO_DURATION_UNITS = {
-    "ns": 1,
-    "us": 1_000,
-    "µs": 1_000,
-    "μs": 1_000,
-    "ms": 1_000_000,
-    "s": 1_000_000_000,
-    "m": 60_000_000_000,
-    "h": 3_600_000_000_000,
-}
 
 
 def setup_prerun_cmd(subparsers: argparse._SubParsersAction):
@@ -93,10 +63,10 @@ def run(args: argparse.Namespace):
             "Starting pre-run checks and setup s6-overlay configuration for GPUStack..."
         )
         s6_base_path = args.s6_base_path or "/etc/s6-overlay/s6-rc.d"
+        logs_active = prepare_log_collection(cfg)
+        tempo_active = prepare_builtin_tempo(cfg)
         enabled_services = determine_enabled_services(
-            cfg,
-            logs_active=prepare_log_collection(cfg),
-            tempo_active=prepare_builtin_tempo(cfg),
+            cfg, logs_active=logs_active, tempo_active=tempo_active
         )
         # migrate hardcode postgres data dir if needed for determining dependency services
         migrate_hardcode_postgres_data_and_password(cfg, enabled_services)
@@ -114,7 +84,9 @@ def run(args: argparse.Namespace):
         if "postgres" in enabled_services:
             prepare_postgres_config(cfg)
         if cfg.gateway_mode == GatewayModeEnum.embedded:
-            prepare_gateway_config(cfg)
+            prepare_gateway_config(
+                cfg, prepare_env("GPUSTACK_GATEWAY_CONFIG", "gateway")
+            )
         if use_builtin_grafana(cfg):
             prepare_observability_config(cfg)
         logger.info("Pre-run checks and setup completed successfully.")
@@ -155,7 +127,7 @@ def ports_for_services(cfg: Config) -> Dict[int, str]:
     if not gateway_disabled:
         ports[cfg.api_port] = gpustack_service_name
 
-    if cfg.use_builtin_tempo() or _is_helm_tempo_pod(cfg):
+    if cfg.use_builtin_tempo():
         trace_storage_services.set_ports(cfg, ports)
 
     return ports
@@ -276,378 +248,6 @@ def prepare_postgres_config(cfg: Config):
 
 def get_migration_done_file(cfg: Config) -> Path:
     return Path(cfg.data_dir) / "run" / "state_migration_done"
-
-
-def prepare_gateway_config(cfg: Config):
-    # prepare gateway dirs
-    config_path = prepare_env("GPUSTACK_GATEWAY_CONFIG", "gateway")
-    higress_embedded_kubeconfig = Path(cfg.higress_base_dir()) / "kubeconfig"
-
-    if cfg.gateway_mode == GatewayModeEnum.embedded:
-        _prepare_higress_observability(
-            higress_embedded_kubeconfig.parent / "apiserver",
-            cfg.effective_trace_otlp_endpoint,
-            log_enabled=bool(cfg.log_otlp_endpoint),
-        )
-        with open(config_path, "w") as f:
-            f.write(f"DATA_DIR={cfg.data_dir}\n")
-            f.write(f"LOG_DIR={cfg.log_dir}\n")
-            f.write(f"GATEWAY_HTTP_PORT={cfg.get_gateway_port()}\n")
-            f.write(f"GATEWAY_HTTPS_PORT={cfg.tls_port}\n")
-            f.write(f"GATEWAY_CONCURRENCY={cfg.gateway_concurrency}\n")
-            f.write(f"GPUSTACK_API_PORT={cfg.get_api_port()}\n")
-            f.write(f"EMBEDDED_KUBECONFIG_PATH={higress_embedded_kubeconfig}\n")
-        with open(higress_embedded_kubeconfig, "w") as f:
-            f.write(
-                f"""apiVersion: v1
-kind: Config
-clusters:
-  - name: higress
-    cluster:
-      server: https://127.0.0.1:{os.getenv('APISERVER_PORT', '18443')}
-      insecure-skip-tls-verify: true
-users:
-  - name: higress-admin
-    user: {{}}
-contexts:
-  - name: higress
-    context:
-      cluster: higress
-      user: higress-admin
-current-context: higress
-"""
-            )
-
-
-def _write_yaml_atomically(path: Path, content: dict) -> None:
-    _write_text_atomically(path, yaml.safe_dump(content, sort_keys=False))
-
-
-def _write_text_atomically(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with NamedTemporaryFile(
-        mode="w", encoding="utf-8", dir=path.parent, delete=False
-    ) as output:
-        temporary_path = Path(output.name)
-        try:
-            output.write(content)
-            output.close()
-            temporary_path.replace(path)
-        finally:
-            temporary_path.unlink(missing_ok=True)
-
-
-def _set_higress_access_log_context(
-    configmap_path: Path, template: dict, *, trace_enabled: bool, log_enabled: bool
-) -> None:
-    defaults = yaml.safe_load(template["data"]["mesh"])
-    configmap = (
-        yaml.safe_load(configmap_path.read_text())
-        if configmap_path.exists()
-        else template
-    )
-    mesh = yaml.safe_load(configmap["data"]["mesh"])
-    if configure_higress_access_log_context(
-        mesh, defaults, trace_enabled=trace_enabled, log_enabled=log_enabled
-    ):
-        configmap["data"]["mesh"] = yaml.safe_dump(mesh, sort_keys=False)
-        _write_yaml_atomically(configmap_path, configmap)
-    if log_enabled and not _supports_higress_log_collection(mesh):
-        logger.warning(
-            "Could not verify the Higress access-log template. Check that emitted "
-            "records are JSON with string path and request_id fields."
-        )
-
-
-def _supports_higress_log_collection(mesh: dict) -> bool:
-    if not isinstance(mesh, dict):
-        return False
-    try:
-        fields = json.loads(mesh.get("accessLogFormat", ""))
-    except (TypeError, ValueError, RecursionError):
-        return False
-    return isinstance(fields, dict) and all(
-        isinstance(fields.get(field), str) for field in ("path", "request_id")
-    )
-
-
-def _prepare_higress_observability(
-    apiserver_dir: Path, endpoint: Optional[str], *, log_enabled: bool
-) -> None:
-    """Configure the embedded gateway before the file-backed API server starts."""
-    configmap_path = apiserver_dir / HIGRESS_CONFIGMAP
-    filter_path = apiserver_dir / "envoyfilters" / f"{_HIGRESS_TRACING_FILTER}.yaml"
-    enabled = bool(endpoint) or log_enabled
-    if not enabled:
-        filter_path.unlink(missing_ok=True)
-        if not configmap_path.exists():
-            return
-
-    template = yaml.safe_load((HIGRESS_DEFAULT_CONFIG / HIGRESS_CONFIGMAP).read_text())
-    if enabled:
-        resource = get_ingress_tracing_envoyfilter(
-            _HIGRESS_TRACING_FILTER, template["metadata"]["namespace"], endpoint
-        )
-        _write_yaml_atomically(
-            filter_path, resource.model_dump(mode="json", exclude_none=True)
-        )
-    _set_higress_access_log_context(
-        configmap_path, template, trace_enabled=bool(endpoint), log_enabled=log_enabled
-    )
-
-
-def _log_export_options(cfg: Config) -> dict:
-    endpoint = cfg.log_otlp_endpoint or ""
-    try:
-        url = urlsplit(endpoint)
-        port = url.port
-    except ValueError:
-        raise ValueError("Invalid OTLP logs URL") from None
-    if (
-        url.scheme not in ("http", "https")
-        or not url.hostname
-        or not url.path
-        or url.username is not None
-        or url.query
-        or url.fragment
-        or port == 0
-        or any(character.isspace() for character in endpoint)
-    ):
-        raise ValueError("Expected a full OTLP/HTTP logs URL without credentials")
-
-    authorization = (
-        cfg.log_otlp_authorization.get_secret_value()
-        if cfg.log_otlp_authorization
-        else ""
-    )
-    if (authorization or cfg.log_otlp_ca_file) and url.scheme != "https":
-        raise ValueError("OTLP log authentication and custom CAs require HTTPS")
-    if any(ord(character) < 32 or ord(character) == 127 for character in authorization):
-        raise ValueError("Invalid OTLP Authorization header")
-
-    headers = (
-        f'{{"Authorization" = {json.dumps(authorization)}}}' if authorization else "{}"
-    )
-    return {
-        "endpoint": json.dumps(endpoint),
-        "headers": headers,
-        "ca_file": json.dumps(cfg.log_otlp_ca_file or ""),
-    }
-
-
-def _docker_application_log_receiver() -> str:
-    # Docker bind-mounts these generated files even with a custom hostname
-    # or a private cgroup namespace.
-    container_ids = set()
-    try:
-        for line in _DOCKER_MOUNTINFO.read_text().splitlines():
-            fields = line.split(maxsplit=5)
-            if len(fields) < 5 or fields[4] not in (
-                "/etc/hostname",
-                "/etc/hosts",
-                "/etc/resolv.conf",
-            ):
-                continue
-            match = _DOCKER_CONTAINER_MOUNT.search(fields[3])
-            if match:
-                container_ids.add(match[1])
-    except OSError:
-        pass
-
-    if len(container_ids) != 1:
-        logger.warning("Unable to identify this Docker container for application logs")
-        return ""
-
-    (container_id,) = container_ids
-    host = runtime_envs.GPUSTACK_RUNTIME_DOCKER_HOST.removeprefix("http+")
-    return f'''loki.source.docker "application" {{
-  host = {json.dumps(host)}
-  targets = [{{"__meta_docker_container_id" = {json.dumps(container_id)}}}]
-  forward_to = [otelcol.receiver.loki.application.receiver]
-}}
-
-otelcol.receiver.loki "application" {{
-  output {{
-    logs = [gpustack.logs.export.application]
-  }}
-}}'''
-
-
-def _check_log_redact_patterns() -> None:
-    name = "GPUSTACK_LOG_REDACT_PATTERNS"
-    try:
-        patterns = json.loads(os.getenv(name) or "[]")
-    except json.JSONDecodeError:
-        raise ValueError(f"{name} must be a JSON array of strings") from None
-    if not isinstance(patterns, list):
-        raise ValueError(f"{name} must be a JSON array of strings")
-    for index, pattern in enumerate(patterns):
-        # Alloy compiles the expressions with RE2 when it loads the pipeline.
-        if not isinstance(pattern, str) or not pattern:
-            raise ValueError(f"{name}[{index}] must be a non-empty RE2 expression")
-
-
-def prepare_log_collection(cfg: Config) -> bool:
-    """Generate the Docker Alloy config when log export is configured."""
-    path = Path(os.getenv("GPUSTACK_RUN_DIR", "/run/gpustack")) / "logging/config.alloy"
-    try:
-        path.unlink(missing_ok=True)
-        if not cfg.log_otlp_endpoint or cfg.log_pod_release:
-            return False
-
-        _check_log_redact_patterns()
-        options = _log_export_options(cfg)
-        directory = escape_glob(str(Path(cfg.log_dir)))
-        state = Path(cfg.data_dir) / "log-collector"
-        engine = [
-            f"{directory}/{ENGINE_LOG_EXPORT_DIR}/archives/*/{name}{suffix}"
-            for name in ("container.log", "container.workload-*.log")
-            for suffix in ("", ".[0-9]*")
-        ]
-        higress_receiver = ""
-        if cfg.gateway_mode == GatewayModeEnum.embedded:
-            higress = [
-                f"{directory}/higress/access.log{suffix}" for suffix in ("", ".[1-5]")
-            ]
-            higress_receiver = f'''otelcol.receiver.filelog "higress" {{
-  include = {json.dumps(higress)}
-  start_at = "end"
-  storage = otelcol.storage.file.offsets.handler
-
-  output {{
-    logs = [gpustack.logs.export.higress]
-  }}
-}}'''
-
-        config = Template(ALLOY_LOG_TEMPLATE.read_text()).substitute(
-            **options,
-            offsets=json.dumps(str(state)),
-            application_receiver=_docker_application_log_receiver(),
-            engine=json.dumps(engine),
-            higress_receiver=higress_receiver,
-        )
-
-        _write_text_atomically(path.with_name("storage-path"), str(state / "alloy"))
-        # The generated config can contain credentials. The temporary file has mode 0600.
-        _write_text_atomically(path, config)
-    except (OSError, TypeError, KeyError, ValueError) as exc:
-        logger.error("Unable to enable application log collection: %s", exc)
-        return False
-    return True
-
-
-def _is_helm_tempo_pod(cfg: Config) -> bool:
-    pod = os.getenv("GPUSTACK_BUILTIN_TEMPO_POD")
-    return bool(pod and pod == cfg.server_id and not cfg.disable_tracing)
-
-
-def _valid_tempo_retention(retention: str) -> bool:
-    # Go durations support compound units and truncate each part to nanoseconds.
-    duration = retention.removeprefix("+")
-    parts = list(_TEMPO_DURATION_PART.finditer(duration))
-    if "".join(part[0] for part in parts) != duration:
-        return False
-    nanoseconds = sum(
-        (Decimal(part[1]) * _TEMPO_DURATION_UNITS[part[2]]).to_integral_value(
-            rounding=ROUND_DOWN
-        )
-        for part in parts
-    )
-    return 0 < nanoseconds < 2**63
-
-
-def prepare_builtin_tempo(cfg: Config) -> bool:
-    """Write the configuration consumed by the supervised Tempo service."""
-    helm_tempo = _is_helm_tempo_pod(cfg)
-    if not helm_tempo and not cfg.use_builtin_tempo():
-        return False
-
-    path = Path(os.getenv("GPUSTACK_RUN_DIR") or "/run/gpustack") / "tempo/config.yaml"
-    data = Path(cfg.data_dir) / "tempo"
-    retention_env = "GPUSTACK_BUILTIN_TEMPO_RETENTION"
-    default_retention = "168h"
-    retention = os.getenv(retention_env) or default_retention
-    if not _valid_tempo_retention(retention):
-        retention = default_retention
-        logger.warning(
-            "Invalid %s. Using %s for embedded Tempo retention.",
-            retention_env,
-            retention,
-        )
-    max_bytes_env = "GPUSTACK_BUILTIN_TEMPO_MAX_RETAINED_BYTES"
-    default_max_bytes = 30_000_000_000
-    try:
-        max_retained_bytes = int(os.getenv(max_bytes_env, str(default_max_bytes)))
-    except ValueError:
-        max_retained_bytes = 0
-    if not 0 < max_retained_bytes < 2**64:
-        max_retained_bytes = default_max_bytes
-        logger.warning(
-            "Invalid %s. Using %d bytes for embedded Tempo retention.",
-            max_bytes_env,
-            max_retained_bytes,
-        )
-    loopback = "127.0.0.1"
-    server = {
-        "http_listen_address": loopback,
-        "http_listen_port": cfg.builtin_tempo_http_port,
-        "grpc_listen_address": loopback,
-        "grpc_listen_port": cfg.builtin_tempo_grpc_port,
-    }
-    if helm_tempo and cfg.builtin_tempo_tls_dir:
-        tls_dir = Path(cfg.builtin_tempo_tls_dir)
-        server.update(
-            http_listen_address="0.0.0.0",
-            http_tls_config={
-                "cert_file": str(tls_dir / "server.crt"),
-                "key_file": str(tls_dir / "server.key"),
-                "client_ca_file": str(tls_dir / "ca.crt"),
-                "client_auth_type": "RequireAndVerifyClientCert",
-            },
-        )
-    try:
-        _write_yaml_atomically(
-            path,
-            {
-                "target": "all",
-                "server": server,
-                "distributor": {
-                    "receivers": {
-                        "otlp": {
-                            "protocols": {
-                                "grpc": {
-                                    "endpoint": f"0.0.0.0:{cfg.builtin_tempo_otlp_port}"
-                                },
-                            },
-                        },
-                    },
-                },
-                "ingester": {
-                    "lifecycler": {"address": loopback},
-                    "flush_all_on_shutdown": True,
-                },
-                "memberlist": {"bind_addr": [loopback], "bind_port": 0},
-                "storage": {
-                    "trace": {
-                        "backend": "local",
-                        "blocklist_poll": "1m",
-                        "wal": {"path": str(data / "wal")},
-                        "local": {"path": str(data / "blocks")},
-                    },
-                },
-                "compactor": {
-                    "compaction": {
-                        "block_retention": retention,
-                        "max_retained_bytes": max_retained_bytes,
-                    }
-                },
-                "usage_report": {"reporting_enabled": False},
-            },
-        )
-    except OSError as exc:
-        logger.warning("Unable to configure embedded Tempo: %s", exc)
-        return False
-    return True
 
 
 def prepare_observability_config(cfg: Config):
