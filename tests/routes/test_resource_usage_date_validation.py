@@ -28,6 +28,7 @@ def usage_app_and_session():
     session.stream.return_value = stream
 
     app = FastAPI()
+    register_handlers(app)
     app.include_router(router, prefix="/v2/usage")
     app.dependency_overrides[get_session] = lambda: session
     app.dependency_overrides[get_current_user] = lambda: User(id=1, name="test-user")
@@ -48,8 +49,15 @@ def usage_app_and_session():
         "/storage/breakdown/export/estimate",
     ],
 )
+@pytest.mark.parametrize(
+    "filters",
+    [
+        pytest.param({}, id="date-range"),
+        pytest.param({"organization_ids": [1]}, id="forbidden-filter"),
+    ],
+)
 async def test_resource_usage_rejects_reversed_dates_before_querying(
-    path, usage_app_and_session
+    path, filters, usage_app_and_session
 ):
     app, session = usage_app_and_session
     async with AsyncClient(
@@ -62,11 +70,15 @@ async def test_resource_usage_rejects_reversed_dates_before_querying(
                 "start_date": "2026-01-02",
                 "end_date": "2026-01-01",
                 "group_by": ["date"],
+                **filters,
             },
         )
 
     assert response.status_code == 422
-    assert response.json()["detail"][0]["loc"] == ["body", "end_date"]
+    error = response.json()
+    assert error["code"] == 422
+    assert error["reason"] == "Invalid"
+    assert error["message"] == "end_date must be on or after start_date"
     session.exec.assert_not_called()
     session.execute.assert_not_called()
     session.stream.assert_not_called()
@@ -75,24 +87,33 @@ async def test_resource_usage_rejects_reversed_dates_before_querying(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("path", ["/summary", "/resource-events"])
 @pytest.mark.parametrize(
-    "filters,expected_status,expected_message",
+    "filters,expected_status,expected_reason,expected_message",
     [
         pytest.param(
-            {}, 422, "end_date must be on or after start_date", id="date-range"
+            {},
+            422,
+            "Invalid",
+            "end_date must be on or after start_date",
+            id="date-range",
         ),
         pytest.param(
             {"organization_ids": "1"},
             403,
+            "Forbidden",
             "No permission to filter by organization",
             id="forbidden-filter",
         ),
     ],
 )
 async def test_get_resource_usage_rejects_reversed_dates_after_filter_permission_check(
-    path, filters, expected_status, expected_message, usage_app_and_session
+    path,
+    filters,
+    expected_status,
+    expected_reason,
+    expected_message,
+    usage_app_and_session,
 ):
     app, session = usage_app_and_session
-    register_handlers(app)
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -107,7 +128,10 @@ async def test_get_resource_usage_rejects_reversed_dates_after_filter_permission
         )
 
     assert response.status_code == expected_status
-    assert response.json()["message"] == expected_message
+    error = response.json()
+    assert error["code"] == expected_status
+    assert error["reason"] == expected_reason
+    assert error["message"] == expected_message
     session.exec.assert_not_called()
     session.execute.assert_not_called()
     session.stream.assert_not_called()
