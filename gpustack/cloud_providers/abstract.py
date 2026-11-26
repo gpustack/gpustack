@@ -134,6 +134,8 @@ class ProviderClientBase(ABC):
         worker_name: str,
         secret_configs: Dict[str, Any] = {},
         ssh_public_key: Optional[str] = None,
+        *,
+        trace_otlp_endpoint: Optional[str] = None,
     ) -> UserDataTemplate:
         """
         Build the cloud-init document for a worker.
@@ -152,6 +154,7 @@ class ProviderClientBase(ABC):
             image_name=image_name,
             secret_configs=secret_configs,
             worker_name=worker_name,
+            trace_otlp_endpoint=trace_otlp_endpoint,
         )
         return user_data
 

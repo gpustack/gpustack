@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 from gpustack.cloud_providers.digital_ocean import DigitalOceanClient
 from gpustack.cloud_providers.shuihua import ShuihuaProviderClient
 from gpustack.config.config import Config
+from gpustack.schemas.config import PredefinedConfigNoDefaults
 from gpustack.schemas.workers import Worker, WorkerStateEnum
 from gpustack.schemas.clusters import (
     Cluster,
@@ -156,21 +157,38 @@ async def test_provisioning_flow(monkeypatch, caplog):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("provider", ["digitalocean", "shuihua"])
 @pytest.mark.parametrize(
-    "options, expected",
+    "options, docker_runtime, expected",
     [
-        ({}, "[2001:db8::1]:4317"),
+        ({}, True, "[2001:db8::1]:4317"),
         (
             {"trace_advertise_endpoint": "collector.example:14317"},
+            True,
             "collector.example:14317",
         ),
-        ({"disable_tracing": True}, None),
+        (
+            {"trace_otlp_endpoint": "collector.example:4317"},
+            True,
+            "collector.example:4317",
+        ),
+        ({}, False, None),
+        (
+            {
+                "disable_tracing": True,
+                "trace_advertise_endpoint": "collector.example:14317",
+            },
+            True,
+            None,
+        ),
     ],
 )
 async def test_cloud_worker_receives_trace_endpoint(
-    monkeypatch, tmp_path, provider, options, expected
+    monkeypatch, tmp_path, provider, options, docker_runtime, expected
 ):
-    monkeypatch.setenv("GPUSTACK_RUN_DIR", str(tmp_path / "run"))
     monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+    if docker_runtime:
+        monkeypatch.setenv("GPUSTACK_RUN_DIR", str(tmp_path / "run"))
+    else:
+        monkeypatch.delenv("GPUSTACK_RUN_DIR", raising=False)
     cfg = Config(data_dir=str(tmp_path), advertise_address="192.0.2.10", **options)
     if provider == "digitalocean":
         client = DigitalOceanClient("test-token")
@@ -185,12 +203,15 @@ async def test_cloud_worker_receives_trace_endpoint(
         )
     else:
         client = ShuihuaProviderClient("test-token", base_url="https://cloud.example")
+    construct_user_data = AsyncMock(wraps=client.construct_user_data)
+    monkeypatch.setattr(client, "construct_user_data", construct_user_data)
     create_instance = AsyncMock(return_value="test-instance")
     monkeypatch.setattr(client, "create_instance", create_instance)
+    ssh_key_id = "key" if provider == "digitalocean" else None
     monkeypatch.setattr(
         "gpustack.schemas.clusters.Credential.one_by_id",
         AsyncMock(
-            return_value=SimpleNamespace(external_id="key", public_key="ssh-key")
+            return_value=SimpleNamespace(external_id=ssh_key_id, public_key="ssh-key")
         ),
     )
     worker = Worker(
@@ -202,6 +223,10 @@ async def test_cloud_worker_receives_trace_endpoint(
             id=1,
             server_url="http://[2001:db8::1]:30080",
             registration_token="registration-token",
+            worker_config=PredefinedConfigNoDefaults(
+                huggingface_token="worker-token",
+                insecure_tls=True,
+            ),
         ),
         worker_pool=WorkerPool(id=1, os_image="test-image", instance_type="test-type"),
     )
@@ -210,7 +235,14 @@ async def test_cloud_worker_receives_trace_endpoint(
         AsyncMock(), client, worker, cfg
     )
 
-    document = yaml.safe_load(create_instance.await_args.args[0].user_data)
+    assert construct_user_data.await_args.kwargs["trace_otlp_endpoint"] == expected
+    create_request = create_instance.await_args.args[0]
+    assert create_request.ssh_key_id == ssh_key_id
+    document = yaml.safe_load(create_request.user_data)
+    if provider == "shuihua":
+        assert document["ssh_authorized_keys"] == ["ssh-key"]
+    else:
+        assert "ssh_authorized_keys" not in document
     (entry,) = [
         file
         for file in document["write_files"]
@@ -219,7 +251,12 @@ async def test_cloud_worker_receives_trace_endpoint(
     config = yaml.safe_load(entry["content"])
     assert config["server_url"] == worker.cluster.server_url
     assert config["token"] == "registration-token"
-    assert config.get("trace_otlp_endpoint") == expected
+    assert config["huggingface_token"] == "worker-token"
+    assert config["insecure_tls"] is True
+    if expected is None:
+        assert "trace_otlp_endpoint" not in config
+    else:
+        assert config["trace_otlp_endpoint"] == expected
 
 
 @pytest.mark.asyncio

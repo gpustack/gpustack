@@ -6860,9 +6860,8 @@ class WorkerProvisioningController:
             # Providers with no SSH key API embed this in the cloud-config;
             # the ones that have one attach it by id instead and ignore it.
             ssh_public_key=ssh_key.public_key,
+            trace_otlp_endpoint=worker_trace_endpoint(cfg, server_url),
         )
-        if endpoint := worker_trace_endpoint(cfg, server_url):
-            user_data.set_worker_trace_endpoint(endpoint)
         to_create = construct_cloud_instance(worker, ssh_key, user_data.format())
         logger.info(f"Creating cloud instance for worker {worker.name}")
         logger.debug(f"Cloud instance configuration: {to_create}")

@@ -1,4 +1,5 @@
 from gpustack.cloud_providers.user_data import UserDataTemplate, ManufacturerEnum
+import pytest
 import yaml
 
 
@@ -153,3 +154,32 @@ def test_userdata_template_secret_configs():
     assert "SECRET_KEY: mysecret" in content
     assert "ANOTHER_KEY: 123" in content
     assert "OPTIONAL_KEY" not in content
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [None, "[2001:db8::1]:4317", 'collector: "测试🌐"\\path\n# next line'],
+)
+def test_userdata_template_trace_endpoint(endpoint):
+    template = UserDataTemplate(
+        server_url="http://test-server",
+        token="test-token",
+        image_name="gpustack/test:latest",
+        worker_name="test-worker",
+        trace_otlp_endpoint=endpoint,
+    )
+
+    document = yaml.safe_load(template.format())
+    config_file = next(
+        file
+        for file in document["write_files"]
+        if file["path"] == "/var/lib/gpustack/config.yaml"
+    )
+    expected = {
+        "server_url": "http://test-server",
+        "token": "test-token",
+        "worker_name": "test-worker",
+    }
+    if endpoint is not None:
+        expected["trace_otlp_endpoint"] = endpoint
+    assert yaml.safe_load(config_file["content"]) == expected

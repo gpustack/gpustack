@@ -19,6 +19,9 @@ write_files:
       {{ k }}: {{ v }}
       {%- endif %}
       {%- endfor %}
+      {%- if trace_config %}
+      {{ trace_config | indent(6) }}
+      {%- endif %}
 
   - path: /opt/gpustack-run-worker.sh
     permissions: '0755'
@@ -95,6 +98,8 @@ class UserDataTemplate:
         image_name: str,
         worker_name: str,
         secret_configs: Dict[str, Any] = {},
+        *,
+        trace_otlp_endpoint: Optional[str] = None,
     ):
         self.server_url = server_url
         self.token = token
@@ -104,6 +109,11 @@ class UserDataTemplate:
         self.worker_name = worker_name
         self.distribution = None
         self.secret_configs = secret_configs
+        trace_config = (
+            yaml.safe_dump({"trace_otlp_endpoint": trace_otlp_endpoint}).rstrip()
+            if trace_otlp_endpoint
+            else ""
+        )
         template = jinja2.Environment().from_string(default_user_data_template_jinja)
         self._data = yaml.safe_load(
             template.render(
@@ -112,6 +122,7 @@ class UserDataTemplate:
                 image_name=self.image_name,
                 secret_configs=self.secret_configs,
                 worker_name=self.worker_name,
+                trace_config=trace_config,
             )
         )
         self.distribution = "ubuntu"
@@ -123,16 +134,6 @@ class UserDataTemplate:
         command_list: List[str] = self._data.setdefault('runcmd', [])
         for idx, command in enumerate(commands):
             command_list.insert(idx, command)
-
-    def set_worker_trace_endpoint(self, endpoint: str) -> None:
-        worker_config = next(
-            file
-            for file in self._data["write_files"]
-            if file["path"] == "/var/lib/gpustack/config.yaml"
-        )
-        content = yaml.safe_load(worker_config["content"])
-        content["trace_otlp_endpoint"] = endpoint
-        worker_config["content"] = yaml.safe_dump(content, sort_keys=False)
 
     def add_ssh_authorized_keys(self, *public_keys: Optional[str]):
         """

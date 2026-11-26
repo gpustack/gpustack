@@ -612,6 +612,8 @@ class ShuihuaProviderClient(ProviderClientBase):
         worker_name,
         secret_configs: Dict[str, Any] = {},
         ssh_public_key: Optional[str] = None,
+        *,
+        trace_otlp_endpoint: Optional[str] = None,
     ) -> UserDataTemplate:
         user_data = await super().construct_user_data(
             server_url,
@@ -621,6 +623,7 @@ class ShuihuaProviderClient(ProviderClientBase):
             worker_name,
             secret_configs,
             ssh_public_key,
+            trace_otlp_endpoint=trace_otlp_endpoint,
         )
         # Shuihua only offers GPU images that already carry both the NVIDIA
         # driver and the container toolkit (checked on a live instance: nvidia-ctk
