@@ -41,7 +41,7 @@ from gpustack.schemas.models import (
 )
 from gpustack.server.bus import Event, EventBus, EventType
 from gpustack.server.controllers import ModelController, ModelInstanceController
-from gpustack.server.services import ModelInstanceService
+from gpustack.server.services import ModelInstanceService, WorkerService
 from gpustack.server.workqueue import WorkEvent, WorkEventType
 from tests.utils.model import new_model_instance, new_model_instance_workload
 
@@ -2166,6 +2166,42 @@ async def test_hybrid_any_required_task_failure_withdraws_all_apis(
     assert len(ctx.instance.distributed_servers.workloads) == 4
     assert ctx.instance.computed_resource_claim == resources
     assert ctx.instance.ports == [40000]
+
+
+@pytest.mark.asyncio
+async def test_failure_message_uses_the_resolved_worker_name(
+    hybrid_recovery, monkeypatch
+):
+    ctx = hybrid_recovery
+    task = ctx.instance.distributed_servers.workloads[0]
+    task.state = ModelInstanceWorkloadStateEnum.FAILED
+    lookup = AsyncMock(return_value=SimpleNamespace(name='gpu-node-01'))
+    monkeypatch.setattr(WorkerService, 'get_by_id', lookup)
+
+    await ctx.service.reconcile_managed_instance(ctx.instance.id, 0)
+
+    lookup.assert_awaited_once_with(task.worker_id)
+    assert ctx.instance.state == ModelInstanceStateEnum.ERROR
+    assert '(gpu-node-01)' in ctx.instance.state_message
+
+
+@pytest.mark.asyncio
+async def test_failure_message_omits_an_unresolved_worker_name(
+    hybrid_recovery, monkeypatch
+):
+    ctx = hybrid_recovery
+    task = ctx.instance.distributed_servers.workloads[0]
+    task.state = ModelInstanceWorkloadStateEnum.FAILED
+    lookup = AsyncMock(return_value=None)
+    monkeypatch.setattr(WorkerService, 'get_by_id', lookup)
+
+    await ctx.service.reconcile_managed_instance(ctx.instance.id, 0)
+
+    lookup.assert_awaited_once_with(task.worker_id)
+    message = ctx.instance.state_message
+    assert f'on Worker {task.worker_id} has failed.' in message
+    assert '()' not in message
+    assert 'None' not in message
 
 
 @pytest.mark.asyncio
