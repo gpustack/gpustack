@@ -345,6 +345,10 @@ Varsayılan konteyner kayıt defteri, `Docker` veya `Kubernetes` kümeleri için
 
 Varsayılan değer, sunucu içindeki yerleşik çalışan için `direct` ve bağımsız çalışanlar için `worker`'dir.
 
+!!! note
+
+    Hangi vekil modu kullanılırsa kullanılsın, Kubernetes dağıtımlarında çalışanın `--server-url` adresi (kayıt, kalp atışları, watch'lar ve tünel WebSocket'i) Higress ağ geçidinden **geçmeden** sunucuya ulaşmalıdır. Ağ geçidinin ingress adresini gösteriyorsa, ağ geçidinin yeniden başlatılması veya OOMKill edilmesi tüm çalışanları aynı anda keser; sonuçları için [Çalışanları Sunucuya Doğrudan Bağlama](../installation/helm.md#connecting-workers-directly-to-the-server) bölümüne bakın. Sunucunun küme içi Service adresini tercih edin. Docker ve gömülü kurulumlar farklıdır: orada sunucunun `port`'u (varsayılan 80) gömülü Higress dinleyicisinin kendisidir ve API `api_port`'ta (varsayılan 30080) dinler; bu yüzden istek Host'unu kullanan varsayılan Add Worker komutu çalışanları ağ geçidi üzerinden bağlar. `--server-url` için API portunu yalnızca çalışanlar o porta ulaşabiliyorsa kullanın.
+
 ### Tünel Modu (Güvenlik Duvarı veya NAT Arkasındaki Çalışan) { #tunnel-mode-worker-behind-a-firewall-or-nat }
 
 `direct` ve `worker` modlarında sunucu bağlantıyı başlatır, dolayısıyla çalışanın sunucudan erişilebilir olması gerekir. Bu her zaman mümkün değildir; örneğin çalışan bir güvenlik duvarı veya NAT arkasında, farklı bir ağda veya yalnızca giden trafiğe izin veren özel bir alt ağda oturduğunda.
