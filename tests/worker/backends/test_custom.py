@@ -112,12 +112,14 @@ def test_managed_router_wraps_the_original_command(create_custom_workload, comma
     [
         ({"log_collection": False}, False),
         ({"mode": "vllm-nixl"}, False),
+        ({"mode": "sglang-nixl"}, False),
         ({"role": "prefill"}, False),
         ({"image": "gpustack/runner:cuda13.0-sglang0.5.21"}, False),
         ({"router_image": "custom/runner:cuda13.0-sglang0.5.22"}, False),
         ({"model_image": "custom/runner:cuda13.0-sglang0.5.22"}, False),
         ({"router_command": "custom-router"}, False),
         ({"command": ["tini", "--"]}, False),
+        ({"arguments": ["smg", "launch"]}, False),
         ({"env": {"PYPI_PACKAGES_INSTALL": "sglang-router==0.2.0"}}, False),
         ({}, True),
         ({"trace_endpoint": "collector:4317", "log_collection": False}, False),
@@ -205,11 +207,17 @@ def test_managed_vllm_router_launches_native_tracing(
         arguments=["vllm-router", *router_args],
         trace_endpoint=endpoint,
         log_collection=log_collection,
+        env={
+            "OTEL_RESOURCE_ATTRIBUTES": "deployment.environment=qa,gpustack.model_id=1",
+            "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+            "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL": "grpc",
+        },
         return_container=True,
     )
     env = {item.name: item.value for item in container.envs}
     assert env["OTEL_RESOURCE_ATTRIBUTES"] == (
-        "gpustack.engine_instance_id=7,gpustack.engine_instance_name=test-router,"
+        "deployment.environment=qa,gpustack.engine_instance_id=7,"
+        "gpustack.engine_instance_name=test-router,"
         "gpustack.model_id=42,gpustack.engine_role=router"
     )
     execution = container.execution
@@ -240,12 +248,19 @@ def test_managed_vllm_router_launches_native_tracing(
     [
         {"trace_endpoint": None},
         {"image": "gpustack/runner:cuda13.0-vllm0.31.0"},
+        {"image": "gpustack/runner:cuda13.0-vllm0.33.0"},
         {"router_command": "vllm-router"},
+        {"command": ["tini", "--"]},
+        {"arguments": ["custom-launcher", "vllm-router"]},
         {"router_image": "custom/runner:cuda13.0-vllm0.32.0"},
+        {"model_image": "custom/runner:cuda13.0-vllm0.32.0"},
         {"env": {"PYPI_PACKAGES_INSTALL": "vllm-router==0.1.17"}},
         {"env": {"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "custom:4317"}},
+        {"env": {"OTEL_EXPORTER_OTLP_ENDPOINT": "custom:4317"}},
         {"env": {"OTEL_EXPORTER_OTLP_TRACES_PROTOCOL": "http/protobuf"}},
+        {"env": {"OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf"}},
         {"arguments": ["vllm-router", "--otlp-traces-endpoint=custom:4317"]},
+        {"arguments": ["vllm-router", "--enable-trace"]},
     ],
 )
 def test_router_retains_existing_command_when_tracing_is_not_injected(
@@ -257,11 +272,13 @@ def test_router_retains_existing_command_when_tracing_is_not_injected(
         "arguments": ["vllm-router", "--enable-igw"],
         **overrides,
     }
-    execution = create_custom_workload(**options)
+    container = create_custom_workload(**options, return_container=True)
+    assert {item.name: item.value for item in container.envs} == options.get("env", {})
+    execution = container.execution
     actual_args = (execution.command or []) + execution.args
     if actual_args[:2] == ["/bin/sh", "-c"]:
         actual_args = actual_args[4:]
-    assert actual_args == options["arguments"]
+    assert actual_args == options.get("command", []) + options["arguments"]
 
 
 def test_router_keeps_the_image_entrypoint(create_custom_workload):
