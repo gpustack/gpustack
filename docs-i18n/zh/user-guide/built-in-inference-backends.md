@@ -60,7 +60,7 @@ vLLM 无缝支持大多数先进开源模型，包括：
 - **视频任务**：视频生成和编辑（例如 `Wan2.2`）。
 - **音频任务**：语音合成、声音克隆等（例如 `Qwen3-TTS`）。
 
-GPUStack 集成 vLLM-Omni，为全模态模型的部署和管理提供流畅体验。通过 vLLM 后端部署模型时，GPUStack 会根据元数据自动判断是否为全模态模型，并为 vLLM-Omni 设置所需参数。
+GPUStack 集成 vLLM-Omni，为全模态模型的部署和管理提供流畅体验。通过 vLLM 后端部署模型时，GPUStack 会根据元数据自动判断是否为全模态模型，并为 vLLM-Omni 设置所需参数。 `video` 类别的部署会自动添加 `--omni`；所选 runner 镜像必须包含兼容的 vLLM-Omni。
 
 #### 跨 Worker 分布式推理（实验性） { #distributed-inference-across-workers-experimental }
 
@@ -122,7 +122,7 @@ vLLM 支持的完整参数列表参见[此处](https://docs.vllm.ai/en/stable/cl
 
 支持的模型参见 SGLang [文档](https://docs.sglang.ai/supported_models/generative_models.html)。
 
-SGLang 也支持图像模型。我们验证过的模型包括 Qwen-Image、Flux 1 Dev。更多信息参见 [SGLang Diffusion 文档](https://lmsys.org/blog/2025-11-07-sglang-diffusion/)。
+SGLang Diffusion 也支持图像和视频生成。已验证的图像模型包括 Qwen-Image、Flux 1 Dev。视频生成部署使用 `video` 类别，视频理解模型仍使用 `llm` 类别。异步任务流程参见[视频生成](../integrations/inference-apis.md#video-generation)。参考图片和参考视频的支持情况取决于所选模型及推理引擎版本。
 
 ### 支持的功能 { #supported-features_1 }
 

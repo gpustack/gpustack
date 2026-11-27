@@ -185,6 +185,7 @@ nav:
               - Overview: user-guide/playground/index.md
               - Chat: user-guide/playground/chat.md
               - Image: user-guide/playground/image.md
+              - Video: user-guide/playground/video.md
               - Audio: user-guide/playground/audio.md
               - Embedding: user-guide/playground/embedding.md
               - Rerank: user-guide/playground/rerank.md
