@@ -61,7 +61,7 @@ from gpustack.schemas.users import AuthProviderEnum, User
 from gpustack.schemas.clusters import Cluster
 from gpustack.schemas.workers import Worker, WorkerStateEnum
 from gpustack import envs
-from gpustack.utils.network import is_offline
+from gpustack.utils.network import is_heartbeat_offline
 from gpustack.server.cache import (
     delete_cache_by_key,
     locked_cached,
@@ -1654,9 +1654,7 @@ class ModelInstanceService:
                 or worker.unreachable
                 or worker.state
                 not in (WorkerStateEnum.READY, WorkerStateEnum.MAINTENANCE)
-                or is_offline(
-                    worker.heartbeat_time, envs.WORKER_HEARTBEAT_GRACE_PERIOD
-                )[0]
+                or is_heartbeat_offline(worker, envs.WORKER_HEARTBEAT_GRACE_PERIOD)[0]
             ):
                 return False
         return True
@@ -2038,9 +2036,7 @@ class ModelInstanceService:
             if worker.deleted_at is None
             and not worker.unreachable
             and worker.state != WorkerStateEnum.UNREACHABLE
-            and not is_offline(
-                worker.heartbeat_time, envs.WORKER_HEARTBEAT_GRACE_PERIOD
-            )[0]
+            and not is_heartbeat_offline(worker, envs.WORKER_HEARTBEAT_GRACE_PERIOD)[0]
         }
         return [
             instance

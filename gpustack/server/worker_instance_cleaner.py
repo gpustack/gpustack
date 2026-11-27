@@ -1,6 +1,7 @@
 import asyncio
 from collections import defaultdict
 import logging
+from typing import Dict, List
 
 from gpustack import envs
 from gpustack.schemas.models import ModelInstance
@@ -12,7 +13,8 @@ from gpustack.utils.model_instance_workers import (
     get_model_instance_worker_match,
     has_model_instance_stop_barrier,
 )
-from gpustack.utils.network import is_offline
+from gpustack.utils.network import is_heartbeat_offline
+from gpustack.utils.observation import observation_elapsed_seconds
 
 logger = logging.getLogger(__name__)
 
@@ -36,30 +38,54 @@ class WorkerInstanceCleaner:
             except Exception as e:
                 logger.error(f"Failed to cleanup worker instances: {e}")
 
+    @staticmethod
+    def _waiting_for_the_startup_grace() -> bool:
+        """Whether a fresh observation window still owes workers both grace periods."""
+        observed_for = observation_elapsed_seconds()
+        if observed_for is None:
+            return False
+        return observed_for < (
+            envs.WORKER_HEARTBEAT_GRACE_PERIOD
+            + envs.MODEL_INSTANCE_RESCHEDULE_GRACE_PERIOD
+        )
+
+    @staticmethod
+    def _offline_workers(workers: List[Worker]) -> Dict[str, dict]:
+        """Workers that are ready to be rescheduled off, keyed by name."""
+        offline_workers = {}
+        for worker in workers:
+            if worker.state == WorkerStateEnum.NOT_READY and (
+                not worker.maintenance or not worker.maintenance.enabled
+            ):
+                offline, last_heartbeat_str = is_heartbeat_offline(
+                    worker,
+                    envs.MODEL_INSTANCE_RESCHEDULE_GRACE_PERIOD,
+                )
+                if offline:
+                    offline_workers[worker.name] = {
+                        "id": worker.id,
+                        "cluster_id": worker.cluster_id,
+                        "last_heartbeat_str": last_heartbeat_str,
+                    }
+        return offline_workers
+
     async def _cleanup_offline_worker_instances(self):
         """
         Retain managed assignments and reschedule only legacy offline instances.
         """
+        # A new observation window owes workers the heartbeat grace to
+        # reconnect and then the full reschedule grace before anything on them
+        # is deleted. Counting only the observation floor would leave just the
+        # difference between the two periods.
+        if self._waiting_for_the_startup_grace():
+            return
+
         async with async_session() as session:
             workers = await Worker.all(session)
             if not workers:
                 return
 
-            offline_workers = {}
-            for worker in workers:
-                if worker.state == WorkerStateEnum.NOT_READY and (
-                    not worker.maintenance or not worker.maintenance.enabled
-                ):
-                    offline, last_heartbeat_str = is_offline(
-                        worker.heartbeat_time,
-                        envs.MODEL_INSTANCE_RESCHEDULE_GRACE_PERIOD,
-                    )
-                    if offline:
-                        offline_workers[worker.name] = {
-                            "id": worker.id,
-                            "cluster_id": worker.cluster_id,
-                            "last_heartbeat_str": last_heartbeat_str,
-                        }
+            offline_workers = self._offline_workers(workers)
 
             if not offline_workers:
                 return

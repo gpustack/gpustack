@@ -7,7 +7,7 @@ import random
 import socket
 import sys
 import time
-from typing import Optional, Set, Tuple, List, Union
+from typing import Any, Optional, Set, Tuple, List, Union
 from urllib.parse import urlparse
 import aiohttp
 import psutil
@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 import ipaddress
 
 import requests
+
+from gpustack.utils.observation import observation_started_at
 
 
 def normalize_route_path(path: str) -> str:
@@ -540,6 +542,7 @@ def is_offline(
     last_update: Optional[datetime],
     timeout_seconds: int,
     now: Optional[datetime] = None,
+    since: Optional[datetime] = None,
 ) -> Tuple[bool, Optional[str]]:
     """
     Check if the last_update time is offline based on the timeout_seconds.
@@ -548,6 +551,10 @@ def is_offline(
         last_update: The last update time (UTC datetime). If None, it means no record.
         timeout_seconds: The threshold in seconds to consider offline.
         now: The current time (UTC datetime), defaults to datetime.now(timezone.utc)
+        since: Age the update from this instant instead when it is older. A
+            server that was not running cannot tell silence from its own
+            downtime, so the caller floors the clock at the moment it started
+            observing. The returned string still describes ``last_update``.
 
     Returns:
         Tuple[bool, Optional[str]]: (Whether offline, last_update readable string)
@@ -561,11 +568,33 @@ def is_offline(
         return True, "unknown"
 
     last_update_ts = int(last_update.timestamp())
+    if since is not None:
+        last_update_ts = max(last_update_ts, int(since.timestamp()))
     now_ts = int(now.timestamp())
 
     is_offline_flag = (now_ts - last_update_ts) > timeout_seconds
     last_update_str = last_update.strftime("%Y-%m-%d %H:%M:%S UTC")
     return is_offline_flag, last_update_str
+
+
+def is_heartbeat_offline(
+    worker: Any,
+    timeout_seconds: int,
+    now: Optional[datetime] = None,
+) -> Tuple[bool, Optional[str]]:
+    """
+    Check whether a worker's last heartbeat is older than ``timeout_seconds``.
+
+    Time before this process started observing the cluster does not count as
+    silence, so a server restart, upgrade or maintenance window does not make
+    every worker look offline. See ``gpustack.utils.observation``.
+    """
+    return is_offline(
+        worker.heartbeat_time,
+        timeout_seconds,
+        now,
+        since=observation_started_at(),
+    )
 
 
 def check_registry_reachable(address: str) -> bool:
