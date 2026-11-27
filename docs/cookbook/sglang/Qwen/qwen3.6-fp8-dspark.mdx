@@ -1,0 +1,84 @@
+---
+title: Qwen3.6-35B-A3B-FP8-DSPARK
+description: "Deploy Qwen3.6-35B-A3B-FP8-DSPARK with SGLang — Qwen Mixture-of-Experts (MoE) model with EAGLE speculative decoding, FA3 multi-modal attention, and 256K context, on H20."
+tag: NEW
+---
+
+# Deploying Qwen3.6-35B-A3B-FP8-DSPARK with GPUStack and SGLang
+
+This tutorial guides you through setting up **Qwen3.6-35B-A3B-FP8-DSPARK**—a highly optimized Mixture-of-Experts (MoE) model with native FP8 precision and multi-modal capabilities—using **FAL IMAGES** in the **GPUStack** Custom Container mode. 
+
+---
+
+## 🛠️ Prerequisites & Setup
+
+### 1. Base Image
+* **Image Name**: `dogacel/sglang.5.14-dspark-cu130`
+* **Hardware Requirements**: H20
+
+### 2. Model Weights Source
+* **Model Name**: `Qwen3.6-35B-A3B-FP8-dspark`
+* **Download Source (ModelScope)**: `https://modelscope.cn/models/fal/Qwen3.6-35B-A3B-Magic-Prompt-FP8`
+* **Download DRAFT Source (ModelScope)**: `https://modelscope.cn/models/fal/Qwen3.6-35B-A3B-Magic-Prompt-FP8-DSpark`
+
+---
+
+## 🚀 GPUStack Configuration Steps
+
+Navigate to your GPUStack admin dashboard, go to **Models** -> **deployment**, and select the **model deploy** / **modelscope** mode.
+
+### 1. Basic Information
+* **Model Name**: `Qwen3.6-35B-A3B-FP8-DSPARK`
+* **Container Image**: `dogacel/sglang.5.14-dspark-cu130`
+
+### 2. Backend Arguments (Multi-line Format for UI Input)
+Based on the UI screenshot `image_e855a9.png`, you can directly copy and paste the following parameters into the **server Arguments** text area in GPUStack (each argument occupies a single line without backslashes):
+
+B200 config
+
+```text
+--trust-remote-code
+--speculative-algorithm DSPARK
+--speculative-draft-model-path /var/lib/gpustack/cache/model_scope/fal/Qwen3.6-35B-A3B-Magic-Prompt-FP8-DSpark
+--speculative-dflash-block-size 8
+--linear-attn-prefill-backend flashinfer
+--linear-attn-decode-backend flashinfer
+--mamba-radix-cache-strategy extra_buffer
+--cuda-graph-backend-prefill tc_piecewise
+--tp-size 1
+--max-running-requests 32
+--cuda-graph-max-bs-decode 32
+--weight-loader-disable-mmap
+--speculative-draft-attention-backend fa4
+--attention-backend trtllm_mha
+--mamba-ssm-dtype bfloat16
+--enable-flashinfer-allreduce-fusion
+--mem-fraction-static 0.6
+```
+
+H20 config
+
+```text
+--trust-remote-code
+--speculative-algorithm DSPARK
+--speculative-draft-model-path /var/lib/gpustack/cache/model_scope/fal/Qwen3.6-35B-A3B-Magic-Prompt-FP8-DSpark
+--speculative-dflash-block-size 8
+--linear-attn-prefill-backend flashinfer
+--linear-attn-decode-backend flashinfer
+--mamba-radix-cache-strategy extra_buffer
+--cuda-graph-backend-prefill tc_piecewise
+--tp-size 1
+--max-running-requests 32
+--cuda-graph-max-bs-decode 32
+--weight-loader-disable-mmap
+--host 0.0.0.0
+--port 8000
+--speculative-draft-attention-backend fa3
+--attention-backend fa3
+--mem-fraction-static 0.8
+```
+
+
+### 3. more config
+
+https://docs.sglang.io/cookbook/autoregressive/Qwen/Qwen3.6
