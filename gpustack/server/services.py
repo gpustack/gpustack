@@ -1247,6 +1247,36 @@ class CacheServiceInstanceService:
         await invalidate_cache_workers_ram()
 
 
+def format_workload_failure(
+    workload: ModelInstanceWorkload,
+    worker_name: Optional[str] = None,
+) -> str:
+    """Describe a failed workload and name the node to inspect.
+
+    ``worker_name`` is optional: resolving it needs a lookup, and a message
+    without it must stay readable rather than render an empty placeholder. A
+    blank or whitespace-only name is treated as absent.
+    """
+    label = f'"{workload.name}"'
+    if workload.component is not None:
+        label = f"{label} ({workload.component.kind})"
+
+    where = f"Worker {workload.worker_id}"
+    if worker_name and worker_name.strip():
+        where = f"{where} ({worker_name})"
+
+    ranks = ", ".join(
+        f"dp_rank={placement.dp_rank}/node_rank={placement.node_rank}"
+        for placement in workload.dp_rank_placements
+    )
+    detail = f" ({ranks})" if ranks else ""
+
+    return (
+        f"Workload {label} on {where} has {workload.state.value}{detail}. "
+        "Check the workload logs on that worker."
+    )
+
+
 class ModelInstanceService:
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -1485,15 +1515,14 @@ class ModelInstanceService:
                     failure is not None
                     and instance.state != ModelInstanceStateEnum.ERROR
                 ):
-                    ranks = ", ".join(
-                        f"dp_rank={p.dp_rank}/node_rank={p.node_rank}"
-                        for p in failure.dp_rank_placements
+                    worker = await WorkerService(self.session).get_by_id(
+                        failure.worker_id
                     )
                     source = {
                         "state": ModelInstanceStateEnum.ERROR,
-                        "state_message": (
-                            f"Workload {failure.name} on Worker {failure.worker_id} "
-                            f"({ranks}) is {failure.state.value}."
+                        "state_message": format_workload_failure(
+                            failure,
+                            worker.name if worker is not None else None,
                         ),
                     }
                 elif (
