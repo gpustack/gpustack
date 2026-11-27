@@ -121,6 +121,7 @@ Bir ağ geçidi eklentisinin **inside** yapılandırmasıyla sonuçlanan ayarlar
 
 | Değişken | Açıklama | Varsayılan | Kapsam |
 | --- | --- | --- | --- |
+| `GPUSTACK_BUILTIN_TEMPO_OTLP_LISTEN_ADDRESS` | Docker'daki yerleşik Tempo OTLP/gRPC alıcısının bağlandığı IP adresi. Varsayılan olarak loopback'tir; uzak Worker'lardan span kabul etmek için güvenilen bir özel IP (veya yayımlanan özel arayüz arkasında `0.0.0.0`) ayarlayın. | `127.0.0.1` | Sunucu |
 | `GPUSTACK_BUILTIN_TEMPO_RETENTION` | Docker'daki yerleşik Tempo için blok saklama süresi. `72h` gibi pozitif bir Go süresi girin. Geçersiz değer bir uyarı kaydeder ve `168h` değerine döner. Bkz. [Çıkarım Günlükleri ve İzleri](user-guide/observability.md#inference-logs-and-traces). | `168h` | Sunucu |
 
 ### Kullanım Takibi Yapılandırması { #usage-tracking-configuration }

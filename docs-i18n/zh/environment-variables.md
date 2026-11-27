@@ -124,6 +124,7 @@ TLS 协议版本配置会写入 `GPUSTACK_GATEWAY_MIRROR_INGRESS_NAME` 指定的
 
 | 变量 | 描述 | 默认值 | 作用范围 |
 | --- | --- | --- | --- |
+| `GPUSTACK_BUILTIN_TEMPO_OTLP_LISTEN_ADDRESS` | Docker 内置 Tempo 的 OTLP/gRPC 接收端监听 IP 地址。默认仅监听回环地址；如需接收远程 Worker 的 Span，请设为可信私网 IP（或在已发布私网端口的桥接网络中设为 `0.0.0.0`）。 | `127.0.0.1` | Server |
 | `GPUSTACK_BUILTIN_TEMPO_RETENTION` | Docker 内置 Tempo 的块保留时间。请使用正数的 Go 时长，例如 `72h`。值无效时会记录警告并采用 `168h`。参见[推理日志和追踪](user-guide/observability.md#inference-logs-and-traces)。 | `168h` | Server |
 
 ### 用量跟踪配置 { #usage-tracking-configuration }

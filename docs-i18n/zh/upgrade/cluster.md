@@ -34,7 +34,7 @@ docker run -d --name gpustack-worker \
 
 ### 为现有 Docker Worker 启用追踪 { #enable-tracing-on-existing-docker-workers }
 
-如果现有 Worker 启动时没有配置追踪端点，请在重新创建容器时添加 `-e GPUSTACK_TRACE_OTLP_ENDPOINT=<worker-reachable-host>:<port>`。保留原有 Worker 名称和数据卷以维持其身份。在 Docker 桥接网络中使用内置 Tempo 时，应在 Worker 的可信网络可访问的接口上发布 Server 的写入端口。使用默认端口时，在 Server 容器的 Docker 选项中添加 `-p <private-server-ip>:4317:4317`。如果 Worker 使用不同的地址或发布端口，在 Server 上设置 `GPUSTACK_TRACE_ADVERTISE_ENDPOINT`，新生成的 Worker 命令就会使用该地址。
+如果现有 Worker 启动时没有配置追踪端点，请在重新创建容器时添加 `-e GPUSTACK_TRACE_OTLP_ENDPOINT=<worker-reachable-host>:<port>`。保留原有 Worker 名称和数据卷以维持其身份。内置 Tempo 的 OTLP/gRPC 接收端默认仅监听回环地址（`127.0.0.1`）。如需在可信网络中接收远程 Worker 的 Span，请在使用宿主机网络的 Server 上设置 `GPUSTACK_BUILTIN_TEMPO_OTLP_LISTEN_ADDRESS=<private-server-ip>`，或在 Docker 桥接网络中设置 `GPUSTACK_BUILTIN_TEMPO_OTLP_LISTEN_ADDRESS=0.0.0.0` 并发布 `-p <private-server-ip>:4317:4317`。如果 Worker 使用不同的地址或发布端口，在 Server 上设置 `GPUSTACK_TRACE_ADVERTISE_ENDPOINT`，新生成的 Worker 命令就会使用该地址。
 
 ## Kubernetes 集群 { #kubernetes-cluster }
 

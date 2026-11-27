@@ -38,7 +38,7 @@ docker run -d --name gpustack-worker \
 
 ### 既存の Docker ワーカーでトレースを有効にする { #enable-tracing-on-existing-docker-workers }
 
-トレースエンドポイントを指定せずに起動したワーカーでは、コンテナーを再作成するときに `-e GPUSTACK_TRACE_OTLP_ENDPOINT=<worker-reachable-host>:<port>` を追加します。ワーカーの識別情報を保持するため、既存のワーカー名とデータボリュームを引き続き使用します。Docker ブリッジネットワークで組み込み Tempo を使う場合は、ワーカーの信頼できるネットワークから到達できるインターフェースで、サーバーの受信ポートを公開します。デフォルトのポートでは、サーバーコンテナーの Docker オプションに `-p <private-server-ip>:4317:4317` を追加します。ワーカーが別のアドレスや公開ポートを使う場合は、サーバーに `GPUSTACK_TRACE_ADVERTISE_ENDPOINT` を設定すると、新しく生成されるワーカーの起動コマンドにそのアドレスが使われます。
+トレースエンドポイントを指定せずに起動したワーカーでは、コンテナーを再作成するときに `-e GPUSTACK_TRACE_OTLP_ENDPOINT=<worker-reachable-host>:<port>` を追加します。ワーカーの識別情報を保持するため、既存のワーカー名とデータボリュームを引き続き使用します。組み込み Tempo の OTLP/gRPC レシーバーはデフォルトでループバック（`127.0.0.1`）にバインドされます。信頼できるネットワーク上のリモートワーカーからスパンを受け付けるには、ホストネットワークを使うサーバーで `GPUSTACK_BUILTIN_TEMPO_OTLP_LISTEN_ADDRESS=<private-server-ip>` を設定するか、Docker ブリッジネットワークで `GPUSTACK_BUILTIN_TEMPO_OTLP_LISTEN_ADDRESS=0.0.0.0` を設定して `-p <private-server-ip>:4317:4317` を公開します。ワーカーが別のアドレスや公開ポートを使う場合は、サーバーに `GPUSTACK_TRACE_ADVERTISE_ENDPOINT` を設定すると、新しく生成されるワーカーの起動コマンドにそのアドレスが使われます。
 
 ## Kubernetes クラスター { #kubernetes-cluster }
 

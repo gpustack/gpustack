@@ -66,8 +66,28 @@ def test_no_prometheus_at_all_is_a_first_class_answer(tmp_path):
 @pytest.mark.parametrize(
     ("environment", "options", "expected"),
     [
-        ("docker", {}, "[2001:db8::10]:4317"),
-        ("docker", {"enable_worker": True}, "[2001:db8::10]:4317"),
+        ("docker", {}, "127.0.0.1:4317"),
+        ("docker", {"enable_worker": True}, "127.0.0.1:4317"),
+        (
+            "docker",
+            {"builtin_tempo_otlp_listen_address": "0.0.0.0"},
+            "127.0.0.1:4317",
+        ),
+        (
+            "docker",
+            {"builtin_tempo_otlp_listen_address": "::"},
+            "[::1]:4317",
+        ),
+        (
+            "docker",
+            {"builtin_tempo_otlp_listen_address": "10.0.0.5"},
+            "10.0.0.5:4317",
+        ),
+        (
+            "docker",
+            {"builtin_tempo_otlp_listen_address": "[fd00::5]"},
+            "[fd00::5]:4317",
+        ),
         ("docker", {"trace_otlp_endpoint": "collector:4321"}, "collector:4321"),
         (
             "docker",
@@ -102,6 +122,34 @@ def test_effective_trace_endpoint(
     )
 
     assert cfg.effective_trace_otlp_endpoint == expected
+
+
+def test_effective_trace_endpoint_does_not_probe_advertise_address(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("GPUSTACK_RUN_DIR", str(tmp_path / "run"))
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+    cfg = Config(
+        data_dir=str(tmp_path / "data"),
+        gateway_mode="disabled",
+        token="registration-token",
+    )
+    monkeypatch.setattr(
+        Config,
+        "get_advertise_address",
+        lambda _self: (_ for _ in ()).throw(AssertionError("unexpected call")),
+    )
+
+    assert cfg.effective_trace_otlp_endpoint == "127.0.0.1:4317"
+
+
+@pytest.mark.parametrize("value", ["not-an-ip", "127.0.0.1:4317", "0.0.0.0/0"])
+def test_builtin_tempo_otlp_listen_address_validation(tmp_path, value):
+    with pytest.raises(ValidationError, match="builtin_tempo_otlp_listen_address"):
+        Config(
+            data_dir=str(tmp_path / "data"),
+            builtin_tempo_otlp_listen_address=value,
+        )
 
 
 @pytest.mark.parametrize("field", ["trace_otlp_endpoint", "trace_advertise_endpoint"])

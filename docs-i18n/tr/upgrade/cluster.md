@@ -38,7 +38,7 @@ docker run -d --name gpustack-worker \
 
 ### Mevcut Docker Worker'larında İzlemeyi Etkinleştirme { #enable-tracing-on-existing-docker-workers }
 
-Mevcut bir Worker izleme uç noktası olmadan başlatıldıysa, kapsayıcısını yeniden oluştururken `-e GPUSTACK_TRACE_OTLP_ENDPOINT=<worker-reachable-host>:<port>` seçeneğini ekleyin. Kimliğini korumak için mevcut Worker adını ve veri birimini saklayın. Docker köprü ağı kullanan yerleşik Tempo için, Sunucunun alım portunu Worker'ların güvenilir ağından erişilebilen bir arayüzde yayımlayın. Varsayılan portlarla Sunucu kapsayıcısının Docker seçeneklerine `-p <private-server-ip>:4317:4317` ekleyin. Worker'lar farklı bir adres veya yayımlanmış port kullanıyorsa, yeni oluşturulan Worker komutlarının bu adresi kullanması için Sunucuda `GPUSTACK_TRACE_ADVERTISE_ENDPOINT` değişkenini ayarlayın.
+Mevcut bir Worker izleme uç noktası olmadan başlatıldıysa, kapsayıcısını yeniden oluştururken `-e GPUSTACK_TRACE_OTLP_ENDPOINT=<worker-reachable-host>:<port>` seçeneğini ekleyin. Kimliğini korumak için mevcut Worker adını ve veri birimini saklayın. Yerleşik Tempo, OTLP/gRPC alıcısını varsayılan olarak loopback (`127.0.0.1`) adresine bağlar. Güvenilen bir ağdaki uzak Worker'lardan span kabul etmek için ana makine ağındaki Sunucuda `GPUSTACK_BUILTIN_TEMPO_OTLP_LISTEN_ADDRESS=<private-server-ip>` ayarlayın ya da Docker köprü ağında `GPUSTACK_BUILTIN_TEMPO_OTLP_LISTEN_ADDRESS=0.0.0.0` ayarlayıp `-p <private-server-ip>:4317:4317` yayımlayın. Worker'lar farklı bir adres veya yayımlanmış port kullanıyorsa, yeni oluşturulan Worker komutlarının bu adresi kullanması için Sunucuda `GPUSTACK_TRACE_ADVERTISE_ENDPOINT` değişkenini ayarlayın.
 
 ## Kubernetes Kümesi { #kubernetes-cluster }
 

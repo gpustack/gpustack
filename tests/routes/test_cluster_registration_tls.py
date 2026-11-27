@@ -154,8 +154,31 @@ def test_registration_env_var_name_matches_the_runtime_reader():
 @pytest.mark.parametrize(
     "server_url,docker,options,expected",
     [
-        ("http://server:30080", True, {}, "server:4317"),
-        ("http://[2001:db8::1]:30080", True, {}, "[2001:db8::1]:4317"),
+        ("http://server:30080", True, {}, None),
+        (
+            "http://server:30080",
+            True,
+            {"builtin_tempo_otlp_listen_address": "0.0.0.0"},
+            "server:4317",
+        ),
+        (
+            "http://[2001:db8::1]:30080",
+            True,
+            {"builtin_tempo_otlp_listen_address": "::"},
+            "[2001:db8::1]:4317",
+        ),
+        (
+            "http://public.example:30080",
+            True,
+            {"builtin_tempo_otlp_listen_address": "10.0.0.5"},
+            "10.0.0.5:4317",
+        ),
+        (
+            "http://public.example:30080",
+            True,
+            {"builtin_tempo_otlp_listen_address": "fd00::5"},
+            "[fd00::5]:4317",
+        ),
         (
             "http://server:30080",
             True,
@@ -184,7 +207,12 @@ def test_registration_env_var_name_matches_the_runtime_reader():
             },
             None,
         ),
-        ("http://server$(example):30080", True, {}, None),
+        (
+            "http://server$(example):30080",
+            True,
+            {"builtin_tempo_otlp_listen_address": "0.0.0.0"},
+            None,
+        ),
         ("http://server:30080", False, {}, None),
     ],
 )

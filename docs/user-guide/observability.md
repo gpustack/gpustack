@@ -122,7 +122,7 @@ The `Request Tracing` tab in deployment details initially searches the last 24 h
 
 When log export is enabled, the Server and Workers write one JSON stream to the container console. Alloy reads that stream alongside supported engine log formats. To check for discarded records, use Alloy's `otelcol_processor_filter_logs_filtered_total` metric with the `engine_format` or `higress_format` component. The engine filter rejects standalone plain-text lines without a recognized log prefix.
 
-For standard vLLM and SGLang launches, GPUStack automatically configures enabled log and trace export. Managed PD Router recipes apply their supported observability defaults. Explicit telemetry settings and custom launch configurations take precedence.
+For standard vLLM and SGLang launches, GPUStack automatically configures enabled log export (`vLLM >= 0.10.1`, `SGLang >= 0.5.9`) and trace export on managed runner images (`vLLM >= 0.17.0`, `SGLang >= 0.5.12`). Managed PD Router recipes apply their supported observability defaults. Older or custom images keep their existing launch behavior and continue to work with explicit telemetry settings, which always take precedence.
 
 Each tracing component sends spans directly to the selected receiver. The log endpoint must be reachable from the components that export logs. The trace endpoint must be reachable from the Server, Workers, gateways, and inference containers that export traces. The ingest connection uses plaintext gRPC, so use an address on a trusted network. Switching to an external receiver or disabling tracing stops built-in Tempo.
 
@@ -132,7 +132,7 @@ Each tracing component sends spans directly to the selected receiver. The log en
 2. To export traces to an external receiver, set `GPUSTACK_TRACE_OTLP_ENDPOINT=<collector-host>:4317` on the Server and each separate Worker. To use built-in Tempo with remote Workers, see [Enable Tracing on Existing Docker Workers](../upgrade/cluster.md#enable-tracing-on-existing-docker-workers).
 3. Replace `<collector-host>` with a name or address reachable from those containers. Pass the variables with `docker run -e` or under `environment` in your Compose file, then recreate the containers.
 
-Docker runs Tempo and Alloy inside the GPUStack container. Tempo stores its WAL and blocks under `<data_dir>/tempo` and serves queries on loopback. Trace files follow the lifecycle of the Server data volume. To change block retention, set `GPUSTACK_BUILTIN_TEMPO_RETENTION` on the Server and recreate its container.
+Docker runs Tempo and Alloy inside the GPUStack container. Tempo stores its WAL and blocks under `<data_dir>/tempo` and listens on loopback (`127.0.0.1`) by default for both queries and OTLP ingest. Trace files follow the lifecycle of the Server data volume. To change block retention, set `GPUSTACK_BUILTIN_TEMPO_RETENTION` on the Server and recreate its container. To accept OTLP spans from remote Workers on a trusted network, set `GPUSTACK_BUILTIN_TEMPO_OTLP_LISTEN_ADDRESS` on the Server.
 
 ### Configure Helm
 

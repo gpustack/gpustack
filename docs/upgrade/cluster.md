@@ -34,7 +34,7 @@ docker run -d --name gpustack-worker \
 
 ### Enable Tracing on Existing Docker Workers
 
-If an existing Worker was started without a trace endpoint, add `-e GPUSTACK_TRACE_OTLP_ENDPOINT=<worker-reachable-host>:<port>` when recreating its container. Keep its existing Worker name and data volume to preserve its identity. For built-in Tempo with a Docker bridge network, publish the Server's ingest port on an interface reachable from the Workers' trusted network. With default ports, add `-p <private-server-ip>:4317:4317` to the Server container's Docker options. If Workers use a different address or published port, set `GPUSTACK_TRACE_ADVERTISE_ENDPOINT` on the Server so newly generated Worker commands use that address.
+If an existing Worker was started without a trace endpoint, add `-e GPUSTACK_TRACE_OTLP_ENDPOINT=<worker-reachable-host>:<port>` when recreating its container. Keep its existing Worker name and data volume to preserve its identity. Built-in Tempo binds its OTLP/gRPC receiver to loopback (`127.0.0.1`) by default. To accept spans from remote Workers on a trusted network, set `GPUSTACK_BUILTIN_TEMPO_OTLP_LISTEN_ADDRESS=<private-server-ip>` on a host-networked Server, or set `GPUSTACK_BUILTIN_TEMPO_OTLP_LISTEN_ADDRESS=0.0.0.0` and publish `-p <private-server-ip>:4317:4317` on a Docker bridge network. If Workers use a different address or published port, set `GPUSTACK_TRACE_ADVERTISE_ENDPOINT` on the Server so newly generated Worker commands use that address.
 
 ## Kubernetes Cluster
 

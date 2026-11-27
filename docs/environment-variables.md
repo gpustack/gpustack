@@ -130,6 +130,7 @@ warning.
 
 | Variable | Description | Default | Scope |
 | --- | --- | --- | --- |
+| `GPUSTACK_BUILTIN_TEMPO_OTLP_LISTEN_ADDRESS` | IP address the embedded Docker Tempo OTLP/gRPC receiver binds to. Defaults to loopback; set to a trusted private IP (or `0.0.0.0` behind a published private interface) to accept spans from remote Workers. | `127.0.0.1` | Server |
 | `GPUSTACK_BUILTIN_TEMPO_RETENTION` | Block retention for embedded Docker Tempo. Use a positive Go duration such as `72h`. An invalid value logs a warning and falls back to `168h`. See [Inference Logs and Traces](user-guide/observability.md#inference-logs-and-traces). | `168h` | Server |
 
 ### Usage Tracking Configuration

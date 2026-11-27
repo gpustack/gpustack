@@ -126,7 +126,7 @@ Dağıtım ayrıntılarındaki `Request Tracing` sekmesi başlangıçta son 24 s
 
 Günlük aktarımı etkin olduğunda Sunucu ve Worker'lar kapsayıcı konsoluna tek bir JSON akışı yazar. Alloy bu akışı desteklenen motor günlüğü biçimleriyle birlikte okur. Atılan kayıtları kontrol etmek için Alloy'un `otelcol_processor_filter_logs_filtered_total` metriğine `engine_format` veya `higress_format` bileşeniyle bakın. Motor filtresi, tanınan bir günlük öneki olmayan bağımsız düz metin satırlarını eler.
 
-Standart vLLM ve SGLang başlatmalarında GPUStack, etkinleştirilen günlük ve iz aktarımını otomatik olarak yapılandırır. Yönetilen PD Router tarifleri, destekledikleri varsayılan gözlemlenebilirlik ayarlarını uygular. Açıkça belirtilen telemetri ayarları ve özel başlatma yapılandırmaları önceliklidir.
+Standart vLLM ve SGLang başlatmalarında GPUStack, etkinleştirilen günlük aktarımını (`vLLM >= 0.10.1`, `SGLang >= 0.5.9`) ve yönetilen runner görüntülerinde iz aktarımını (`vLLM >= 0.17.0`, `SGLang >= 0.5.12`) otomatik olarak yapılandırır. Yönetilen PD Router tarifleri, destekledikleri varsayılan gözlemlenebilirlik ayarlarını uygular. Eski veya özel görüntüler mevcut başlatma davranışını korur ve açıkça belirtilen telemetri ayarlarıyla çalışmaya devam eder; açık ayarlar her zaman önceliklidir.
 
 Her izleme bileşeni span'leri doğrudan seçilen alıcıya gönderir. Günlük aktaran bileşenler günlük uç noktasına ulaşabilmelidir. İz aktaran Sunucu, Worker'lar, ağ geçitleri ve çıkarım kapsayıcıları iz uç noktasına ulaşabilmelidir. Alım bağlantısı şifresiz gRPC kullanır, bu nedenle güvenilen bir ağdaki adresi kullanın. Harici bir alıcıya geçmek veya izlemeyi devre dışı bırakmak yerleşik Tempo'yu durdurur.
 
@@ -136,7 +136,7 @@ Her izleme bileşeni span'leri doğrudan seçilen alıcıya gönderir. Günlük 
 2. İzleri harici bir alıcıya aktarmak için sunucuda ve her ayrı çalışanda `GPUSTACK_TRACE_OTLP_ENDPOINT=<collector-host>:4317` değerini ayarlayın. Uzak çalışanlarla yerleşik Tempo'yu kullanmak için [Mevcut Docker Çalışanlarında İzlemeyi Etkinleştirme](../upgrade/cluster.md#enable-tracing-on-existing-docker-workers) bölümüne bakın.
 3. `<collector-host>` yerine bu konteynerlerin erişebildiği bir ad veya adres yazın. Değişkenleri `docker run -e` ile ya da Compose dosyanızdaki `environment` altında iletin, ardından konteynerleri yeniden oluşturun.
 
-Docker, Tempo ve Alloy'u GPUStack kapsayıcısında çalıştırır. Tempo, WAL ve blokları `<data_dir>/tempo` altında saklar ve sorguları yalnızca loopback üzerinden kabul eder. İz dosyaları sunucu veri biriminin yaşam döngüsünü izler. Blok saklama süresini değiştirmek için Sunucu'da `GPUSTACK_BUILTIN_TEMPO_RETENTION` değerini ayarlayıp kapsayıcıyı yeniden oluşturun.
+Docker, Tempo ve Alloy'u GPUStack kapsayıcısında çalıştırır. Tempo, WAL ve blokları `<data_dir>/tempo` altında saklar ve varsayılan olarak hem sorguları hem OTLP alımını yalnızca loopback (`127.0.0.1`) üzerinden dinler. İz dosyaları sunucu veri biriminin yaşam döngüsünü izler. Blok saklama süresini değiştirmek için Sunucu'da `GPUSTACK_BUILTIN_TEMPO_RETENTION` değerini ayarlayıp kapsayıcıyı yeniden oluşturun. Güvenilen bir ağdaki uzak Worker'lardan OTLP span'leri kabul etmek için Sunucu'da `GPUSTACK_BUILTIN_TEMPO_OTLP_LISTEN_ADDRESS` değerini ayarlayın.
 
 ### Helm'i Yapılandırma { #configure-helm }
 

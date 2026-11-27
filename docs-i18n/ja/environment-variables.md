@@ -134,6 +134,7 @@ TLS バージョンの設定は `GPUSTACK_GATEWAY_MIRROR_INGRESS_NAME` で
 
 | 変数 | 説明 | デフォルト | 対象 |
 | --- | --- | --- | --- |
+| `GPUSTACK_BUILTIN_TEMPO_OTLP_LISTEN_ADDRESS` | Docker 組み込み Tempo の OTLP/gRPC レシーバーがバインドする IP アドレスです。デフォルトはループバックです。リモートワーカーからスパンを受け付けるには、信頼できるプライベート IP（またはプライベートインターフェースで公開するブリッジ環境では `0.0.0.0`）を設定します。 | `127.0.0.1` | サーバー |
 | `GPUSTACK_BUILTIN_TEMPO_RETENTION` | Docker に組み込まれた Tempo のブロック保持期間です。`72h` のように正の Go の期間を指定します。無効な値の場合は警告が記録され、`168h` が使われます。[推論ログとトレース](user-guide/observability.md#inference-logs-and-traces)を参照してください。 | `168h` | サーバー |
 
 ### 使用量追跡の設定 { #usage-tracking-configuration }

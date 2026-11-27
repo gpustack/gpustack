@@ -72,7 +72,7 @@ def test_builtin_tempo_config_and_service(tmp_path, monkeypatch):
         "grpc_listen_port": 9095,
     }
     receiver = config["distributor"]["receivers"]["otlp"]["protocols"]
-    assert receiver == {"grpc": {"endpoint": "0.0.0.0:13417"}}
+    assert receiver == {"grpc": {"endpoint": "127.0.0.1:13417"}}
     assert config["storage"]["trace"] == {
         "backend": "local",
         "blocklist_poll": "1m",
@@ -93,7 +93,14 @@ def test_builtin_tempo_config_and_service(tmp_path, monkeypatch):
     monkeypatch.setattr(prerun, "is_port_reusable", lambda port: False)
     check_ports_availability(cfg, *services)
     assert service.exists()
-    assert cfg.effective_trace_otlp_endpoint.endswith(":13417")
+    assert cfg.effective_trace_otlp_endpoint == "127.0.0.1:13417"
+
+    remote = cfg.model_copy(update={"builtin_tempo_otlp_listen_address": "10.0.0.5"})
+    assert tempo.prepare_builtin_tempo(remote)
+    remote_config = yaml.safe_load((run_dir / "tempo" / "config.yaml").read_text())
+    assert remote_config["distributor"]["receivers"]["otlp"]["protocols"] == {
+        "grpc": {"endpoint": "10.0.0.5:13417"}
+    }
 
     external = cfg.model_copy(update={"trace_otlp_endpoint": "collector:4317"})
     active = tempo.prepare_builtin_tempo(external)
@@ -511,7 +518,7 @@ def test_embedded_gateway_defaults_to_builtin_tempo(embedded_gateway):
     cluster = config["spec"]["configPatches"][0]["patch"]["value"]
     endpoints = cluster["load_assignment"]["endpoints"][0]["lb_endpoints"]
     assert endpoints[0]["endpoint"]["address"]["socket_address"] == {
-        "address": "192.0.2.10",
+        "address": "127.0.0.1",
         "port_value": 4317,
     }
 

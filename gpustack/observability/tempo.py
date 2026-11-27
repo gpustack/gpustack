@@ -59,6 +59,8 @@ def prepare_builtin_tempo(cfg: Config) -> bool:
             retention,
         )
     loopback = "127.0.0.1"
+    listen_address = cfg.builtin_tempo_otlp_listen_address
+    otlp_host = f"[{listen_address}]" if ":" in listen_address else listen_address
     server = {
         "http_listen_address": loopback,
         "http_listen_port": cfg.builtin_tempo_http_port,
@@ -74,7 +76,7 @@ def prepare_builtin_tempo(cfg: Config) -> bool:
                     "otlp": {
                         "protocols": {
                             "grpc": {
-                                "endpoint": f"0.0.0.0:{cfg.builtin_tempo_otlp_port}"
+                                "endpoint": f"{otlp_host}:{cfg.builtin_tempo_otlp_port}"
                             },
                         },
                     },

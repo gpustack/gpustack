@@ -379,6 +379,7 @@ class Config(WorkerConfig, BaseSettings):
     trace_advertise_endpoint: Optional[str] = None
     trace_query_url: Optional[str] = None
     trace_query_tls_dir: Optional[str] = None
+    builtin_tempo_otlp_listen_address: str = "127.0.0.1"
     builtin_tempo_otlp_port: int = Field(default=4317, gt=0, le=65535)
     builtin_tempo_http_port: int = Field(default=3200, gt=0, le=65535)
     builtin_tempo_grpc_port: int = Field(default=9095, gt=0, le=65535)
@@ -544,6 +545,21 @@ class Config(WorkerConfig, BaseSettings):
                 pass
 
         raise ValueError(f"{info.field_name} must be an OTLP/gRPC host:port address")
+
+    @field_validator("builtin_tempo_otlp_listen_address")
+    @classmethod
+    def _validate_builtin_tempo_otlp_listen_address(cls, value: Optional[str]) -> str:
+        value = (value or "").strip()
+        if not value:
+            return "127.0.0.1"
+        if value.startswith("[") and value.endswith("]"):
+            value = value[1:-1]
+        try:
+            return str(ipaddress.ip_address(value))
+        except ValueError:
+            raise ValueError(
+                "builtin_tempo_otlp_listen_address must be an IP address"
+            ) from None
 
     @field_validator("trace_query_url")
     @classmethod
@@ -1097,6 +1113,14 @@ class Config(WorkerConfig, BaseSettings):
             and not self.trace_otlp_endpoint
         )
 
+    def builtin_tempo_accepts_remote_otlp(self) -> bool:
+        """Return whether embedded Tempo listens on a non-loopback address."""
+        if not self.use_builtin_tempo():
+            return False
+        return not ipaddress.ip_address(
+            self.builtin_tempo_otlp_listen_address
+        ).is_loopback
+
     def get_trace_query_url(self) -> Optional[str]:
         if self.disable_tracing:
             return None
@@ -1112,8 +1136,12 @@ class Config(WorkerConfig, BaseSettings):
         if self.disable_tracing:
             return None
         if self.use_builtin_tempo():
-            host = self.get_advertise_address()
-            if ":" in host and not host.startswith("["):
+            listen_ip = ipaddress.ip_address(self.builtin_tempo_otlp_listen_address)
+            if listen_ip.is_unspecified:
+                host = "::1" if listen_ip.version == 6 else "127.0.0.1"
+            else:
+                host = str(listen_ip)
+            if ":" in host:
                 host = f"[{host}]"
             return f"{host}:{self.builtin_tempo_otlp_port}"
         return self.trace_otlp_endpoint
@@ -1334,15 +1362,21 @@ def worker_trace_endpoint(
         return cfg.trace_advertise_endpoint
     if not cfg.use_builtin_tempo():
         return endpoint
+    if not cfg.builtin_tempo_accepts_remote_otlp():
+        return None
 
-    # Local Tempo listens in the Server container. Workers use the host they
-    # register with and the separate OTLP port.
-    try:
-        host = urlsplit(server_url or "").hostname
-    except ValueError:
-        return None
-    if not host or not re.fullmatch(r"[a-zA-Z0-9._:-]+", host):
-        return None
+    listen_ip = ipaddress.ip_address(cfg.builtin_tempo_otlp_listen_address)
+    if not listen_ip.is_unspecified:
+        host = str(listen_ip)
+    else:
+        # Local Tempo listens on all interfaces in the Server container. Workers
+        # use the host they register with and the separate OTLP port.
+        try:
+            host = urlsplit(server_url or "").hostname
+        except ValueError:
+            return None
+        if not host or not re.fullmatch(r"[a-zA-Z0-9._:-]+", host):
+            return None
     if ":" in host:
         host = f"[{host}]"
     return f"{host}:{cfg.builtin_tempo_otlp_port}"

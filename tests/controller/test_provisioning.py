@@ -159,7 +159,17 @@ async def test_provisioning_flow(monkeypatch, caplog):
 @pytest.mark.parametrize(
     "options, docker_runtime, expected",
     [
-        ({}, True, "[2001:db8::1]:4317"),
+        ({}, True, None),
+        (
+            {"builtin_tempo_otlp_listen_address": "0.0.0.0"},
+            True,
+            "[2001:db8::1]:4317",
+        ),
+        (
+            {"builtin_tempo_otlp_listen_address": "10.0.0.5"},
+            True,
+            "10.0.0.5:4317",
+        ),
         (
             {"trace_advertise_endpoint": "collector.example:14317"},
             True,
