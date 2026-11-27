@@ -34,12 +34,16 @@ from typing import (
 )
 
 from fastapi import APIRouter
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 from sqlalchemy import Select, and_, case, desc, func, literal_column, or_, tuple_
 from sqlmodel import select
 
 from gpustack import envs
-from gpustack.api.exceptions import ForbiddenException, InvalidException
+from gpustack.api.exceptions import (
+    ClientFacingValidationError,
+    ForbiddenException,
+    InvalidException,
+)
 from gpustack.routes.usage import (
     _group_member_user_ids,
     _organization_info_by_id,
@@ -76,6 +80,7 @@ from gpustack.schemas.usage import (
     USAGE_GRANULARITY_WEEK,
     USAGE_SCOPE_ALL,
     USAGE_SCOPE_SELF,
+    usage_date_range_error,
 )
 from gpustack.schemas.resource_events import ResourceEvent
 from gpustack.server.db import async_session
@@ -197,6 +202,13 @@ class ResourceBreakdownRequest(BaseModel):
     # would 400 their trend/export requests during a rolling upgrade. New
     # callers fetch the full series via page=-1 instead.
     perPage: int = Field(default=20, ge=1, le=10000)
+
+    @field_validator("end_date")
+    @classmethod
+    def validate_date_range(cls, value: date, info: ValidationInfo) -> date:
+        if error := usage_date_range_error(info.data.get("start_date"), value):
+            raise ClientFacingValidationError(error)
+        return value
 
     @field_validator("page")
     @classmethod
@@ -2321,6 +2333,17 @@ async def estimate_storage_breakdown_export(
     )
 
 
+def _validate_query_date_range(
+    start_date: Optional[date], end_date: Optional[date]
+) -> None:
+    """Validate GET dates after authorizing filters so forbidden filters return 403.
+
+    POST validates dates with the request body, before handler-level filter checks.
+    """
+    if error := usage_date_range_error(start_date, end_date):
+        raise InvalidException(message=error)
+
+
 @router.get("/summary")
 async def usage_summary(
     session: SessionDep,
@@ -2345,6 +2368,7 @@ async def usage_summary(
         organization_ids=organization_id_list,
         user_group_ids=user_group_id_list,
     )
+    _validate_query_date_range(start_date, end_date)
     group_member_ids = None
     if user_group_id_list:
         group_member_ids = await _group_member_user_ids(session, user_group_id_list)
@@ -2475,6 +2499,7 @@ async def resource_events(  # noqa: C901
         organization_ids=organization_id_list,
         user_group_ids=user_group_id_list,
     )
+    _validate_query_date_range(start_date, end_date)
     group_member_ids = None
     if user_group_id_list:
         group_member_ids = await _group_member_user_ids(session, user_group_id_list)

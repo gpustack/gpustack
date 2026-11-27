@@ -34,7 +34,9 @@ from gpustack.gateway.client import (
 )
 from gpustack.gateway.labels_annotations import managed_labels, match_labels
 from gpustack.gateway.utils import (
+    async_video_regexes,
     default_mcp_bridge_name,
+    model_route_ingress_prefix,
     openai_model_prefixes,
     anthropic_model_exact,
     apply_ai_proxy_override,
@@ -413,7 +415,14 @@ def ai_statistics_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
 def model_pre_route_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
     resource_name = "gpustack-set-model-pre-route"
     enabled_path_suffixes = supported_openai_routes + supported_anthropic_routes
-    enabled_path_prefixes = ["/model/proxy"]
+    # Suffixes cover every body-driven request (the path ends in the
+    # endpoint). The async video follow-ups do not: /v1/videos/{id} and
+    # /v1/videos/{id}/content carry the job id after the endpoint, so they
+    # need a prefix. Without the header this plugin writes, a Worker in
+    # WORKER/TUNNEL proxy mode has no port to serve the request on and
+    # answers 404 -- the job can be created but never polled, downloaded or
+    # cancelled.
+    enabled_path_prefixes = ["/model/proxy", "/v1/videos/"]
     expected_spec = WasmPluginSpec(
         defaultConfig={
             'clusterNameHeader': router_header_key,
@@ -572,6 +581,16 @@ def generic_proxy_router_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
        ``prefix`` but does match ``enableOnPathSuffix``, the ``model`` field
        is read from the JSON / multipart body and projected into
        ``targetHeader``. Used by the standard OpenAI / Anthropic AI routes.
+    3. **Self-routing video job IDs**: an asynchronous video job's id only
+       exists on the instance that created it, and the follow-ups carry
+       nothing but the id. ``videoRegexes`` match a follow-up's path, the
+       route id inside the id is resolved through ``aliasNameMapping`` and
+       the target is published for gpustack-lb as a pin; a create's response
+       ``id`` is wrapped only on routes whose Envoy name starts with
+       ``videoIdRewriteOnRouteNamePrefix`` (GPUStack's model-route ingresses,
+       the digits after the prefix being the route id). Deployment-level
+       config; which routes take part is ``aliasNameMapping`` (see
+       ``route_alias_enabled``). See ``async_video_regexes`` for the id shape.
 
     Priority 900 matches model-router's original slot, so downstream plugins
     (ext-auth at 360, rate-limit ~600) keep observing the resolved model name
@@ -603,7 +622,15 @@ def generic_proxy_router_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
             enableOnPathSuffix:
               - /v1/chat/completions
               - /v1/messages
+              - /v1/videos
               - ...
+            videoRegexes:
+              - regex: '^/v1/videos/gpustack_(?P<target>[^_]+)_(?P<origin>[^/]+)$'
+                path: "/v1/videos/{origin}"
+              - regex: '^/v1/videos/gpustack_(?P<target>[^_]+)_(?P<origin>[^/]+)/content$'
+                path: "/v1/videos/{origin}/content"
+            videoIdRewriteOnRouteNamePrefix:
+              - ai-route-route-
             aliasNameMapping:
               "1": "route-one"
               "2": "route-two"
@@ -620,6 +647,12 @@ def generic_proxy_router_plugin(cfg: Config) -> Tuple[str, WasmPluginSpec]:
             "prefix": "/model/proxy/",
             "targetHeader": "x-higress-llm-model",
             "enableOnPathSuffix": enabled_path_suffixes,
+            # The two video keys go together: a router that predates them
+            # ignores both and the video branch never runs; a router that
+            # knows them rejects one without the other. Both are refreshed
+            # from here on every start (``generic_proxy_router_spec_diff``).
+            "videoRegexes": [dict(rule) for rule in async_video_regexes],
+            "videoIdRewriteOnRouteNamePrefix": [model_route_ingress_prefix],
             "aliasNameMapping": {},
         },
         defaultConfigDisable=False,

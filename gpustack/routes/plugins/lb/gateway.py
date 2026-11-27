@@ -50,9 +50,12 @@ REDIS_REGISTRY_NAME = "gpustack-redis"
 # key explicitly replaces it — so this list is the gateway's full routed
 # set (OpenAI- and Anthropic-style paths, legacy versioned variants
 # included) plus the plugin's DashScope-style synthesis suffixes kept for
-# parity, plus the synchronous video path the default list predates.
-# Without an explicit list, /v1/videos/sync bodies would reach the upstream
-# with the route name instead of the deployment's model name.
+# parity, plus the video paths the default list predates: the synchronous
+# ``/v1/videos/sync`` and the asynchronous ``/v1/videos`` create, whose
+# body names the route and must reach the upstream as the selected
+# candidate's model name.
+# Without an explicit list, those bodies would reach the upstream with the
+# route name instead of the deployment's model name.
 mapper_enable_on_path_suffixes: List[str] = [
     route
     for prefixes in (openai_model_prefixes, anthropic_model_exact)

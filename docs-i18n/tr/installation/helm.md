@@ -213,6 +213,93 @@ helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart 
   -f values.yaml
 ```
 
+### Higress Ağ Geçidi Kaynak Boyutlandırma { #sizing-the-higress-gateway }
+
+Higress ağ geçidi (Envoy), tüm istemci çıkarım trafiğini taşır. Bellek kullanımı, rota/yapılandırma değişim sıklığı ve eşzamanlı bağlantı sayısıyla büyür; LLM iş yükleri akış yanıtları nedeniyle bağlantıları uzun süre açık tutar, bu yüzden sürekli yük altında bellek tırmanmaya devam eder. Paketlenen `higress-core` alt chart'ı hem requests hem limits için varsayılan olarak `2` CPU / `2Gi` verir; bu, sürekli işletim için yeterli değildir. Bu nedenle GPUStack chart'ı ağ geçidinin **limits** değerlerini `4` CPU / `4096Mi`'ye yükseltir (requests, alt chart'ın varsayılanları olan `2` CPU / `2048Mi`'de kalır).
+
+!!! warning
+
+    OOMKilled olan bir ağ geçidi yalnızca çıkarım kesintisi değildir. Ağ geçidinden geçen işlemdeki tüm istekler düşer ve çalışanlar sunucuya ağ geçidi adresi üzerinden ulaşıyorsa, tüm çalışan bağlantıları da aynı anda kopar; küme çapında yeniden bağlanma tetiklenir ve model hizmetleri kullanılamaz hale gelebilir. Aşağıdaki [Çalışanları Sunucuya Doğrudan Bağlama](#connecting-workers-directly-to-the-server) bölümüne bakın.
+
+Ayarlama kuralları:
+
+- **Belleği limite ulaşmadan önce izleyin.** Birlikte verilen Prometheus ağ geçidinin Envoy istatistiklerini toplar; `envoy_server_memory_allocated` ve `envoy_server_memory_heap_size` için uyarı ayarlayın (Higress başka bir ad alanındaysa `gateway.namespace`'e bakın). `container_memory_working_set_bytes` bir kubelet/cAdvisor metriğidir ve yalnızca küme düzeyinde bir Prometheus'tan alınabilir. Bellek normal işletimde limite yaklaşmayı sürdürüyorsa `higress-core.gateway.resources.limits.memory` değerini yükseltin; ilk OOMKill'i beklemeyin.
+- **Erişilebilirlik için en az 2 kopya tutun.** Ağ geçidi Deployment'ı varsayılan olarak `2` kopya ile gelir (`higress-core.gateway.replicas`); böylece dönen yeniden başlatma veya tek pod arızası tüm trafiği kesmez. Kopyalar, yapılandırma ve bağlantı yükü açısından pod başına belleği azaltmaz (her kopya rotaların tamamını tutar); ancak istek trafiğini böldüğü için her podda işlemdeki büyük istek sayısı azalır. `higress-core.gateway.service.externalTrafficPolicy` değerinin `Local` olduğuna dikkat edin: LoadBalancer/NodePort hizmetlerinde dış LB `healthCheckNodePort` adresine sağlık kontrolü yapmalıdır, aksi halde ağ geçidi pod'u olmayan düğümler trafiği düşürür.
+- **OOM'a karşı araç bellek limitidir.** Alt chart, CPU kullanımına dayalı bir HPA ile gelir. İstek yükünü düzleştirir; ancak OOM'a karşı **koruma sağlamaz**, çünkü ağ geçidi belleği CPU'dan değil bağlantı sayısı ve istek boyutundan büyür. Otomatik ölçeklendirme açıkken bile bellek limitlerine mutlaka pay bırakın.
+- **HPA `replicas` değerini geçersiz kılar.** `higress-core.gateway.autoscaling.enabled=true` olduğunda Deployment artık `replicas` değerini kullanmaz ve alt chartın `autoscaling.minReplicas` varsayılanı `1` olduğundan, yalnızca HPA'yı açmak ağ geçidinin tek pod'a küçülmesine izin verir. HPA açıkken `autoscaling.minReplicas` değerini en az `2` yapın.
+
+```yaml
+# values.yaml
+higress-core:
+  gateway:
+    replicas: 2
+    resources:
+      requests:
+        cpu: 2000m
+        memory: 4096Mi
+      limits:
+        cpu: 4000m
+        memory: 8192Mi   # raise further if memory keeps climbing
+    autoscaling:
+      enabled: true
+      minReplicas: 2    # the HPA ignores `replicas`; keep this >= 2
+      maxReplicas: 5
+      targetCPUUtilizationPercentage: 80
+```
+
+#### Resim İstekleri İçin Boyutlandırma { #sizing-for-image-requests }
+
+Rota ve bağlantı yükü, bellek ayak izinin sabit kısmıdır; ani artışın nedeni istek boyutudur. İsteği inceleyen veya yeniden yazan ağ geçidi eklentileri isteğin gövdesinin tamamını arabelleğe alır; bu yüzden bellek işlemdeki istek baytlarıyla (eşzamanlılık × gövde boyutu) ölçeklenir. Buna en sık ulaşılan yol base64 kodlu resimler taşıyan isteklerdir: JSON içinde her resim dosya boyutunun 1,33 katı yer kaplar.
+
+Aşağıdaki rakamlar, GPUStack'in varsayılan eklenti zinciri ve bir mock upstream ile tek bir ağ geçidi pod'unda (2 CPU / 4Gi) her durum için 60 saniyelik akış yükü ölçülerek, her durum yeni başlatılan bir pod'dan başlatılarak elde edilmiştir. Bunlar bir boyutlandırma formülü değil, büyüklük düzenine dair bir referanstır:
+
+| Resim | İstek gövdesi | Eşzamanlı | İşlemde | Boşta çalışmaya göre bellek |
+|---|---|---|---|---|
+| 1 | 1,3 MB | 64 | 85 MB | yaklaşık 0,1 GiB |
+| 8 | 10,7 MB | 4 | 43 MB | yaklaşık 0,2 GiB |
+| 32 | 42,7 MB | 4 | 171 MB | yaklaşık 1,8 GiB |
+| 32 | 42,7 MB | 16 | 683 MB | **OOMKilled** |
+
+İstek başına maliyet gövdenin kendisinden daha hızlı artar ve yük bittikten sonra bellek hemen geri verilmez; bu yüzden bütçeyi istek sayısına değil işlemdeki baytlara göre yapın. 4Gi'lik bir pod için işlemdeki istek gövdelerini toplamda yaklaşık 200 MB'ın altında tutun ya da `higress-core.gateway.resources.limits.memory` değerini yükseltin (çok resimli trafik için 8Gi makul bir başlangıçtır); ek kopyalar da yardımcı olur çünkü istekleri böler.
+
+Daha fazla Higress özelleştirmesi için [Higress Helm belgelerine](https://higress.cn/en/docs/latest/ops/deploy-by-helm) bakın.
+
+### Çalışanları Sunucuya Doğrudan Bağlama { #connecting-workers-directly-to-the-server }
+
+Çalışan ile sunucu arasındaki kayıt, kalp atışları ve model/örnek watch'ları (ve `tunnel` vekil modundaki kalıcı WebSocket), istemci çıkarım trafiğinden bağımsız kontrol düzlemi trafiğidir ve **Higress ağ geçidinden geçmemelidir** — aksi halde ağ geçidinin yeniden başlatılması veya OOMKill edilmesi tüm çalışan bağlantılarını aynı anda keser.
+
+Chart yönetimli çalışanlar için bu doğru şekilde bağlanmıştır: `worker.enabled=true` ve `worker.serverURL` ayarlanmadığında, çalışanlar küme içi Service üzerinden (`http://<release>-server.<namespace>.svc:<server.apiPort>`) kayıt olur ve ağ geçidini tamamen atlar. Adresi kendiniz ayarlarken bu headless Service yerine ClusterIP Service'i (`<release>-server-cluster-ip`) tercih edin: headless ad, sunucu yük devrettiğinde bayatlayabilecek pod IP'lerine çözümlenir.
+
+Kontrol edilmesi gereken yol, **Register Cluster** ile kaydedilen bir kümedir (veya `--server-url` ile başlatılan herhangi bir çalışan). Kayıt manifestosundaki `worker.serverURL` değerini sunucu üretir; sunucu adresi önce kümenin kendi **Server URL**'si, sonra `server_external_url`, sonra istek Host'u olacak şekilde çözer. Dolayısıyla kümede bir geçersiz kılma yoksa bu, sunucunun *dış* URL'sidir. Helm dağıtımında bu URL genellikle ingress adresi, yani Higress ağ geçididir. Bu düzende ağ geçidi OOM'unun etkisi kesilen isteklerin ötesine geçer:
+
+- Tüm çalışanlar sunucuya olan bağlantılarını aynı anda kaybeder. `tunnel` modunda tüneller üzerinden aktarılan tüm işlemdeki çıkarım akışları düşer ve tünel istemcisi üstel geri çekilmeyle (1 sn'den 60 sn'ye kadar, jitter'lı) yeniden bağlanır. `direct`/`worker` modlarında tünel yoktur; ancak model ve örnek watch'ları uzun ömürlü HTTP akışlarıdır, onlar da düşer ve toplu yeniden bağlanma ile yeniden listeleme gerçekleşir. Kalp atışları ise periyodik çağrılardır; sadece başarısız olurlar ve bir sonraki aralıkta yeniden denerler.
+
+- Kesinti, kalp atışı tolerans süresini (`GPUSTACK_WORKER_HEARTBEAT_GRACE_PERIOD`, varsayılan 150 sn) aşarsa çalışanlar çevrimdışı işaretlenir ve model rotaları geri çekilir — çıkarım süreçleri çalışmaya devam etse bile model hizmetleri kullanılamaz hale gelir.
+
+Kontrol yolunu ağ geçidinden ayırmak için çalışanları sunucuya doğrudan ulaşan bir adrese yönlendirin:
+
+- **Register Cluster ile kaydedilen kümeler:** kümenin **Server URL** ayarını doğrudan bir adrese yapın (çalışanlar sunucunun kümesindeyse küme içi Service, değilse sunucu Service'ine yönelik ayrılmış bir NodePort/LoadBalancer), ardından kayıt manifestosunu yeniden alıp uygulayın. Bunu küme üzerinde yapın; `helm upgrade --set worker.serverURL=…` ile yapmayın: manifest bir dahaki sefere uygulandığında bootstrap Job, worker sürümünü sunucunun render ettiği değerlerle yeniden kurar ve ağ geçidi URL'si geri gelir. Manifestin yönettiği sürümün yanına ikinci bir worker-only sürüm de eklemeyin; bu, yinelenen worker DaemonSet'lerine (pod'ları `hostNetwork` port anti-affinity nedeniyle Pending kalır) ve ikinci bir operatöre yol açar.
+
+- **Kubernetes dışındaki çalışanlar:** bunları `--server-url` ile doğrudan adresi gösterecek şekilde başlatın.
+
+- **Kayıt manifestosu olmadan Helm ile kurulan çalışanlar:** sunucunun kümesinde worker-only bir sürüm. Sunucu sürümüyle aynı ad alanında yaşar; bu nedenle o sürümün zaten sahip olduğu Secret'ları render etmemelidir: `imagePullSecret.create: false` ayarlayın ve `registrationTokenSecretName` ile sunucunun `registration-token` Secret'ını gösterin (`worker.enabled` varsayılan olarak `false`, `server` ve `higress-core` ise `true` olduğundan bu üçünü de açıkça belirtmek gerekir):
+
+```yaml
+# values.yaml for a worker-only release in the server's cluster
+server:
+  enabled: false
+higress-core:
+  enabled: false
+imagePullSecret:
+  create: false
+registrationTokenSecretName: registration-token
+worker:
+  enabled: true
+  serverURL: http://gpustack-server-server-cluster-ip.gpustack-system.svc:30080
+```
+
+Böylece ağ geçidi yalnızca istemci çıkarım trafiğini taşır ve ağ geçidinin yeniden başlatılması artık çalışan kaydını, kalp atışlarını ve watch'ları etkilemez. Vekil modlarının kendisi için [Çalışan Bağlantı Modları](../user-guide/cluster-management.md#worker-connection-modes) bölümüne bakın.
+
 ### Özel Kayıttan İmaj Çekme { #pulling-images-from-a-private-registry }
 
 Tüm imajları (GPUStack sunucusu/çalışanı, higress eklentileri ve paket halindeki higress-core ağ geçidi/denetleyici/pilot) yansıtılmış özel bir kayıt defterinden çekmek için `global.hub`'i geçersiz kılın. Bu, Helm'in global değerleri yayılımına dayanır, dolayısıyla her imajı kapsayan tek bir ayar vardır:
@@ -273,6 +360,11 @@ En sık kullanılan parametreler aşağıda listelenmiştir. Tam ve yetkili list
 | `server.nodeSelector`                  | `{}`                     | Sunucu bölmesi nodeSelector; boş olmadığında `global.nodeSelector`'in yerine geçer. |
 | `gateway.ingressClassname`             | `higress`                | Higress Giriş Sınıfı adı; bulunduğunda küme içi ağ geçidi modunu etkinleştirir. |
 | `higress-core.enabled`                 | `true`                   | Birlikte verilen Higress ağ geçidini dağıtın; Zaten yüklüyse devre dışı bırakın. |
+| `higress-core.gateway.replicas`        | `2`                      | Higress ağ geçidi kopya sayısı; kullanılabilirlik için >= 2 tutun. |
+| `higress-core.gateway.resources`       | limits `4` CPU / `4096Mi` | Ağ geçidi kaynakları; limits, alt chart varsayılanlarının üzerine çıkarılmıştır. Bkz. [Higress Ağ Geçidi Kaynak Boyutlandırma](#sizing-the-higress-gateway). |
+| `higress-core.gateway.autoscaling.enabled` | `false`              | Ağ geçidi için CPU tabanlı HPA; OOM'u önlemez — bellek limits değerlerini yine de pay bırakarak ayarlayın. |
+| `higress-core.gateway.autoscaling.minReplicas` | `1`                      | HPA açıkken en az kopya sayısı. HPA `replicas` değerini geçersiz kılar; en az 2 yapın. |
+| `worker.serverURL`                     | `""`                     | Çalışanların kayıt olduğu sunucu adresi; boşsa küme içi sunucu Service'i kullanılır. Ağ geçidi üzerinden yönlendirmekten kaçının. |
 | `worker.enabled`                       | `false`                  | Worker DaemonSet manifestlerini oluşturur. |
 | `worker.gpuVendors`                    | `[nvidia]`               | GPU satıcıları; Satıcı başına bir DaemonSet artı CPU DaemonSet. |
 | `worker.cpuEnabled`                    | `true`                   | CPU worker DaemonSet manifestini oluşturur; `false` bir GPU satıcısı gerektirir. |

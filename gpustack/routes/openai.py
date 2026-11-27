@@ -68,7 +68,10 @@ load_balancer = LoadBalancer()
 
 # Endpoints served by a dedicated server router (e.g. rerank.router), so the
 # auto-registration must skip them to avoid duplicate /v1/<endpoint> registration.
-_server_managed_elsewhere = {"/rerank"}
+# /videos is routed like an OpenAI model path on the gateway (see
+# openai_model_prefixes) but has its own job router on the Server; /videos/sync
+# stays on the generic model proxy.
+_server_managed_elsewhere = {"/rerank", "/videos"}
 
 
 def get_api_router() -> APIRouter:

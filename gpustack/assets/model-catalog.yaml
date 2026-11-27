@@ -3982,6 +3982,32 @@ model_sets:
       backend: vLLM
       categories:
         - speech_to_text
+- name: Oruk-Fourier-2B
+  description: Oruk-Fourier-2B is an English-only automatic speech recognition fine-tune of Qwen3-ASR-1.7B by Oruk. Released under CC BY-NC 4.0 for noncommercial use; commercial or hosted API serving requires separate permission from Oruk. Pinned to vLLM 0.34.0.
+  home: https://huggingface.co/oruk/oruk-fourier-2b
+  icon: /static/catalog_icons/oruk.png
+  size: 2
+  categories:
+    - speech_to_text
+  licenses:
+    - cc-by-nc-4.0
+  release_date: "2026-11-22"
+  specs:
+    - mode: standard
+      meta:
+        languages:
+          - en
+      gpu_filters:
+        vendor:
+          - nvidia
+          - amd
+      quantization: BF16
+      source: huggingface
+      huggingface_repo_id: oruk/oruk-fourier-2b
+      backend: vLLM
+      backend_version: "0.34.0"
+      categories:
+        - speech_to_text
 - name: Dia-1.6B
   description: Dia is a text-to-speech model created by Nari Labs. Dia directly generates highly realistic dialogue from a transcript. You can condition the output on audio, enabling emotion and tone control. The model can also produce nonverbal communications like laughter, coughing, clearing throat, etc.
   home: https://narilabs.org

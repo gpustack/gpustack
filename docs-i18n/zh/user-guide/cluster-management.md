@@ -345,6 +345,10 @@ insecure_tls: false
 
 GPUStack Server 内嵌 Worker 默认为 `direct`，独立 Worker 默认为 `worker`。
 
+!!! note
+
+    无论使用哪种代理模式，在 Kubernetes 部署中 Worker 的 `--server-url`（注册、心跳、watch 以及 tunnel WebSocket）都应**不经过 Higress 网关**直达 Server：若指向网关的 ingress 地址，网关重启或被 OOMKill 会让所有 Worker 同时断连，后果见 [Worker 直连 Server](../installation/helm.md#connecting-workers-directly-to-the-server)。优先使用 Server 的集群内 Service 地址。Docker 与嵌入式部署有所不同：那里 Server 的 `port`（默认 80）本身就是嵌入式 Higress 监听端口，API 监听在 `api_port`（默认 30080），因此默认的 Add Worker 命令（使用请求 Host）会让 Worker 经由网关连接；只有在 Worker 能访问 API 端口时才把它用于 `--server-url`。
+
 ### 隧道模式（Worker 位于防火墙或 NAT 后） { #tunnel-mode-worker-behind-a-firewall-or-nat }
 
 在 `direct` 和 `worker` 模式下，连接由 GPUStack Server 发起，因此 GPUStack Server 必须能够访问 Worker。但这并非总能实现，例如 Worker 位于防火墙或 NAT 后、处于不同网络，或位于仅允许出站流量的私有子网中。

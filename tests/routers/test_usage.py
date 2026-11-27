@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from pydantic import ValidationError
 
 from gpustack.api.exceptions import ForbiddenException, InvalidException
 from gpustack.routes.usage import (
@@ -49,6 +50,17 @@ def _org_owner_ctx(user, org_id=1):
     ctx.current_principal_id = org_id
     ctx.org_role = OrgRole.OWNER
     return ctx
+
+
+def test_token_usage_reports_reversed_dates_as_an_end_date_validation_error():
+    with pytest.raises(ValidationError) as exc_info:
+        UsageBreakdownRequest(
+            start_date=date(2026, 1, 2), end_date=date(2026, 1, 1), group_by=["date"]
+        )
+
+    (error,) = exc_info.value.errors()
+    assert error["loc"] == ("end_date",)
+    assert error["msg"] == "Value error, end_date must be on or after start_date"
 
 
 @pytest.mark.asyncio

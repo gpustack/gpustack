@@ -4,6 +4,7 @@ from typing import List, Optional
 from pydantic import (
     BaseModel,
     Field,
+    ValidationInfo,
     computed_field,
     field_validator,
     model_validator,
@@ -152,6 +153,14 @@ class UsageFilterRequest(BaseModel):
     user_groups: List[UsageFilterItem] = Field(default_factory=list)
 
 
+def usage_date_range_error(
+    start_date: Optional[Date], end_date: Optional[Date]
+) -> Optional[str]:
+    if start_date is not None and end_date is not None and end_date < start_date:
+        return "end_date must be on or after start_date"
+    return None
+
+
 class UsageBaseRequest(BaseModel):
     start_date: Date
     end_date: Date
@@ -165,10 +174,9 @@ class UsageBaseRequest(BaseModel):
 
     @field_validator("end_date")
     @classmethod
-    def validate_date_range(cls, value: Date, info) -> Date:
-        start_date = info.data.get("start_date")
-        if start_date and value < start_date:
-            raise ValueError("end_date must be on or after start_date")
+    def validate_date_range(cls, value: Date, info: ValidationInfo) -> Date:
+        if error := usage_date_range_error(info.data.get("start_date"), value):
+            raise ValueError(error)
         return value
 
     @field_validator("scope")
