@@ -17,22 +17,43 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 _TRACE_CONTEXT = TraceContextTextMapPropagator()
 PUBLIC_INFERENCE_PATHS = frozenset(
-    f"/v1/{operation}"
-    for operation in (
-        "chat/completions",
-        "completions",
-        "embeddings",
-        "rerank",
-        "images/generations",
-        "images/edits",
-        "audio/speech",
-        "audio/transcriptions",
-        "audio/translations",
-        "responses",
-        "messages",
-        "videos",
-        "videos/sync",
-    )
+    {
+        *(
+            f"/v1/{operation}"
+            for operation in (
+                "chat/completions",
+                "completions",
+                "embeddings",
+                "rerank",
+                "images/generations",
+                "images/edits",
+                "images/variations",
+                "audio/speech",
+                "audio/transcriptions",
+                "audio/translations",
+                "moderations",
+                "score",
+                "responses",
+                "messages",
+                "videos",
+                "videos/sync",
+                "systemone",
+            )
+        ),
+        *(
+            f"/v1-openai/{operation}"
+            for operation in (
+                "chat/completions",
+                "completions",
+                "responses",
+                "embeddings",
+                "audio/transcriptions",
+                "audio/speech",
+                "images/generations",
+                "images/edits",
+            )
+        ),
+    }
 )
 _INFERENCE_TRACER: ContextVar[Optional[trace.Tracer]] = ContextVar(
     "inference_tracer", default=None

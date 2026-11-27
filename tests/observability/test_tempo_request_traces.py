@@ -1180,3 +1180,76 @@ async def test_timeout_before_any_batch_fails_as_unavailable(monkeypatch):
     async with asyncio.timeout(1):
         with pytest.raises(ServiceUnavailableException, match="timed out"):
             await _trace_rows(MagicMock())
+
+
+def test_public_inference_paths_cover_all_inference_router_post_routes():
+    from gpustack.observability.tracing import PUBLIC_INFERENCE_PATHS
+    from gpustack.routes.routes import inference_router
+
+    router_post_paths = {
+        route.path for route in inference_router.routes if "POST" in route.methods
+    }
+    assert router_post_paths <= PUBLIC_INFERENCE_PATHS
+    assert "/v1-openai/chat/completions" in PUBLIC_INFERENCE_PATHS
+    assert "/v1-openai/chat/completions" in request_traces._search_query(42, None)
+
+
+@pytest.mark.asyncio
+async def test_legacy_v1_openai_paths_are_preserved_for_platform_and_router_spans():
+    platform_span = _span(
+        "gpustack.server",
+        1,
+        None,
+        "POST /v1-openai/chat/completions",
+        100,
+        2,
+        **{
+            "gpustack.model_id": 42,
+            "gpustack.model_instance_id": 7,
+            "gpustack.request_id": _REQUEST,
+            "http.route": "/v1-openai/chat/completions",
+            "http.response.status_code": 200,
+        },
+    )
+    router_span = {
+        "resource": {
+            "attributes": _attributes(
+                **{
+                    "service.name": "vllm-router",
+                    "gpustack.model_id": "42",
+                    "gpustack.engine_instance_id": "9",
+                    "gpustack.engine_role": "router",
+                }
+            )
+        },
+        "scopeSpans": [
+            {
+                "spans": [
+                    {
+                        "spanId": base64.b64encode((2).to_bytes(8, "big")).decode(),
+                        "name": "POST /v1-openai/chat/completions",
+                        "kind": "SPAN_KIND_SERVER",
+                        "startTimeUnixNano": str(105 * _NS),
+                        "endTimeUnixNano": str(106 * _NS),
+                        "attributes": _attributes(
+                            **{
+                                "http.request.method": "POST",
+                                "url.path": "/v1-openai/chat/completions",
+                                "http.response.status_code": 200,
+                            }
+                        ),
+                    }
+                ]
+            }
+        ],
+    }
+    search = [
+        {"traceID": _TRACE, "startTimeUnixNano": str(105 * _NS)},
+    ]
+    rows = await _trace_rows(
+        _tempo_client(search, {_TRACE: [platform_span, router_span]})
+    )
+    assert [(row.observation_source, row.path) for row in rows] == [
+        ("router", "/v1-openai/chat/completions"),
+        ("platform", "/v1-openai/chat/completions"),
+    ]
