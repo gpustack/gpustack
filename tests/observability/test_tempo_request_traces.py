@@ -872,6 +872,57 @@ def _paged_tempo_client(candidates, traces):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("lookup", ["search", "identifier", "partial"])
+async def test_oversized_trace_does_not_block_other_requests(monkeypatch, lookup):
+    monkeypatch.setattr(request_traces, "_MAX_RESPONSE_BYTES", 1024)
+    candidates = [_candidate(i, (100 + i) * _NS) for i in (3, 2, 1)]
+    traces = {item["traceID"]: _candidate_batches(item) for item in candidates}
+    for batches in traces.values():
+        batches[0]["scopeSpans"][0]["spans"][0]["attributes"].extend(
+            _attributes(**{"gpustack.request_id": "3"})
+        )
+    traces["3"][0]["scopeSpans"][0]["spans"][0]["name"] = "a" * 1024
+    # A partial trace can disappear from search while its detail grows.
+    client = _paged_tempo_client(
+        candidates[1:] if lookup == "partial" else candidates, traces
+    )
+    position = TracePagePosition(
+        start=1, end=200, before=200, partial="3" if lookup == "partial" else None
+    )
+    options = dict(
+        page_size=1,
+        identifier="3" if lookup == "identifier" else None,
+        outcome=None,
+        instance_id=None,
+        no_engine=False,
+    )
+    first = await search_request_trace_page(
+        client, "http://tempo", 42, position=position, **options
+    )
+    assert [row.trace_id for row in first.items] == ["2"]
+    position = TracePagePosition.model_validate_json(
+        base64.urlsafe_b64decode(first.next_cursor)
+    )
+    second = await search_request_trace_page(
+        client, "http://tempo", 42, position=position, **options
+    )
+    assert [row.trace_id for row in second.items] == ["1"]
+    assert second.next_cursor is None
+
+    with pytest.raises(ServiceUnavailableException) as error:
+        await get_request_trace(client, "http://tempo", 42, "3", None)
+    assert error.value.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_oversized_search_response_still_fails_the_page(monkeypatch):
+    monkeypatch.setattr(request_traces, "_MAX_RESPONSE_BYTES", 32)
+    with pytest.raises(ServiceUnavailableException) as error:
+        await _trace_rows(_client({"traces": [_candidate(1, 101 * _NS)]}))
+    assert error.value.status_code == 503
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("lookup", ["identifier", "cursor"])
 async def test_foreign_trace_cannot_advance_the_model_cursor(monkeypatch, lookup):
     monkeypatch.setattr(request_traces, "_IDENTIFIER_SEARCH_BATCH_SIZE", 1)

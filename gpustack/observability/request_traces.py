@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import json
+import logging
 import math
 import re
 from collections import defaultdict
@@ -20,6 +21,8 @@ from pydantic import (
 
 from gpustack.api.exceptions import ServiceUnavailableException
 from gpustack.observability.tracing import PUBLIC_INFERENCE_PATHS
+
+logger = logging.getLogger(__name__)
 
 TRACE_ID = r"[0-9a-fA-F]{1,32}"
 SPAN_ID = r"[0-9a-fA-F]{16}"
@@ -648,6 +651,10 @@ def _search_query(model_id: int, identifier: Optional[str]) -> str:
     return f"{query} with (most_recent=true)"
 
 
+class _TraceResponseTooLarge(ServiceUnavailableException):
+    """The response exceeded the bounded Tempo read."""
+
+
 async def _tempo_get(
     client: aiohttp.ClientSession,
     url: str,
@@ -669,9 +676,7 @@ async def _tempo_get(
             async for chunk in response.content.iter_chunked(65536):
                 data.extend(chunk)
                 if len(data) > _MAX_RESPONSE_BYTES:
-                    raise ServiceUnavailableException(
-                        "Trace query response is too large"
-                    )
+                    raise _TraceResponseTooLarge("Trace query response is too large")
             payload = json.loads(data)
             if not isinstance(payload, dict):
                 raise ValueError("Invalid trace query response")
@@ -752,19 +757,20 @@ async def _search_candidates(
             search,
             _exact_trace_candidate(client, base_url, trace_id, model_id=model_id),
         )
-        if exact is not None:
-            if trace_id in candidates:
-                candidates[trace_id]["detail_spans"] = exact["detail_spans"]
-            else:
-                started, _ = key = _candidate_key(exact)
-                # An exact lookup must respect both the cursor and any
-                # candidates still beyond the search limit.
-                if (
-                    started < position.before * _NANOSECONDS_PER_SECOND
-                    and (cutoff is None or started > cutoff)
-                    and (position.boundary is None or key < position.boundary)
-                ):
-                    candidates[trace_id] = exact
+        if trace_id in candidates:
+            candidates[trace_id]["detail_spans"] = (
+                exact["detail_spans"] if exact else []
+            )
+        elif exact is not None:
+            started, _ = key = _candidate_key(exact)
+            # An exact lookup must respect both the cursor and any
+            # candidates still beyond the search limit.
+            if (
+                started < position.before * _NANOSECONDS_PER_SECOND
+                and (cutoff is None or started > cutoff)
+                and (position.boundary is None or key < position.boundary)
+            ):
+                candidates[trace_id] = exact
     else:
         candidates, cutoff = await search
     partial = position.partial
@@ -807,7 +813,15 @@ async def _exact_trace_candidate(
     *,
     model_id: Optional[int] = None,
 ) -> Optional[dict]:
-    detail = await _tempo_get(client, f"{base_url}/api/traces/{trace_id}")
+    try:
+        detail = await _tempo_get(client, f"{base_url}/api/traces/{trace_id}")
+    except _TraceResponseTooLarge:
+        logger.warning(
+            "Skipping trace %s in request list: detail exceeds %d bytes",
+            trace_id,
+            _MAX_RESPONSE_BYTES,
+        )
+        return None
     if detail is None:
         return None
     try:
