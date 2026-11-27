@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from enum import Enum
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from gpustack.envs import EVENT_BUS_SUBSCRIBER_QUEUE_SIZE
 
@@ -78,12 +78,14 @@ class Subscriber:
         source: Optional[str] = None,
         event_types: Optional[Iterable[EventType]] = None,
         queue_size: Optional[int] = None,
+        event_filter: Optional[Callable[[Event], bool]] = None,
     ):
         self.topic = topic
         self.source = source
         self.event_types: Optional[Set[EventType]] = (
             set(event_types) if event_types else None
         )
+        self.event_filter = event_filter
         self.queue: asyncio.Queue = asyncio.Queue(
             maxsize=(
                 queue_size
@@ -111,7 +113,7 @@ class Subscriber:
         """Pre-enqueue filter. Drops events the subscriber has opted out of."""
         if self.event_types is not None and event.type not in self.event_types:
             return False
-        return True
+        return self.event_filter is None or self.event_filter(event)
 
     async def enqueue(self, event: Event):
         if self._closed:
@@ -273,15 +275,22 @@ class EventBus:
         topic: str,
         source: Optional[str] = None,
         event_types: Optional[Iterable[EventType]] = None,
+        event_filter: Optional[Callable[[Event], bool]] = None,
     ) -> Subscriber:
         """Subscribe to a topic.
 
         ``source`` is a free-form label used in queue-full log lines so
         operators can identify which consumer is backpressuring. ``event_types``
         is an optional whitelist applied before enqueue — events not matching
-        are dropped without occupying a queue slot.
+        are dropped without occupying a queue slot. ``event_filter`` further
+        narrows matching live events using their payload.
         """
-        subscriber = Subscriber(topic=topic, source=source, event_types=event_types)
+        subscriber = Subscriber(
+            topic=topic,
+            source=source,
+            event_types=event_types,
+            event_filter=event_filter,
+        )
         if topic not in self.subscribers:
             self.subscribers[topic] = []
             # Subscribe to coordinator if available

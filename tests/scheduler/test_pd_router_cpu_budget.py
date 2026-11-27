@@ -228,26 +228,72 @@ async def test_commit_rechecks_other_models_under_the_worker_lock(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(('allowed', 'expected_worker'), [(None, 2), ('worker-1', 1)])
+@pytest.mark.parametrize(
+    ('allowed', 'tried', 'eligible'),
+    [
+        (None, [1, 2], {3}),
+        (None, [1, 2, 3], {1, 2, 3}),
+        ('worker-1', [1, 2], {1}),
+    ],
+)
 async def test_recovery_prefers_an_alternative_but_respects_selector(
-    scheduling, allowed, expected_worker
+    scheduling, allowed, tried, eligible
 ):
     model = _model(allowed=allowed)
     instance = _instance(1, 1)
     instance.distributed_servers = DistributedServers(
-        router_cpu_rejection=RouterCPURejection(worker_id=1, message='OutOfcpu')
+        router_cpu_rejection=RouterCPURejection(worker_ids=tried, message='OutOfcpu')
     )
     candidate, _ = await scheduler.find_candidate(
         None,
         scheduling,
         model,
-        [_worker(1), _worker(2)],
+        [_worker(1), _worker(2), _worker(3)],
         [instance],
         role='router',
         exclude_instance_id=instance.id,
         resource_view=ResourceView([instance]),
     )
-    assert candidate.worker.id == expected_worker
+    assert candidate.worker.id in eligible
+    instance.state = ModelInstanceStateEnum.ANALYZING
+    assert await scheduler.apply_candidate_to_instance(
+        None,
+        model,
+        instance,
+        candidate,
+        commit=False,
+        admission={instance.id: instance},
+    )
+    history = instance.distributed_servers.router_cpu_rejection
+    if candidate.worker.id in tried:
+        assert history is None
+    else:
+        assert history.worker_ids == tried
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'cores, replicas, fits', [(1, 1, False), (2, 1, True), (2, 2, False), (4, 2, True)]
+)
+async def test_router_only_evaluation_checks_all_cpu_slots(
+    scheduling, monkeypatch, cores, replicas, fits
+):
+    monkeypatch.setattr(evaluator.Cluster, 'one_by_id', AsyncMock(return_value=None))
+    result = await evaluator.evaluate_group(
+        scheduling,
+        None,
+        _model(replicas=replicas),
+        [_worker(cores=cores)],
+        [],
+        cluster_id=1,
+        cache_instances=[],
+    )
+    assert (result.total is not None) is fits
+    if fits:
+        assert result.claims[0].replicas == replicas
+    else:
+        assert any('CPU' in message for message in result.messages)
+        assert result.demands[0].placeable == cores // 2
 
 
 @pytest.mark.asyncio

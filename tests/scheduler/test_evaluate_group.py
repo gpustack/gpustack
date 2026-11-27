@@ -327,12 +327,9 @@ async def test_a_commit_that_comes_up_short_refuses_rather_than_underprices():
 
 
 @pytest.mark.asyncio
-async def test_a_group_of_only_routers_is_priced_without_a_solve():
-    """No member occupies an accelerator, so there is nothing to solve — but
-    the group still has a footprint, and reporting it beats reporting
-    nothing."""
+async def test_a_router_only_group_reports_its_footprint_after_the_fit_check():
     spec = _spec(roles=[RoleSpec(name="router", replicas=1)])
-    group = await _run(GroupInfeasible(reason="never consulted"), spec=spec)
+    group = await _run(GroupPlacement(layer="cluster", assignments={}), spec=spec)
 
     assert group.messages == []
     assert group.total.vram == 0
@@ -347,7 +344,7 @@ async def test_a_declared_router_memory_replaces_the_floor():
             RoleSpec(name="router", replicas=1, resources={"memory": 8 * GIB}),
         ]
     )
-    group = await _run(GroupInfeasible(reason="never consulted"), spec=spec)
+    group = await _run(GroupPlacement(layer="cluster", assignments={}), spec=spec)
 
     assert group.total.ram == 8 * GIB
 

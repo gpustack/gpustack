@@ -11,6 +11,7 @@ from sqlalchemy.orm.attributes import set_committed_value
 
 from gpustack.api.exceptions import (
     ConflictException,
+    ForbiddenException,
     HTTPException,
     InternalServerErrorException,
 )
@@ -40,7 +41,6 @@ from gpustack.schemas.models import (
     ModelInstanceUpdate,
     DistributedServers,
     ModelInstanceWorkloadStateEnum,
-    RoleNameEnum,
     RouterCPURejection,
     member_worker_ids,
 )
@@ -1393,29 +1393,40 @@ class ModelInstanceService:
         instance: ModelInstance,
         update: ModelInstanceUpdate,
         message: str,
-        worker: Worker,
+        worker: Optional[Worker],
         principal_id: int,
-    ) -> Union[ModelInstanceUpdate, dict]:
+    ) -> dict:
         """Atomically fence an admission failure reported by the assigned Worker."""
         if (
-            instance.role != RoleNameEnum.ROUTER.value
-            or instance.worker_id != worker.id
+            worker is None
             or worker.deleted_at is not None
             or worker.cluster_id != instance.cluster_id
             or worker.system_principal_id != principal_id
+        ):
+            raise ForbiddenException(message="CPU rejection requires a bound Worker")
+        if (
+            instance.worker_id != worker.id
+            or update.worker_id != worker.id
+            or (update.restart_count or 0) != (instance.restart_count or 0)
+            or instance.draining_since is not None
+            or instance.spans_workers
+            or get_model_instance_workloads(instance) is not None
             or instance.state
             not in (
                 ModelInstanceStateEnum.STARTING,
                 ModelInstanceStateEnum.ERROR,
             )
-            or instance.draining_since is not None
-            or has_model_instance_stop_barrier(instance)
-            or instance.spans_workers
-            or update.worker_id != worker.id
-            or (update.restart_count or 0) != (instance.restart_count or 0)
         ):
-            return update
-        update.state_message = message
+            raise ConflictException(
+                message="CPU rejection does not match the active Router"
+            )
+        # Do not apply unrelated fields from a legacy snapshot, including a
+        # snapshot that was read before the Server installed the stop barrier.
+        if model_instance_legacy_stop(instance) is not None:
+            return {}
+        source = {"state": ModelInstanceStateEnum.ERROR, "state_message": message}
+        if not getattr(worker.status, "supports_router_cpu_recovery", False):
+            return source
         model = await Model.one_by_id(self.session, instance.model_id, refresh=True)
         if (
             model is None
@@ -1425,17 +1436,16 @@ class ModelInstanceService:
             or model.restarting_since is not None
             or model.stale
         ):
-            return update
+            return source
 
         servers = await self._legacy_stop_servers(instance, {worker.id: principal_id})
+        previous = router_cpu_rejection(instance)
         servers.router_cpu_rejection = RouterCPURejection(
-            worker_id=worker.id, message=message
+            worker_ids=sorted({worker.id, *(previous.worker_ids if previous else [])}),
+            message=message,
         )
-        return {
-            "state": ModelInstanceStateEnum.ERROR,
-            "state_message": message,
-            "distributed_servers": servers,
-        }
+        source["distributed_servers"] = servers
+        return source
 
     async def _prepare_recovery_policy(self, instance, source):
         fields = (
@@ -1895,6 +1905,9 @@ class ModelInstanceService:
             source['pid'] = None
             if rejection := router_cpu_rejection(instance):
                 # The stop ACK is committed before any Worker or claim changes.
+                servers.router_cpu_rejection = rejection.model_copy(
+                    update={"retry_pending": True}
+                )
                 source.update(
                     state=ModelInstanceStateEnum.PENDING,
                     state_message=rejection.message,

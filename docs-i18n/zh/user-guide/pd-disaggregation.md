@@ -137,7 +137,7 @@ my-router --regex '\d+\s+' --config 'C:\models\router.json' --port {{port}}
 
 GPUStack 用 Worker 上报的 CPU 总量减去其他 PD Router 的预留量，再检查是否满足当前 Router 的请求（默认 2 核）。预留在放置时生效，不需要等容器创建。没有上报 CPU 容量的 Worker 不参与选址；旧版本未记录 CPU 预留的实例在重新放置后才开始计入。
 
-这是 GPUStack 内部的计账，不代表 Kubernetes 节点的剩余配额。如果 kubelet 拒绝 Pod 并报告 `OutOfcpu`，在启用**出错时重启**且 Worker 已绑定身份的情况下，GPUStack 会保留原因，等待旧 Pod 清理，再优先尝试其他满足放置条件的 Worker。没有其他可选 Worker 时，退避后仍可重试原 Worker。
+这是 GPUStack 内部的计账，不代表 Kubernetes 节点的剩余配额。如果 kubelet 拒绝 Pod 并报告 `OutOfcpu`，GPUStack 会保留原因。启用**出错时重启**且 Worker 支持停止确认时，GPUStack 等待旧 Pod 清理后，优先尝试在本轮恢复中未拒绝过该 Router 的合格 Worker。所有合格 Worker 都试过后，退避后可开始新一轮。滚动升级期间，不支持停止确认的 Worker 仍在本机重试。
 
 ## 理解组状态 { #reading-a-groups-state }
 

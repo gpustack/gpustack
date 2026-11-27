@@ -17,7 +17,6 @@ from gpustack.schemas.models import (
     ModelInstanceWorkloadObservation,
     ModelInstancePreparation,
     ModelInstanceStateEnum,
-    ModelInstanceUpdate,
     RoleNameEnum,
     RouterCPURejection,
     member_worker_ids,
@@ -29,6 +28,8 @@ from gpustack.utils.command import (
 )
 
 from gpustack.schemas.workers import Worker
+
+WORKLOAD_RESTART_COUNT_LABEL = "gpustack.ai/restart-count"
 
 
 @dataclass(frozen=True)
@@ -273,13 +274,9 @@ def router_cpu_rejection(
     )
 
 
-def router_cpu_rejection_message(update: ModelInstanceUpdate) -> Optional[str]:
-    """Recognize a Router admission rejection from the legacy runtime report."""
-    if (
-        update.role != RoleNameEnum.ROUTER.value
-        or update.state != ModelInstanceStateEnum.ERROR
-        or not (message := update.state_message)
-    ):
+def router_cpu_rejection_message(message: Optional[str]) -> Optional[str]:
+    """Recognize kubelet CPU admission failures in a runtime state message."""
+    if not message:
         return None
     if message == "OutOfcpu" or message.startswith("OutOfcpu:"):
         return message

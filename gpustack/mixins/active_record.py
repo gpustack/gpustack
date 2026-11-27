@@ -1031,16 +1031,20 @@ class ActiveRecordMixin(ImmutableFieldsMixin):
         options: Optional[List] = None,
         event_types: Optional[Iterable[EventType]] = None,
         replay_existing: bool = True,
+        event_filter: Optional[Callable[[Event], bool]] = None,
     ) -> AsyncGenerator[Event, None]:
         """Subscribe to bus events for this model.
 
         ``source`` labels the consumer in queue-full logs. ``event_types``
         whitelists pre-enqueue, so filtered events don't take queue slots.
+        ``event_filter`` can further narrow live events before enqueueing.
         ``replay_existing=False`` skips the initial CREATED snapshot for
         consumers that bootstrap themselves.
         """
         topic = cls.__name__.lower()
-        subscriber = event_bus.subscribe(topic, source=source, event_types=event_types)
+        subscriber = event_bus.subscribe(
+            topic, source=source, event_types=event_types, event_filter=event_filter
+        )
         logger.info(
             "subscribed, source=%s topic=%s subscriber=%s",
             source,

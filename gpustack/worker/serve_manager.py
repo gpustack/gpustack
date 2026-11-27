@@ -122,6 +122,7 @@ from gpustack.schemas.models import (
     role_effective_model,
 )
 from gpustack.utils.model_instance_workers import (
+    WORKLOAD_RESTART_COUNT_LABEL,
     get_model_instance_workloads,
     model_instance_legacy_stop,
     has_model_instance_stop_barrier,
@@ -133,6 +134,7 @@ from gpustack.utils.model_instance_workers import (
     ModelInstanceTarget,
     ModelInstanceEndpoint,
     resolve_model_instance_endpoint,
+    router_cpu_rejection_message,
 )
 from gpustack.utils.vllm_topology import vllm_lb_mode
 from gpustack.schemas.workers import WorkerStateEnum
@@ -530,7 +532,7 @@ class ServeManager(ContainerLogPersister):
     def _managed_workload_labels(self, mi: ModelInstance) -> Dict[str, str]:
         return {
             "gpustack.ai/model-instance-id": str(mi.id),
-            "gpustack.ai/restart-count": str(mi.restart_count or 0),
+            WORKLOAD_RESTART_COUNT_LABEL: str(mi.restart_count or 0),
             "gpustack.ai/worker-id": str(self._worker_id),
         }
 
@@ -648,7 +650,7 @@ class ServeManager(ContainerLogPersister):
         ):
             return False
         try:
-            restart = int(labels.get('gpustack.ai/restart-count', ''))
+            restart = int(labels.get(WORKLOAD_RESTART_COUNT_LABEL, ''))
         except (TypeError, ValueError):
             return False
         if not 0 <= restart < (mi.restart_count or 0):
@@ -1603,7 +1605,7 @@ class ServeManager(ContainerLogPersister):
             name
             for name, _ in engine_log_targets(mi, self._worker_id)
             if any(
-                (status.labels or {}).get('gpustack.ai/restart-count')
+                (status.labels or {}).get(WORKLOAD_RESTART_COUNT_LABEL)
                 == str(mi.restart_count or 0)
                 and getattr(status, 'loggable', None) != []
                 for status in observed.get(name, [])
@@ -2374,6 +2376,19 @@ class ServeManager(ContainerLogPersister):
                             model_instance, failure_message
                         )
                         with contextlib.suppress(NotFoundException):
+                            if (
+                                is_main_worker
+                                and model_instance.role == RoleNameEnum.ROUTER.value
+                                and (
+                                    rejection := router_cpu_rejection_message(
+                                        failure_message
+                                    )
+                                )
+                            ):
+                                self._report_router_cpu_rejection(
+                                    model_instance, workload, rejection
+                                )
+                                continue
                             # Get patch dict for main worker.
                             if is_main_worker:
                                 patch_dict = {
@@ -5104,6 +5119,28 @@ class ServeManager(ContainerLogPersister):
             self._clientset.models.update(id=id, model_update=m)
         except NotFoundException:
             logger.warning(f"Model with ID {id} not found when trying to update.")
+
+    def _report_router_cpu_rejection(
+        self, mi: ModelInstance, workload: WorkloadStatus, message: str
+    ) -> None:
+        # Existing unlabelled Pods use the snapshot taken before observing the
+        # workload. Never replace its generation with a later API read.
+        label = (workload.labels or {}).get(WORKLOAD_RESTART_COUNT_LABEL)
+        observed = (
+            (mi.restart_count or 0) if label is None else safe_int(label, default=-1)
+        )
+        current = self._clientset.model_instances.get(id=mi.id, use_cache=False)
+        if (
+            observed < 0
+            or observed != (current.restart_count or 0)
+            or current.worker_id != self._worker_id
+        ):
+            return
+        update = ModelInstanceUpdate.model_validate(current.model_dump())
+        update.restart_count = observed
+        update.state = ModelInstanceStateEnum.ERROR
+        update.state_message = message
+        self._clientset.model_instances.update(id=mi.id, model_update=update)
 
     def _report_model_instance(self, mi: ModelInstance, **fields):
         """Keep the observed round attached to local runtime state reports."""

@@ -175,9 +175,11 @@ claim start counting when they are placed again.
 
 This is GPUStack's own resource accounting, not Kubernetes node headroom.
 Kubernetes may still reject a Pod with `OutOfcpu`. With **Restart on error**
-enabled and a bound Worker, GPUStack keeps the reason, waits for the old Pod
-to be removed, and prefers another eligible Worker when retrying. If there is
-no alternative, it can retry the original Worker after backoff.
+enabled, GPUStack keeps the reason. If the Worker supports stop confirmation,
+GPUStack waits for the old Pod to be removed and tries eligible Workers that
+have not rejected this Router in the current recovery cycle. After backoff it
+can start a new cycle when all eligible Workers have been tried. During a
+rolling upgrade, a Worker without stop confirmation still retries locally.
 
 ## Reading a group's state
 

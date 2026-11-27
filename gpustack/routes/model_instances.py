@@ -56,6 +56,7 @@ from gpustack.schemas.models import (
     ModelInstancesPublic,
     ModelInstanceStateEnum,
     RoleNameEnum,
+    RouterCPURejection,
     ServeLogOptionsResponse,
     get_backend,
     role_effective_model,
@@ -1749,7 +1750,11 @@ def _merge_legacy_stop_report(instance, ctx, report, current_worker):
 
 
 def _preserve_managed_fields(
-    instance: ModelInstance, update: ModelInstanceUpdate, *, legacy: bool = False
+    instance: ModelInstance,
+    update: ModelInstanceUpdate,
+    *,
+    legacy: bool = False,
+    reporting_worker_id: Optional[int] = None,
 ) -> None:
     """Keep ordinary instance snapshots from changing managed runtime ownership."""
     stored = get_model_instance_workloads(instance)
@@ -1821,7 +1826,14 @@ def _preserve_managed_fields(
         update.model_fields_set.discard('model_config_snapshot')
         update.model_config_snapshot = None
         return
-    if stored is None and guard is None and rejection is None:
+    if (
+        stored is None
+        and guard is None
+        and (rejection is None or instance.worker_id is not None)
+    ):
+        _preserve_router_recovery_history(
+            instance, update, rejection, reporting_worker_id
+        )
         return
     # A legacy snapshot may omit the manifest. Preserve it even if the snapshot
     # carries distributed_servers=null or an old subordinate status list.
@@ -1831,6 +1843,34 @@ def _preserve_managed_fields(
             raise ConflictException(
                 message=f"Managed instance field {field} cannot be changed by a snapshot"
             )
+
+
+def _preserve_router_recovery_history(
+    instance: ModelInstance,
+    update: ModelInstanceUpdate,
+    rejection: Optional[RouterCPURejection],
+    reporting_worker_id: Optional[int],
+) -> None:
+    if rejection is None:
+        return
+
+    current_generation = instance.restart_count or 0
+    observed_generation = update.restart_count or 0
+    current_worker = instance.worker_id == reporting_worker_id == update.worker_id
+    local_restart = (
+        instance.state == ModelInstanceStateEnum.ERROR
+        and update.state == ModelInstanceStateEnum.SCHEDULED
+        and observed_generation == current_generation + 1
+    )
+    if reporting_worker_id is not None and (
+        not current_worker
+        or (observed_generation != current_generation and not local_restart)
+    ):
+        raise ConflictException(message="Report does not match the active Router")
+    servers = (update.distributed_servers or instance.distributed_servers).model_copy()
+    running = current_worker and update.state == ModelInstanceStateEnum.RUNNING
+    servers.router_cpu_rejection = None if running else rejection
+    update.distributed_servers = servers
 
 
 def _preserve_download_state(
@@ -1911,15 +1951,8 @@ async def _locked_reporting_worker(session, ctx):
     return await Worker.one_by_id(session, worker.id, for_update=True, refresh=True)
 
 
-async def _persist_instance_update(
-    session, instance, source, ctx, worker, cpu_rejection
-):
+async def _persist_instance_update(service, instance, source):
     """Suppress duplicate reports after authorization and generation checks."""
-    service = ModelInstanceService(session)
-    if cpu_rejection is not None and worker is not None:
-        source = await service.prepare_router_cpu_recovery(
-            instance, source, cpu_rejection, worker, ctx.user.id
-        )
     if isinstance(source, dict) and all(
         getattr(instance, key) == value for key, value in source.items()
     ):
@@ -1962,8 +1995,9 @@ async def _update_model_instance(session, ctx, id, model_instance_in):
     stop_report = isinstance(model_instance_in, ModelInstanceStopReport)
     worker = ctx.user.worker if member_report or stop_report else None
     cpu_rejection = (
-        router_cpu_rejection_message(model_instance_in)
+        router_cpu_rejection_message(model_instance_in.state_message)
         if isinstance(model_instance_in, ModelInstanceUpdate)
+        and model_instance_in.state == ModelInstanceStateEnum.ERROR
         else None
     )
     worker_report = member_report or stop_report or cpu_rejection is not None
@@ -1982,7 +2016,19 @@ async def _update_model_instance(session, ctx, id, model_instance_in):
         not_found_message="Model instance not found",
     )
 
-    if stop_report:
+    service = ModelInstanceService(session)
+    router_failure = (
+        cpu_rejection is not None and model_instance.role == RoleNameEnum.ROUTER.value
+    )
+    if router_failure:
+        source = await service.prepare_router_cpu_recovery(
+            model_instance,
+            model_instance_in,
+            cpu_rejection,
+            current_worker,
+            ctx.user.id,
+        )
+    elif stop_report:
         source = {
             "distributed_servers": _merge_legacy_stop_report(
                 model_instance, ctx, model_instance_in, current_worker
@@ -2022,13 +2068,22 @@ async def _update_model_instance(session, ctx, id, model_instance_in):
             legacy = model is not None and requires_group_recovery(
                 model_instance, model
             )
-        _preserve_managed_fields(model_instance, model_instance_in, legacy=legacy)
-        source = model_instance_in
-    _preserve_model_config_snapshot(model_instance, model_instance_in, source, ctx)
-    try:
-        await _persist_instance_update(
-            session, model_instance, source, ctx, current_worker, cpu_rejection
+        reporting_worker = (
+            getattr(ctx.user, "worker", None)
+            if getattr(ctx.user, "kind", None) == PrincipalType.SYSTEM
+            else None
         )
+        _preserve_managed_fields(
+            model_instance,
+            model_instance_in,
+            legacy=legacy,
+            reporting_worker_id=getattr(reporting_worker, "id", None),
+        )
+        source = model_instance_in
+    if not router_failure:
+        _preserve_model_config_snapshot(model_instance, model_instance_in, source, ctx)
+    try:
+        await _persist_instance_update(service, model_instance, source)
     except APIHTTPException:
         raise
     except Exception as e:

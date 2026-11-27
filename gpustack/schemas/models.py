@@ -21,6 +21,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field as PydanticField,
+    PositiveInt,
     PrivateAttr,
     field_serializer,
     field_validator,
@@ -524,9 +525,7 @@ class RoleResources(BaseModel):
     account for CPU requests from workloads outside the GPUStack ledger.
     """
     memory: Optional[int] = None
-    """Bytes. Unlike `cpu` this one *is* consumed by placement: it becomes the
-    role's ``ComputedResourceClaim.ram``, which the allocatable view already
-    tracks and subtracts."""
+    """Bytes reserved in ``ComputedResourceClaim.ram`` during placement."""
 
 
 # A managed router is a proxy: it forwards requests and loads no weights, so
@@ -2106,8 +2105,9 @@ class ModelInstanceStopReport(BaseModel):
 
 
 class RouterCPURejection(BaseModel):
-    worker_id: int = PydanticField(gt=0)
+    worker_ids: List[PositiveInt]
     message: str
+    retry_pending: bool = False
 
 
 class DistributedServers(BaseModel):

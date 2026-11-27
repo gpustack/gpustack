@@ -289,6 +289,16 @@ async def solve_group_placement(
     """
     total = sum(r.replicas for r in roles)
     if total <= 0:
+        if attendants:
+            return await _fit_in_domain(
+                root,
+                root.layer,
+                (),
+                capacity,
+                attendants,
+                attendant_worker_ids=root.descendant_worker_ids(),
+                preference=preference,
+            )
         return GroupPlacement(layer=NODE_LAYER, assignments={})
 
     if scopes and isinstance(scopes[0], str):
@@ -721,7 +731,7 @@ async def _fit_in_domain(
             # filters' own lines, which do say. First in the order the caller
             # sorted them: the hungriest role, the same one the sizing pass
             # swept, so its filter chain has already run.
-            role=roles[0].role if roles else None,
+            role=next((role.role for role in (*roles, *attendants)), None),
         )
 
     placement = GroupPlacement(layer=layer, path=domain.path())
@@ -780,10 +790,14 @@ async def _fit_in_domain(
             scope = (
                 f"{' / '.join(domain.path())!r}" if scoped_to_domain else "this cluster"
             )
+            prefix = (
+                "The group's accelerator-bearing members fit, but nothing"
+                if total
+                else "Nothing"
+            )
             return GroupInfeasible(
                 reason=(
-                    f"The group's accelerator-bearing members fit, but nothing "
-                    f"in {scope} has room for the {attendant.role!r} role"
+                    f"{prefix} in {scope} has room for the {attendant.role!r} role"
                     + (
                         "."
                         if not unmeasured

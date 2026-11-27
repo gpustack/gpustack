@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 from gpustack.detectors.base import GPUDetectExepction
+from gpustack.schemas.workers import WorkerCreate, WorkerStatusStored
 from gpustack.worker.collector import WorkerStatusCollector
 
 
@@ -118,3 +119,15 @@ def test_collector_does_not_advertise_separate_orchestration_protocol(initial, f
     )
     reported = collector.collect(initial=initial)
     assert 'orchestration' not in reported.status.model_dump()
+
+
+@pytest.mark.parametrize('initial', [True, False])
+def test_stop_confirmation_capability_survives_worker_report(initial):
+    report = _collector().collect(initial=initial)
+    fields = report.model_dump()
+    payload = (
+        WorkerCreate.model_validate({**fields, 'name': 'worker'})
+        if initial
+        else WorkerStatusStored.model_validate(fields)
+    )
+    assert payload.status.supports_router_cpu_recovery

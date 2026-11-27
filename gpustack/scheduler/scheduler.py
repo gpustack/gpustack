@@ -101,7 +101,7 @@ from gpustack.utils.model_instance_workers import (
     worker_supports_model_instance_workloads,
 )
 
-from gpustack.server.bus import EventType
+from gpustack.server.bus import Event, EventType
 from gpustack.server.db import async_session
 from gpustack.scheduler.group_schedule import (
     is_group_forming,
@@ -194,18 +194,14 @@ class Scheduler:
         # of every existing instance which would flood the queue (#4794).
         await self._enqueue_pending_instances()
 
-        # Live trigger. event_types/replay_existing keep this subscription
-        # cheap so UPDATED/HEARTBEAT bursts don't fill the queue.
+        # Only creations and committed Router recovery handoffs use the fast path.
         async for event in ModelInstance.subscribe(
             source="scheduler",
-            event_types={EventType.CREATED},
+            event_types={EventType.CREATED, EventType.UPDATED},
             replay_existing=False,
+            event_filter=_scheduler_instance_event,
         ):
-            # The bus filter only blocks events from publishers; the
-            # subscribe() generator still yields HEARTBEAT events on its
-            # own to keep the stream alive (active_record.py). Skip those
-            # and any other non-CREATED events that may surface in future.
-            if event.type != EventType.CREATED:
+            if event.type == EventType.HEARTBEAT:
                 continue
             # Single-instance path; the IntervalTrigger above is still the
             # full-scan fallback for anything missed here.
@@ -257,7 +253,12 @@ class Scheduler:
         """
         async with async_session() as session:
             try:
-                instance = await ModelInstance.one_by_id(session, instance.id)
+                if getattr(instance, 'role', None) == RoleNameEnum.ROUTER.value:
+                    instance = await ModelInstance.one_by_id(
+                        session, instance.id, for_update=True, refresh=True
+                    )
+                else:
+                    instance = await ModelInstance.one_by_id(session, instance.id)
                 # Re-check against the freshly-fetched row: the caller's
                 # snapshot may be stale (event payload, last full scan, etc.)
                 # and the user may have deleted or transitioned the instance
@@ -271,8 +272,15 @@ class Scheduler:
 
                 if instance.state != ModelInstanceStateEnum.ANALYZING:
                     instance.state = ModelInstanceStateEnum.ANALYZING
-                    if router_cpu_rejection(instance) is None:
+                    rejection = router_cpu_rejection(instance)
+                    if rejection is None:
                         instance.state_message = "Evaluating resource requirements"
+                    elif rejection.retry_pending:
+                        servers = instance.distributed_servers.model_copy()
+                        servers.router_cpu_rejection = rejection.model_copy(
+                            update={"retry_pending": False}
+                        )
+                        instance.distributed_servers = servers
                     await ModelInstanceService(session).update(instance)
 
                 # Get available workers for potential remote parsing
@@ -368,14 +376,15 @@ class Scheduler:
         )
         return (
             (
-                # When enqueueing pending state model instances, handle two cases:
-                # 1. Newly created model instances (updated_at - created_at < 1 second),
-                #    which will be updated to ANALYZING in _evaluate.
-                # 2. Existing PENDING model instances periodically enqueued by the scheduler job.
-                #    In this case, update_delta is longer than 90s, as the scheduler runs every 180s.
+                # Creations and Router recovery handoffs can run immediately.
+                # Other pending instances wait for the periodic retry window.
                 instance.worker_id is None
                 and instance.state == ModelInstanceStateEnum.PENDING
-                and (newly_created or update_delta > timedelta(seconds=90))
+                and (
+                    newly_created
+                    or _router_cpu_retry_pending(instance)
+                    or update_delta > timedelta(seconds=90)
+                )
             )
             or (
                 # Reschedule while it stays in anayzing state for too long,
@@ -648,6 +657,22 @@ _MANAGED_WORKER_MESSAGE = (
 )
 
 
+def _router_cpu_retry_pending(instance: Optional[ModelInstance]) -> bool:
+    rejection = router_cpu_rejection(instance)
+    return (
+        rejection is not None
+        and rejection.retry_pending
+        and instance.state == ModelInstanceStateEnum.PENDING
+        and instance.worker_id is None
+    )
+
+
+def _scheduler_instance_event(event: Event) -> bool:
+    return event.type == EventType.CREATED or (
+        event.type == EventType.UPDATED and _router_cpu_retry_pending(event.data)
+    )
+
+
 def _model_cohort(instances, model_id):
     return [row for row in instances if getattr(row, 'model_id', None) == model_id]
 
@@ -883,8 +908,13 @@ async def apply_candidate_to_instance(
     model_instance.gpu_type = candidate.gpu_type
     model_instance.gpu_indexes = candidate.gpu_indexes
     model_instance.gpu_addresses = candidate.gpu_addresses
+    rejection = router_cpu_rejection(model_instance)
+    if rejection is not None and candidate.worker.id in rejection.worker_ids:
+        # Placement fell back to a tried Worker after exhausting eligible ones.
+        rejection = None
     model_instance.distributed_servers = DistributedServers(
         subordinate_workers=candidate.subordinate_workers,
+        router_cpu_rejection=rejection,
         workloads=(
             model_instance.distributed_servers.workloads
             if model_instance.distributed_servers is not None
@@ -1211,7 +1241,8 @@ def _prefer_cpu_retry_candidates(
     rejection = router_cpu_rejection(instance)
     if rejection is None:
         return candidates
-    return [c for c in candidates if c.worker.id != rejection.worker_id] or candidates
+    tried = set(rejection.worker_ids)
+    return [c for c in candidates if c.worker.id not in tried] or candidates
 
 
 async def find_candidate(
