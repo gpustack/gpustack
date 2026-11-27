@@ -204,6 +204,25 @@ def _parse_cli(subcommand: str, argv: list[str]) -> argparse.Namespace:
     return parser.parse_args([subcommand, *argv])
 
 
+def test_worker_trace_proxy_port_uses_startup_configuration(monkeypatch, tmp_path):
+    monkeypatch.setenv("GPUSTACK_RUN_DIR", str(tmp_path / "run"))
+    config_path = tmp_path / "worker.yaml"
+    config_path.write_text("worker_trace_proxy_port: 45001\n")
+    args = ["--data-dir", str(tmp_path), "--config-file", str(config_path)]
+    monkeypatch.delenv("GPUSTACK_WORKER_TRACE_PROXY_PORT", raising=False)
+    assert parse_args(_parse_cli("start", args)).worker_trace_proxy_port == 45001
+    monkeypatch.setenv("GPUSTACK_WORKER_TRACE_PROXY_PORT", "45002")
+    assert parse_args(_parse_cli("start", args)).worker_trace_proxy_port == 45002
+    args.extend(["--worker-trace-proxy-port", "45003"])
+    assert parse_args(_parse_cli("start", args)).worker_trace_proxy_port == 45003
+
+
+@pytest.mark.parametrize("port", [0, 65536])
+def test_worker_trace_proxy_rejects_invalid_port(tmp_path, port):
+    with pytest.raises(ValidationError, match="worker_trace_proxy_port"):
+        Config(data_dir=str(tmp_path), worker_trace_proxy_port=port)
+
+
 def test_trace_query_settings_use_server_cli_and_disable_with_tracing(
     tmp_path, monkeypatch
 ):

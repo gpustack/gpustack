@@ -150,6 +150,7 @@ gpustack start [OPTIONS]
 | `--disable-worker-metrics`               | `False`                                | Metrikleri devre dışı bırakır. |
 | `--worker-metrics-port` değer            | `10151`                                | Metriklerin yayımlanacağı port. |
 | `--worker-port` değer                    | `10150`                                | Worker'ın bağlanacağı port. Tüm worker'larda aynı değeri kullanın. |
+| `--worker-trace-proxy-port` değer | (otomatik) | Worker OTLP izleme vekilinin geri döngü adresinde dinlediği port. Varsayılan olarak Worker otomatik atanan portu kaydeder ve yeniden başlatıldığında aynı portu kullanır. (`GPUSTACK_WORKER_TRACE_PROXY_PORT`) |
 | `--service-port-range` değer             | `40000-40063`                          | Çıkarım servislerinin port aralığı, 'N1-N2' biçiminde bir dizeyle belirtilir. Her iki uç dahildir. |
 | `--ray-port-range` değer                 | `41000-41999`                          | Ray servislerinin (vLLM dağıtık dağıtımında kullanılır) port aralığı, 'N1-N2' biçiminde bir dizeyle belirtilir. Her iki uç dahildir. |
 | `--log-dir` değer                        | (boş)                                | Günlüklerin saklanacağı dizin. |

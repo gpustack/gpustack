@@ -468,13 +468,13 @@ def test_worker_reuses_trace_proxy_port_after_restart(monkeypatch, tmp_path):
     from gpustack.worker.worker import Worker
 
     server = MagicMock()
-    server.add_insecure_port.return_value = 49152
     monkeypatch.setattr(
         "gpustack.observability.trace_proxy.grpc.server", lambda *a, **kw: server
     )
     monkeypatch.setattr("gpustack.observability.trace_proxy.httpx.Client", MagicMock())
 
-    for port in (0, 49152):
+    for configured, port in [(None, 0), (None, 49152), (45123, 45123)]:
+        server.add_insecure_port.return_value = port or 49152
         worker = Worker.__new__(Worker)
         worker._config = SimpleNamespace(
             data_dir=str(tmp_path),
@@ -483,6 +483,7 @@ def test_worker_reuses_trace_proxy_port_after_restart(monkeypatch, tmp_path):
             use_builtin_tempo=lambda: False,
             get_server_url=lambda: "http://testserver",
             _local_trace_proxy_endpoint=None,
+            worker_trace_proxy_port=configured,
         )
         worker._clientset = SimpleNamespace(headers={})
         worker._worker_manager = SimpleNamespace(trace_proxy_enabled=True)
@@ -491,6 +492,9 @@ def test_worker_reuses_trace_proxy_port_after_restart(monkeypatch, tmp_path):
         try:
             worker._start_trace_proxy_if_needed()
             server.add_insecure_port.assert_called_with(f"127.0.0.1:{port}")
-            assert worker._config._local_trace_proxy_endpoint == "127.0.0.1:49152"
+            assert (
+                worker._config._local_trace_proxy_endpoint
+                == f"127.0.0.1:{port or 49152}"
+            )
         finally:
             worker._stop_trace_proxy()

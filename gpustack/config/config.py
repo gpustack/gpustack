@@ -123,6 +123,7 @@ class WorkerConfig(PredefinedConfig):
     server_url: Optional[str] = None
     worker_ip: Optional[str] = None
     worker_name: Optional[str] = None
+    worker_trace_proxy_port: Optional[int] = Field(default=None, gt=0, le=65535)
     # Local startup setting for the NIXL KV transfer interface. With no
     # explicit device from Worker, startup, or cluster settings, the worker
     # interface is the fallback on a host with a single candidate interface.

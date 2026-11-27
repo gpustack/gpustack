@@ -150,6 +150,7 @@ gpustack start [OPTIONS]
 | `--disable-worker-metrics`               | `False`                                | メトリクスを無効にします。 |
 | `--worker-metrics-port` 値            | `10151`                                | メトリクスを公開するポート。 |
 | `--worker-port` 値                    | `10150`                                | ワーカーがバインドするポート。すべてのワーカーで同じ値を使用してください。 |
+| `--worker-trace-proxy-port` 値 | （自動） | Worker の OTLP トレースプロキシがループバックで待ち受けるポート。既定では自動割り当てされたポートを保存し、再起動時に再利用します。 (`GPUSTACK_WORKER_TRACE_PROXY_PORT`) |
 | `--service-port-range` 値             | `40000-40063`                          | 推論サービスのポート範囲。'N1-N2'形式の文字列で指定します。範囲の両端を含みます。 |
 | `--ray-port-range` 値                 | `41000-41999`                          | Rayサービス（vLLMの分散デプロイで使用）のポート範囲。'N1-N2'形式の文字列で指定します。範囲の両端を含みます。 |
 | `--log-dir` 値                        | （空）                                | ログを保存するディレクトリー。 |

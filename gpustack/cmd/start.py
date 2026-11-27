@@ -734,6 +734,12 @@ def start_cmd_options(parser_server: argparse.ArgumentParser):
         default=get_gpustack_env("WORKER_PORT"),
     )
     worker_group.add_argument(
+        "--worker-trace-proxy-port",
+        type=int,
+        help="Loopback port for the Worker OTLP trace proxy. Defaults to a persistent automatically assigned port.",
+        default=get_gpustack_env("WORKER_TRACE_PROXY_PORT"),
+    )
+    worker_group.add_argument(
         "--service-port-range",
         type=str,
         help="Port range for inference services, specified as a string in the form 'N1-N2'. Both ends of the range are inclusive. The default is '40000-40063'.",
@@ -1068,6 +1074,7 @@ def set_worker_options(args, config_data: dict):
         "kv_transfer_ifname",
         "worker_name",
         "worker_port",
+        "worker_trace_proxy_port",
         "disable_worker_metrics",
         "worker_metrics_port",
         "service_port_range",

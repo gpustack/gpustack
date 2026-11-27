@@ -221,6 +221,7 @@ class Worker:
             proxy = LocalOTLPTraceProxy(
                 server_url=self._config.get_server_url(),
                 headers=self._clientset.headers,
+                port=self._config.worker_trace_proxy_port or 0,
                 port_file=Path(self._config.data_dir) / "otlp-trace-proxy-port",
             )
             self._config._local_trace_proxy_endpoint = proxy.start()
