@@ -304,6 +304,31 @@ exit_if_overtaken() {
   fi
 }
 
+# An earlier bootstrap can still be waiting on its migration hook. Let that
+# Helm run finish and remove its temporary RBAC before checking ownership or
+# treating a pending release as interrupted.
+wait_for_previous_bootstrap() {
+  local previous
+  while :; do
+    exit_if_overtaken
+    previous=$(
+      kubectl get pods --namespace "${NAMESPACE}" --field-selector=status.phase=Running -o json |
+        jq -r --arg prefix "${BOOTSTRAP_CONFIGMAP}-" --arg current "${BOOTSTRAP_CONFIGMAP}-${RENDERED_AT}" '
+          .items[]
+          | select(any(.status.containerStatuses[]?; .name == "install" and .state.running != null))
+          | .metadata.ownerReferences[]?
+          | select(.kind == "Job" and .controller == true)
+          | .name
+          | select(startswith($prefix) and . != $current)
+          | select(ltrimstr($prefix) | test("^[0-9]{20}$"))'
+    )
+    [[ -n "${previous}" ]] || return 0
+    sleep 5
+  done
+}
+
+wait_for_previous_bootstrap
+
 # The chart records the configuration it was installed from, as part of the
 # release. When it already matches what this Job was created for, and the
 # release is in a state that says the install finished, there is nothing to do.
