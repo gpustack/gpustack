@@ -16,9 +16,8 @@ cannot find, so the symptom is a curve that silently loses points. Keep the two
 sides together.
 
 Every ``*.dual_json`` output produces a pair — a trimmed ``.json`` summary and a
-``.full.json`` companion holding the untrimmed record. Only the summary is read;
-:func:`is_point_file` exists mainly to keep the companion (and the probe, whose
-name also starts with the id) out of the point set.
+``.full.json`` companion holding the untrimmed record. Only the summary is a
+point file; the companion can supply request evidence that was truncated.
 """
 
 import os

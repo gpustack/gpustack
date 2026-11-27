@@ -469,6 +469,28 @@ class TestBuildCommandArgs:
         ):
             assert args[args.index(flag) + 1] == expected
 
+    @pytest.mark.parametrize(
+        "warmup,cooldown,expected",
+        [
+            (None, None, {}),
+            (0, 0, {}),
+            (0, 0.25, {"--cooldown": {"percent": 0.25, "mode": "requests"}}),
+            (2, 0, {"--warmup": {"value": 2, "mode": "requests"}}),
+        ],
+    )
+    def test_only_enabled_transient_phases_are_forwarded(
+        self, warmup, cooldown, expected
+    ):
+        args = BenchmarkRunner._build_command_args(
+            self._runner(warmup=warmup, cooldown=cooldown)
+        )
+
+        assert {
+            flag: json.loads(args[args.index(flag) + 1])
+            for flag in ("--warmup", "--cooldown")
+            if flag in args
+        } == expected
+
     def test_max_error_rate_is_forwarded_only_when_guidellm_accepts_it(self):
         # guidellm's MaxErrorRateConstraint takes a fraction in (0, 1) and rejects
         # the endpoints. 1.0 ("tolerate everything") used to be forwarded verbatim
@@ -993,11 +1015,12 @@ class _Rep:
         ]
 
     def to_metrics(self):
-        return SimpleNamespace(
+        return bm_schemas.BenchmarkMetrics(
             tokens_per_second_mean=self._tps,
             time_to_first_token_mean=self._ttft,
             inter_token_latency_mean=self._tpot,
             request_total=self._total,
+            request_successful=self._successful,
             request_errored=self._errored,
             request_incomplete=self._incomplete,
         )

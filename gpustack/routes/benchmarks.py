@@ -976,9 +976,8 @@ def _validate_non_negative_knobs(benchmark_in: BenchmarkCreate) -> None:
 
     Kept apart from :func:`_validate_positive_knobs` because zero is meaningful
     here and must stay accepted: no warmup, no cooldown, tolerate no errors at
-    all. All three are forwarded to guidellm on any load shape (see
-    ``BenchmarkRunner._build_command_args``), so a negative one only surfaces as
-    a container that dies mid-run.
+    all. Validate before launching the Runner so invalid values can be reported
+    at task creation.
     """
     for field in ("warmup", "cooldown", "max_errors"):
         value = getattr(benchmark_in, field, None)

@@ -668,12 +668,11 @@ class BenchmarkRunner:
             if b.max_seconds is not None:
                 command_args.extend(["--max-seconds", str(b.max_seconds)])
 
-        # Warmup / cooldown / constraints, passed through to guidellm.
-        # Sent as a JSON object rather than the bare number the column holds, to
-        # pin `mode` — see `_transient_phase_arg`.
-        if b.warmup is not None:
+        # Omit disabled phases: GuideLLM applies request-window boundaries
+        # even when a phase is explicitly sized at zero requests.
+        if b.warmup is not None and b.warmup != 0:
             command_args.extend(["--warmup", _transient_phase_arg(b.warmup)])
-        if b.cooldown is not None:
+        if b.cooldown is not None and b.cooldown != 0:
             command_args.extend(["--cooldown", _transient_phase_arg(b.cooldown)])
         if b.max_errors is not None:
             command_args.extend(["--max-errors", str(b.max_errors)])

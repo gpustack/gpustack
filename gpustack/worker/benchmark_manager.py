@@ -32,6 +32,7 @@ from gpustack.utils.process import (
 )
 from gpustack.worker.benchmark import analysis, artifacts
 from gpustack.worker.benchmark.runner import BenchmarkRunner
+from gpustack.worker.benchmark.request_stats import unplanned_incomplete
 from gpustack.client import ClientSet
 from gpustack.server.bus import Event, EventType
 from gpustack.worker.schemas.benchmark_runner import (
@@ -1151,7 +1152,7 @@ class BenchmarkManager:
             loaded += 1
             errs = 0
             if m:
-                errs = (m.request_errored or 0) + (m.request_incomplete or 0)
+                errs = (m.request_errored or 0) + unplanned_incomplete(m.model_dump())
                 if best is None or (m.tokens_per_second_mean or 0) > (
                     best.tokens_per_second_mean or 0
                 ):
@@ -1340,12 +1341,12 @@ class BenchmarkManager:
             total = sum(r.get("request_total") or 0 for r in measured)
             successful = sum(r.get("request_successful") or 0 for r in measured)
             errored = sum(r.get("request_errored") or 0 for r in measured)
-            incomplete = sum(r.get("request_incomplete") or 0 for r in measured)
+            incomplete = sum(unplanned_incomplete(r) for r in measured)
         else:
             total = metrics.request_total or 0
             successful = metrics.request_successful or 0
             errored = metrics.request_errored or 0
-            incomplete = metrics.request_incomplete or 0
+            incomplete = unplanned_incomplete(metrics.model_dump())
 
         try:
             errored_samples, incomplete_samples = self._load_request_samples(
@@ -1715,9 +1716,20 @@ class BenchmarkManager:
         ):
             return [], []
 
-        requests = report.benchmarks[0].requests_truncated
+        point = report.benchmarks[0]
+        requests = point.requests_truncated
         errored = requests.errored or []
         incomplete = requests.incomplete or []
+        stop_time = point.sampling_stop_time()
+        if stop_time is not None:
+            # Diagnostic samples cover the whole run; request totals cover
+            # only the measurement window. Cleanup outside that window
+            # cannot reduce the measured count or represent a logged failure.
+            incomplete = [
+                sample
+                for sample in incomplete
+                if not sample.cancelled_after_sampling_stop(stop_time)
+            ]
 
         if limit is None:
             return errored, incomplete
