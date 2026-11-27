@@ -514,3 +514,308 @@ def test_router_parameters_cannot_supply_a_missing_executable(rendered_command, 
     with pytest.raises(ValueError, match='Managed PD router requires.*command'):
         backend._build_command_args()
     backend._flatten_backend_param.assert_not_called()
+
+
+def _ascend_device(index=0, arch_family="Ascend910B4"):
+    return SimpleNamespace(
+        index=index,
+        vendor="ascend",
+        type="cann",
+        arch_family=arch_family,
+    )
+
+
+def _nvidia_device(index=0):
+    return SimpleNamespace(
+        index=index,
+        vendor="nvidia",
+        type="cuda",
+        arch_family="Hopper",
+    )
+
+
+def _custom_env_server(
+    *,
+    gpu_devices,
+    gpu_indexes,
+    worker_ip="10.0.0.1",
+    worker_ifname="eth0",
+    worker_id=1,
+    model_env=None,
+    role=None,
+):
+    backend = CustomServer.__new__(CustomServer)
+    backend._model = SimpleNamespace(env=model_env, disaggregation=None)
+    backend._model_spec = None
+    backend._model_path = None
+    backend._model_instance = SimpleNamespace(
+        role=role,
+        gpu_indexes=gpu_indexes,
+        gpu_type=None,
+        distributed_servers=None,
+        worker_id=worker_id,
+    )
+    backend._worker = SimpleNamespace(
+        id=worker_id,
+        ip=worker_ip,
+        ifname=worker_ifname,
+        status=SimpleNamespace(gpu_devices=gpu_devices),
+    )
+    backend._should_disable_cuda_compat = lambda: False
+    backend._pd_injection_resolved = False
+    backend._pd_injection_cache = None
+    return backend
+
+
+def test_custom_configured_env_ascend_single_node_sets_defaults(monkeypatch):
+    monkeypatch.setattr(
+        "gpustack.worker.backends.base.filter_env_vars", lambda _env: {}
+    )
+    server = _custom_env_server(
+        gpu_devices=[_ascend_device()],
+        gpu_indexes=[0],
+    )
+
+    env = server._get_configured_env()
+
+    assert env == {
+        "TASK_QUEUE_ENABLE": "1",
+        "CPU_AFFINITY_CONF": "1",
+        "PYTORCH_NPU_ALLOC_CONF": "expandable_segments:True",
+        "HCCL_CONNECT_TIMEOUT": "7200",
+        "HCCL_RDMA_PCIE_DIRECT_POST_NOSTRICT": "TRUE",
+        "HCCL_EXEC_TIMEOUT": "0",
+        "HCCL_OP_EXPANSION_MODE": "AIV",
+    }
+
+
+def test_custom_configured_env_ascend_310p_omits_910_only_defaults(monkeypatch):
+    monkeypatch.setattr(
+        "gpustack.worker.backends.base.filter_env_vars", lambda _env: {}
+    )
+    server = _custom_env_server(
+        gpu_devices=[_ascend_device(arch_family="Ascend310P1")],
+        gpu_indexes=[0],
+    )
+
+    env = server._get_configured_env()
+
+    assert env == {
+        "TASK_QUEUE_ENABLE": "1",
+        "CPU_AFFINITY_CONF": "1",
+        "PYTORCH_NPU_ALLOC_CONF": "expandable_segments:True",
+        "HCCL_CONNECT_TIMEOUT": "7200",
+        "HCCL_RDMA_PCIE_DIRECT_POST_NOSTRICT": "TRUE",
+    }
+    assert "HCCL_EXEC_TIMEOUT" not in env
+    assert "HCCL_OP_EXPANSION_MODE" not in env
+
+
+def test_custom_configured_env_preserves_ascend_user_overrides(monkeypatch):
+    monkeypatch.setattr(
+        "gpustack.worker.backends.base.filter_env_vars", lambda _env: {}
+    )
+    server = _custom_env_server(
+        gpu_devices=[_ascend_device()],
+        gpu_indexes=[0],
+        model_env={
+            "TASK_QUEUE_ENABLE": "0",
+            "HCCL_CONNECT_TIMEOUT": "1800",
+            "HCCL_OP_EXPANSION_MODE": "",
+        },
+    )
+
+    env = server._get_configured_env()
+
+    assert env["TASK_QUEUE_ENABLE"] == "0"
+    assert env["HCCL_CONNECT_TIMEOUT"] == "1800"
+    assert env["HCCL_OP_EXPANSION_MODE"] == ""
+    assert env["CPU_AFFINITY_CONF"] == "1"
+    assert env["PYTORCH_NPU_ALLOC_CONF"] == "expandable_segments:True"
+    assert env["HCCL_RDMA_PCIE_DIRECT_POST_NOSTRICT"] == "TRUE"
+    assert env["HCCL_EXEC_TIMEOUT"] == "0"
+
+
+def test_custom_configured_env_distributed_ascend_derives_per_worker_env(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "gpustack.worker.backends.base.filter_env_vars", lambda _env: {}
+    )
+    worker1 = _custom_env_server(
+        gpu_devices=[_ascend_device()],
+        gpu_indexes=[0],
+        worker_ip="10.0.0.1",
+        worker_ifname="eth0",
+        worker_id=1,
+    )
+    worker2 = _custom_env_server(
+        gpu_devices=[_ascend_device()],
+        gpu_indexes=[0],
+        worker_ip="10.0.0.2",
+        worker_ifname="bond0",
+        worker_id=2,
+    )
+
+    env1 = worker1._get_configured_env(is_distributed=True)
+    env2 = worker2._get_configured_env(is_distributed=True)
+
+    assert env1["HCCL_IF_IP"] == "10.0.0.1"
+    assert env1["HCCL_SOCKET_IFNAME"] == "=eth0"
+    assert env1["GLOO_SOCKET_IFNAME"] == "eth0"
+    assert env1["TP_SOCKET_IFNAME"] == "eth0"
+    assert env1["TASK_QUEUE_ENABLE"] == "1"
+    assert "NCCL_SOCKET_IFNAME" not in env1
+
+    assert env2["HCCL_IF_IP"] == "10.0.0.2"
+    assert env2["HCCL_SOCKET_IFNAME"] == "=bond0"
+    assert env2["GLOO_SOCKET_IFNAME"] == "bond0"
+    assert env2["TP_SOCKET_IFNAME"] == "bond0"
+
+
+def test_custom_configured_env_distributed_ascend_respects_user_overrides(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "gpustack.worker.backends.base.filter_env_vars", lambda _env: {}
+    )
+    suppressed = _custom_env_server(
+        gpu_devices=[_ascend_device()],
+        gpu_indexes=[0],
+        model_env={"HCCL_SOCKET_IFNAME": "custom0"},
+    )
+    suppressed_env = suppressed._get_configured_env(is_distributed=True)
+    assert suppressed_env["HCCL_SOCKET_IFNAME"] == "custom0"
+    assert "HCCL_IF_IP" not in suppressed_env
+    assert "GLOO_SOCKET_IFNAME" not in suppressed_env
+    assert "TP_SOCKET_IFNAME" not in suppressed_env
+
+    partial = _custom_env_server(
+        gpu_devices=[_ascend_device()],
+        gpu_indexes=[0],
+        model_env={
+            "HCCL_IF_IP": "192.168.1.10",
+            "GLOO_SOCKET_IFNAME": "ib0",
+        },
+    )
+    partial_env = partial._get_configured_env(is_distributed=True)
+    assert partial_env["HCCL_IF_IP"] == "192.168.1.10"
+    assert partial_env["GLOO_SOCKET_IFNAME"] == "ib0"
+    assert partial_env["HCCL_SOCKET_IFNAME"] == "=eth0"
+    assert partial_env["TP_SOCKET_IFNAME"] == "eth0"
+
+
+def test_custom_configured_env_distributed_non_ascend_sets_nccl_and_gloo(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "gpustack.worker.backends.base.filter_env_vars", lambda _env: {}
+    )
+    server = _custom_env_server(
+        gpu_devices=[_nvidia_device()],
+        gpu_indexes=[0],
+        worker_ip="10.0.0.1",
+        worker_ifname="eth0",
+    )
+    env = server._get_configured_env(is_distributed=True)
+    assert env == {
+        "NCCL_SOCKET_IFNAME": "=eth0",
+        "GLOO_SOCKET_IFNAME": "eth0",
+    }
+
+    suppressed = _custom_env_server(
+        gpu_devices=[_nvidia_device()],
+        gpu_indexes=[0],
+        model_env={"NCCL_SOCKET_IFNAME": "custom0"},
+    )
+    suppressed_env = suppressed._get_configured_env(is_distributed=True)
+    assert suppressed_env == {"NCCL_SOCKET_IFNAME": "custom0"}
+
+    partial = _custom_env_server(
+        gpu_devices=[_nvidia_device()],
+        gpu_indexes=[0],
+        model_env={"GLOO_SOCKET_IFNAME": "ib0"},
+    )
+    partial_env = partial._get_configured_env(is_distributed=True)
+    assert partial_env == {
+        "GLOO_SOCKET_IFNAME": "ib0",
+        "NCCL_SOCKET_IFNAME": "=eth0",
+    }
+
+
+@pytest.mark.parametrize(
+    "gpu_devices,gpu_indexes",
+    [
+        ([_nvidia_device()], [0]),
+        ([], []),
+    ],
+)
+def test_custom_configured_env_single_node_non_ascend_or_cpu_sets_no_defaults(
+    monkeypatch, gpu_devices, gpu_indexes
+):
+    monkeypatch.setattr(
+        "gpustack.worker.backends.base.filter_env_vars", lambda _env: {}
+    )
+    server = _custom_env_server(
+        gpu_devices=gpu_devices,
+        gpu_indexes=gpu_indexes,
+        role="router" if not gpu_devices else None,
+    )
+
+    assert server._get_configured_env() == {}
+
+
+@pytest.mark.parametrize("missing_ifname", [None, ""])
+def test_custom_configured_env_distributed_skips_missing_ifname(
+    monkeypatch, missing_ifname
+):
+    monkeypatch.setattr(
+        "gpustack.worker.backends.base.filter_env_vars", lambda _env: {}
+    )
+    ascend_server = _custom_env_server(
+        gpu_devices=[_ascend_device()],
+        gpu_indexes=[0],
+        worker_ip="10.0.0.1",
+        worker_ifname=missing_ifname,
+    )
+    ascend_env = ascend_server._get_configured_env(is_distributed=True)
+    assert ascend_env["HCCL_IF_IP"] == "10.0.0.1"
+    assert "HCCL_SOCKET_IFNAME" not in ascend_env
+    assert "GLOO_SOCKET_IFNAME" not in ascend_env
+    assert "TP_SOCKET_IFNAME" not in ascend_env
+
+    nvidia_server = _custom_env_server(
+        gpu_devices=[_nvidia_device()],
+        gpu_indexes=[0],
+        worker_ip="10.0.0.1",
+        worker_ifname=missing_ifname,
+    )
+    nvidia_env = nvidia_server._get_configured_env(is_distributed=True)
+    assert nvidia_env == {}
+
+
+@pytest.mark.parametrize("distributed", [False, True])
+def test_custom_start_passes_distributed_flag_to_configured_env(distributed):
+    recorded = []
+    created = []
+
+    server = CustomServer.__new__(CustomServer)
+    server._model = SimpleNamespace(backend_version=None)
+    server._model_instance = SimpleNamespace(id=1, name="custom-test")
+    server.inference_backend = None
+    server._get_deployment_metadata = lambda: SimpleNamespace(distributed=distributed)
+
+    def fake_get_configured_env(is_distributed=False):
+        recorded.append(is_distributed)
+        return {"TEST_ENV": str(is_distributed)}
+
+    server._get_configured_env = fake_get_configured_env
+    server._build_command_args = lambda entrypoint=None: (["serve"], [])
+    server._update_model_instance = lambda *args, **kwargs: None
+    server._create_workload = lambda **kwargs: created.append(kwargs)
+
+    server._start()
+
+    assert recorded == [distributed]
+    assert len(created) == 1
+    assert created[0]["env"] == {"TEST_ENV": str(distributed)}

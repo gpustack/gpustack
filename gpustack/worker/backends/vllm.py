@@ -1409,43 +1409,7 @@ class VLLMServer(InferenceServer):
             env["RAY_LOG_TO_STDERR"] = env.pop("RAY_LOG_TO_STDERR", "0")
             env["RAY_BACKEND_LOG_LEVEL"] = env.pop("RAY_BACKEND_LOG_LEVEL", "warning")
 
-        if is_ascend(self._get_selected_gpu_devices()):
-            # See https://vllm-ascend.readthedocs.io/en/latest/tutorials/multi-node_dsv3.2.html.
-            if "HCCL_SOCKET_IFNAME" not in env:
-                env["HCCL_IF_IP"] = self._worker.ip
-                env["HCCL_SOCKET_IFNAME"] = f"={self._worker.ifname}"
-                env["GLOO_SOCKET_IFNAME"] = self._worker.ifname
-                env["TP_SOCKET_IFNAME"] = self._worker.ifname
-            return
-
-        if "NCCL_SOCKET_IFNAME" not in env:
-            env["NCCL_SOCKET_IFNAME"] = f"={self._worker.ifname}"
-            env["GLOO_SOCKET_IFNAME"] = self._worker.ifname
-
-    def _set_ascend_env(self, env: Dict[str, str]):
-        """
-        Set up environment variables for Ascend devices.
-        """
-
-        # -- Optimize Pytorch NPU operations delivery performance.
-        env["TASK_QUEUE_ENABLE"] = env.pop("TASK_QUEUE_ENABLE", "1")
-        # -- Enable NUMA coarse-grained binding.
-        env["CPU_AFFINITY_CONF"] = env.pop("CPU_AFFINITY_CONF", "1")
-        # -- Reuse memory in multi-streams.
-        env["PYTORCH_NPU_ALLOC_CONF"] = env.pop(
-            "PYTORCH_NPU_ALLOC_CONF", "expandable_segments:True"
-        )
-        # -- Increase HCCL connection timeout to avoid issues in large clusters.
-        env["HCCL_CONNECT_TIMEOUT"] = env.pop("HCCL_CONNECT_TIMEOUT", "7200")
-        # -- Enable RDMA PCIe direct post with no strict mode for better performance.
-        env["HCCL_RDMA_PCIE_DIRECT_POST_NOSTRICT"] = env.pop(
-            "HCCL_RDMA_PCIE_DIRECT_POST_NOSTRICT", "TRUE"
-        )
-        if not is_ascend_310p(self._get_selected_gpu_devices()):
-            # -- Disable HCCL execution timeout for better stability.
-            env["HCCL_EXEC_TIMEOUT"] = env.pop("HCCL_EXEC_TIMEOUT", "0")
-            # -- Enable the communication is scheduled by AI Vector directly with ROCE, instead of AI CPU.
-            env["HCCL_OP_EXPANSION_MODE"] = env.pop("HCCL_OP_EXPANSION_MODE", "AIV")
+        super()._set_distributed_env(env)
 
     def _get_speculative_arguments(self) -> List[str]:
         """
