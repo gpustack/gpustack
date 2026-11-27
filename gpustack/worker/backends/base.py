@@ -1024,6 +1024,11 @@ class InferenceServer(ABC):
             del env["UCX_NET_DEVICES"]
         return env
 
+    def _engine_trace_endpoint(self) -> Optional[str]:
+        if self._model.enable_engine_tracing is False:
+            return None
+        return self._config.effective_trace_otlp_endpoint
+
     def _get_configured_env(self, **kwargs) -> Dict[str, str]:
         """
         Get the environment variables for the model instance.

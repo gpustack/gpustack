@@ -95,6 +95,7 @@ def _capture_observable_engine_launch(
     *,
     logs=True,
     traces=True,
+    enable_engine_tracing=None,
     role=None,
     parameters=None,
     model_env=None,
@@ -144,6 +145,7 @@ def _capture_observable_engine_launch(
         image_name=image_override,
         run_command=run_command,
         env=model_env or {},
+        enable_engine_tracing=enable_engine_tracing,
     )
     if role:
         instance.role = role
@@ -191,10 +193,18 @@ def _capture_observable_engine_launch(
 @pytest.mark.parametrize(
     "logs,traces", [(False, False), (True, False), (False, True), (True, True)]
 )
-def test_engine_observability_switches(tmp_path, engine, logs, traces):
+@pytest.mark.parametrize("enable_engine_tracing", [None, False, True])
+def test_engine_observability_switches(
+    tmp_path, engine, logs, traces, enable_engine_tracing
+):
     launch, injected = _capture_observable_engine_launch(
-        tmp_path, engine, logs=logs, traces=traces
+        tmp_path,
+        engine,
+        logs=logs,
+        traces=traces,
+        enable_engine_tracing=enable_engine_tracing,
     )
+    traces = traces and enable_engine_tracing is not False
     arguments = launch["command_args"]
     assert (_NATIVE_LOG_FLAGS[engine][0] in arguments) is logs
     assert ("--otlp-traces-endpoint" in arguments) is traces

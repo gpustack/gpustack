@@ -14,6 +14,7 @@ import pytest
 from gpustack.schemas.models import (
     BackendEnum,
     Model,
+    ModelSpecBase,
     ModelInstance,
     ModelInstanceStateEnum,
     RoleSpec,
@@ -95,6 +96,20 @@ async def test_nothing_can_be_said_without_a_stamp():
 async def test_a_member_stamped_with_the_current_spec_is_not_stale():
     model = _model()
     assert await _stale(model, [_instance(await _digest(model))]) is False
+
+
+@pytest.mark.asyncio
+async def test_only_engine_tracing_opt_out_changes_launch_digest(monkeypatch):
+    # Compute the digest a running instance recorded with the older schema.
+    model = _model()
+    with monkeypatch.context() as old_schema:
+        old_schema.delitem(ModelSpecBase.model_fields, "enable_engine_tracing")
+        running = _instance(await _digest(model))
+    assert await _stale(model, [running]) is False
+    model.enable_engine_tracing = True
+    assert await _stale(model, [running]) is False
+    model.enable_engine_tracing = False
+    assert await _stale(model, [running]) is True
 
 
 @pytest.mark.asyncio

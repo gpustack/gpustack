@@ -171,7 +171,7 @@ class CustomServer(InferenceServer):
                 command_args,
                 env,
                 log_enabled=bool(self._config.log_otlp_endpoint),
-                trace_endpoint=self._config.effective_trace_otlp_endpoint,
+                trace_endpoint=self._engine_trace_endpoint(),
                 instance=self._model_instance,
             )
         if managed_router and not backend_command and image_overridden and not command:

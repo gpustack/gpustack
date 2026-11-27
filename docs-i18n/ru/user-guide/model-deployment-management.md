@@ -187,6 +187,7 @@ replicas: 1
 | `backend_parameters` | [`Backend Parameters`](#backend-parameters) |
 | `image_name` | Образ контейнера для встроенного или пользовательского бэкенда; взаимоисключающе с `backend_version` для встроенных серверных частей |
 | `run_command` | Начальные аргументы для встроенного vLLM или SGLang или полная команда для пользовательского бэкенда |
+| `enable_engine_tracing` | Значение `false` отключает автоматическую трассировку движков и управляемого PD Router этого развёртывания при следующем запуске. Шлюз и Worker сохраняют глобальные настройки трассировки. |
 | `native_anthropic_api` | `Native Anthropic API` |
 | `env` | [`Environment Variables`](#environment-variables) |
 | `restart_on_error` | [`Auto-Restart On Error`](#auto-restart-on-error) |

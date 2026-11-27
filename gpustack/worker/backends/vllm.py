@@ -1620,7 +1620,7 @@ class VLLMServer(InferenceServer):
         self, user_args: List[str], env: Dict[str, str]
     ) -> List[str]:
         config = self._config
-        trace_endpoint = config.effective_trace_otlp_endpoint
+        trace_endpoint = self._engine_trace_endpoint()
         if not (config.log_otlp_endpoint or trace_endpoint) or env.get(
             "PYPI_PACKAGES_INSTALL"
         ):

@@ -730,7 +730,7 @@ class SGLangServer(InferenceServer):
     ) -> List[str]:
         """Build engine arguments and enable the request ID header in native logs."""
         config = self._config
-        trace_endpoint = config.effective_trace_otlp_endpoint
+        trace_endpoint = self._engine_trace_endpoint()
         if not (config.log_otlp_endpoint or trace_endpoint) or env.get(
             "PYPI_PACKAGES_INSTALL"
         ):

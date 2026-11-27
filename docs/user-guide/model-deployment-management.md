@@ -183,6 +183,7 @@ Every field in the file is something you set on the deploy form. Below is what e
 | `backend_parameters` | [`Backend Parameters`](#backend-parameters) |
 | `image_name` | A container image for a built-in or custom backend; mutually exclusive with `backend_version` for built-in backends |
 | `run_command` | Initial arguments for built-in vLLM or SGLang, or the full command for a custom backend |
+| `enable_engine_tracing` | Set to `false` to skip automatic tracing for this deployment’s engines and managed PD Router on their next launch. Gateway and Worker spans continue to follow global tracing settings. |
 | `native_anthropic_api` | `Native Anthropic API` |
 | `env` | [`Environment Variables`](#environment-variables) |
 | `restart_on_error` | [`Auto-Restart On Error`](#auto-restart-on-error) |
