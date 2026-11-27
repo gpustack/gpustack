@@ -238,7 +238,7 @@ def test_local_otlp_trace_proxy_maps_http_errors_to_grpc_status(
     assert aborted[0][0] == getattr(grpc.StatusCode, expected_grpc_status)
 
 
-def test_local_otlp_trace_proxy_waits_for_server_before_closing_client(monkeypatch):
+def test_local_otlp_trace_proxy_drains_exports_before_closing_client(monkeypatch):
     events = []
     fake_event = SimpleNamespace(wait=lambda: events.append("server_waited"))
     fake_server = SimpleNamespace(
@@ -248,6 +248,15 @@ def test_local_otlp_trace_proxy_waits_for_server_before_closing_client(monkeypat
         stop=lambda grace=1: (events.append("server_stopping"), fake_event)[1],
     )
     fake_client = SimpleNamespace(close=lambda: events.append("client_closed"))
+    executor = SimpleNamespace(
+        shutdown=lambda *, wait, cancel_futures: events.append(
+            ("exports_drained", wait, cancel_futures)
+        )
+    )
+    monkeypatch.setattr(
+        "gpustack.observability.trace_proxy.futures.ThreadPoolExecutor",
+        lambda *a, **kw: executor,
+    )
     monkeypatch.setattr(
         "gpustack.observability.trace_proxy.grpc.server", lambda *a, **kw: fake_server
     )
@@ -266,6 +275,7 @@ def test_local_otlp_trace_proxy_waits_for_server_before_closing_client(monkeypat
         "server_started",
         "server_stopping",
         "server_waited",
+        ("exports_drained", True, True),
         "client_closed",
     ]
 
@@ -275,6 +285,7 @@ def test_local_otlp_trace_proxy_does_not_create_client_when_bind_fails(monkeypat
     fake_server = SimpleNamespace(
         add_generic_rpc_handlers=lambda _handlers: None,
         add_insecure_port=lambda _addr: 0,
+        stop=MagicMock(),
     )
     monkeypatch.setattr(
         "gpustack.observability.trace_proxy.grpc.server", lambda *a, **kw: fake_server
@@ -291,3 +302,29 @@ def test_local_otlp_trace_proxy_does_not_create_client_when_bind_fails(monkeypat
     with pytest.raises(RuntimeError, match="Failed to bind"):
         proxy.start()
     assert not created
+
+
+@pytest.mark.parametrize("owns_client", [True, False])
+def test_local_otlp_trace_proxy_cleans_up_after_start_failure(monkeypatch, owns_client):
+    server = MagicMock()
+    server.add_insecure_port.return_value = 49152
+    server.start.side_effect = RuntimeError("gRPC startup failed")
+    client = MagicMock()
+    monkeypatch.setattr(
+        "gpustack.observability.trace_proxy.grpc.server", lambda *a, **kw: server
+    )
+    monkeypatch.setattr(
+        "gpustack.observability.trace_proxy.httpx.Client", lambda *a, **kw: client
+    )
+    proxy = LocalOTLPTraceProxy(
+        server_url="http://testserver",
+        headers={"Authorization": "Bearer worker-secret"},
+        client=None if owns_client else client,
+    )
+
+    with pytest.raises(RuntimeError, match="gRPC startup failed"):
+        proxy.start()
+
+    assert proxy.endpoint is None
+    server.stop.assert_called_once()
+    assert client.close.call_count == int(owns_client)

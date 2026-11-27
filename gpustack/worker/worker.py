@@ -225,7 +225,7 @@ class Worker:
             self._config._local_trace_proxy_endpoint = proxy.start()
             self._trace_proxy = proxy
         except Exception as e:
-            logger.warning(f"Failed to start local OTLP trace proxy: {e}")
+            logger.warning("Failed to start local OTLP trace proxy: %s", e)
 
     def _stop_trace_proxy(self) -> None:
         self._config._local_trace_proxy_endpoint = None

@@ -56,6 +56,7 @@ class LocalOTLPTraceProxy:
         self._requested_port = port
         self._owns_client = client is None
         self._client = client
+        self._executor: Optional[futures.ThreadPoolExecutor] = None
         self._server: Optional[grpc.Server] = None
         self._endpoint: Optional[str] = None
 
@@ -66,39 +67,50 @@ class LocalOTLPTraceProxy:
     def start(self) -> str:
         if self._server is not None and self._endpoint is not None:
             return self._endpoint
-        server = grpc.server(
-            futures.ThreadPoolExecutor(
-                max_workers=4, thread_name_prefix="otlp-trace-proxy"
-            ),
-            maximum_concurrent_rpcs=64,
-            options=[("grpc.max_receive_message_length", _MAX_MESSAGE_BYTES)],
+        self._executor = futures.ThreadPoolExecutor(
+            max_workers=4, thread_name_prefix="otlp-trace-proxy"
         )
-        server.add_generic_rpc_handlers((_RawOTLPTraceHandler(self._export),))
-        bound_port = server.add_insecure_port(f"127.0.0.1:{self._requested_port}")
-        if not bound_port:
-            raise RuntimeError("Failed to bind local OTLP trace proxy on loopback")
-        if self._client is None:
-            self._client = httpx.Client(
-                headers=self._headers,
-                verify=make_ssl_context(),
-                trust_env=use_proxy_env_for_url(self._ingest_url),
-                timeout=_FORWARD_TIMEOUT_SECONDS,
+        try:
+            server = self._server = grpc.server(
+                self._executor,
+                maximum_concurrent_rpcs=64,
+                options=[("grpc.max_receive_message_length", _MAX_MESSAGE_BYTES)],
             )
-        server.start()
-        self._server = server
+            server.add_generic_rpc_handlers((_RawOTLPTraceHandler(self._export),))
+            bound_port = server.add_insecure_port(f"127.0.0.1:{self._requested_port}")
+            if not bound_port:
+                raise RuntimeError("Failed to bind local OTLP trace proxy on loopback")
+            if self._client is None:
+                self._client = httpx.Client(
+                    headers=self._headers,
+                    verify=make_ssl_context(),
+                    trust_env=use_proxy_env_for_url(self._ingest_url),
+                    timeout=_FORWARD_TIMEOUT_SECONDS,
+                )
+            server.start()
+        except Exception:
+            self.stop()
+            raise
         self._endpoint = f"127.0.0.1:{bound_port}"
         logger.info("Started local OTLP trace proxy on %s.", self._endpoint)
         return self._endpoint
 
     def stop(self) -> None:
+        executor, self._executor = self._executor, None
+        if executor is None:
+            return
         server, self._server = self._server, None
         self._endpoint = None
-        if server is not None:
-            server.stop(grace=1).wait()
-        client = self._client
-        if self._owns_client and client is not None:
-            self._client = None
-            client.close()
+        try:
+            if server is not None:
+                server.stop(grace=1).wait()
+        finally:
+            # Cancelling an RPC does not interrupt a handler's HTTP request.
+            executor.shutdown(wait=True, cancel_futures=True)
+            client = self._client
+            if self._owns_client and client is not None:
+                self._client = None
+                client.close()
 
     def _export(self, request_bytes: bytes, context: grpc.ServicerContext) -> bytes:
         if len(request_bytes) > _MAX_MESSAGE_BYTES:
@@ -129,4 +141,3 @@ class LocalOTLPTraceProxy:
             status_code,
             f"Server trace ingest returned {response.status_code}",
         )
-        return b""
