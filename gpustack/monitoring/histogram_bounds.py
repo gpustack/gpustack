@@ -1,4 +1,4 @@
-"""Lower bounds for quantiles beyond the last finite histogram bucket."""
+"""Identify quantiles that a histogram cannot resolve."""
 
 import math
 from collections import defaultdict
@@ -36,6 +36,30 @@ def histogram_lower_bounds(
         for stat, quantile in QUANTILES.items()
         if quantile > fraction and not math.isclose(quantile, fraction, rel_tol=1e-12)
     }
+
+
+def first_bucket_ceiling(
+    profiles: Mapping[object, Mapping[float, float]],
+) -> Optional[float]:
+    """Find the first positive ceiling of a nonnegative histogram."""
+    bounds = next(iter(profiles.values()), {})
+    bound = min((bound for bound in bounds if bound != 0), default=math.inf)
+    return bound if 0 < bound < math.inf else None
+
+
+def all_in_first_bucket(
+    profiles: Mapping[object, Mapping[float, float]], count: float
+) -> bool:
+    if count <= 0:
+        return False
+    bound = first_bucket_ceiling(profiles)
+    return (
+        bound is not None
+        and all(profile.get(0, 0) == 0 for profile in profiles.values())
+        and math.isclose(
+            sum(profile[bound] for profile in profiles.values()), count, rel_tol=1e-9
+        )
+    )
 
 
 def group_key(dimensions: MetricDimensions, view: str) -> object:
@@ -100,6 +124,12 @@ def requires_bound_check(
         and any(value is not None and value >= bound for _, value in line.points)
         for line in series
     )
+
+
+def is_first_bucket_estimate(
+    value: Optional[float], bound: float, quantile: float
+) -> bool:
+    return value is not None and math.isclose(value, bound * quantile, rel_tol=1e-9)
 
 
 def _cdf_fractions(rows, ceilings, view):

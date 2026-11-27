@@ -21,6 +21,7 @@ from gpustack.monitoring.benchmark_payload import (
     decode_payload,
     encode_payload,
 )
+from gpustack.monitoring.histogram_bounds import QUANTILES
 from gpustack.monitoring.time_range import MonitoringInterval
 from gpustack.schemas.benchmark import Benchmark
 from gpustack.schemas.benchmark_monitoring import (
@@ -87,7 +88,36 @@ def _merge_line(current, previous, start, end):
     return line
 
 
-def _merge_metric(current, previous, start, end, *, same_window):
+def _unbounded_percentile_gaps(metric):
+    for line in metric.series:
+        if line.statistic in QUANTILES:
+            key = _series_key(line)
+            bounded = {at for at, _ in line.lower_bounds or ()}
+            yield from (
+                (key, at)
+                for at, value in line.points
+                if value is None and at not in bounded
+            )
+
+
+def _retains_percentile_values(current, previous, start, end):
+    updated = {
+        _series_key(line): {at for at, value in line.points if value is not None}
+        for line in current.series
+        if line.statistic in QUANTILES
+    }
+    for line in previous.series:
+        if line.statistic in QUANTILES:
+            refreshed = updated.get(_series_key(line), ())
+            if any(
+                value is not None and start <= at < end and at not in refreshed
+                for at, value in line.points
+            ):
+                return True
+    return False
+
+
+def _merge_metric(current, previous, start, end, *, same_window, summary_only):
     if current.status == 'restricted':
         return current.model_copy(
             update={'series': [], 'summaries': [], 'coverage': None}
@@ -111,10 +141,27 @@ def _merge_metric(current, previous, start, end, *, same_window):
     if metric.status in ('query_error', 'no_data') and _has_observation(metric):
         if previous and previous.status in ('available', 'stale', 'no_observations'):
             metric.status, metric.reason = previous.status, previous.reason
+    if (
+        previous
+        and previous.reason in ('histogram_bounds_unavailable', 'query_failed')
+        and (summary_only or metric.reason in (None, 'no_samples', 'zero_observations'))
+        and _retains_percentile_values(current, previous, start, end)
+    ):
+        # Validation applies to the window of each retained rolling percentile.
+        metric.reason = previous.reason
+    elif (
+        metric.reason is None
+        and previous
+        and previous.reason == 'histogram_first_bucket_unresolved'
+        and not set(_unbounded_percentile_gaps(previous)).isdisjoint(
+            _unbounded_percentile_gaps(metric)
+        )
+    ):
+        metric.reason = previous.reason
     return metric
 
 
-def _merge_scope(current, previous, start, end):
+def _merge_scope(current, previous, start, end, *, summary_only=False):
     result = current.model_copy(update={'start': start, 'end': end})
     old_metrics = previous.metrics if previous else {}
     same_window = previous is not None and (previous.start, previous.end) == (
@@ -123,7 +170,12 @@ def _merge_scope(current, previous, start, end):
     )
     result.metrics = {
         key: _merge_metric(
-            metric, old_metrics.get(key), start, end, same_window=same_window
+            metric,
+            old_metrics.get(key),
+            start,
+            end,
+            same_window=same_window,
+            summary_only=summary_only,
         )
         for key, metric in current.metrics.items()
     }
@@ -135,6 +187,7 @@ def _merge_scope(current, previous, start, end):
                 start,
                 end,
                 same_window=same_window,
+                summary_only=summary_only,
             )
     return result
 
@@ -705,7 +758,9 @@ class BenchmarkMonitoringArchiver:
         for key, response in native.items():
             if _capture_incomplete(response):
                 errors.add(key)
-            scopes[key] = _merge_scope(response, scopes.get(key), start, end)
+            scopes[key] = _merge_scope(
+                response, scopes.get(key), start, end, summary_only=True
+            )
         return (
             {
                 key: self._finish_scope(key, value, history)

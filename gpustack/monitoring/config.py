@@ -165,7 +165,11 @@ _PROFILE_VARIABLES = {
         'p50': {'buckets'},
         'p95': {'buckets'},
         'p99': {'buckets'},
-        'bucket_population': {'expression'},
+        'positive_count': {'expression'},
+        'observed_buckets': {'buckets', 'count'},
+        'idle_gaps': {'percentile', 'count'},
+        'trend_component': {'expression', 'part'},
+        'bucket_population': {'expression', 'count'},
         'canonical_bucket': {'expression'},
         'paired_buckets': {'finite', 'count', 'infinite'},
         'cdf': {

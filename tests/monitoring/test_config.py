@@ -214,8 +214,8 @@ def test_metric_can_select_a_specialized_profile_without_changing_other_metrics(
         90,
         profile=definitions['tpot'].query_profile,
     )
-    assert ttft.startswith('clamp_min(')
-    assert tpot.startswith('histogram_quantile(')
+    assert ttft.startswith('(clamp_min(')
+    assert tpot.startswith('(histogram_quantile(')
 
 
 @pytest.mark.parametrize(
@@ -374,7 +374,7 @@ async def test_model_collector_consumes_metric_profile_and_time_policy(monkeypat
     assert (response.step, response.rate_window_seconds) == (60, 120)
     assert response.metrics['ttft'].status == 'available'
     assert any(
-        query.startswith('clamp_min(') and '[120s]' in query
+        'clamp_min(histogram_quantile(0.95,' in query and '[120s]' in query
         for kind, query in requests
         if kind == 'range'
     )

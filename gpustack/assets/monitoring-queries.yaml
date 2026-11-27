@@ -71,7 +71,13 @@ profiles:
       p50: histogram_quantile(0.5, ${buckets})
       p95: histogram_quantile(0.95, ${buckets})
       p99: histogram_quantile(0.99, ${buckets})
-      bucket_population: max without (le) (${expression})
+      positive_count: (${expression}) > 0
+      observed_buckets: (${buckets}) and ignoring (le) (${count})
+      # Keep a NaN sample for an observed zero count so the chart can show a gap.
+      idle_gaps: (${percentile}) or (((${count}) == 0) / 0)
+      trend_component: >-
+        label_replace((${expression}), "histogram_component", "${part}", "__name__", ".*")
+      bucket_population: (max without (le) (${expression})) unless ((${count}) == 0)
       canonical_bucket: >-
         (max without (le) (${expression})) ==
         (min without (le) (${expression}))

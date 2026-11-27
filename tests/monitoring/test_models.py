@@ -451,7 +451,7 @@ def _prometheus(monkeypatch, module, instant, ranges=None):
     return requests
 
 
-def _histogram_data(query, counts=10, other_bucket=None):
+def _histogram_data(query, counts=10, bounds=('0.1', '0.2')):
     if 'gpustack:time_to_first_token_seconds_count{' in query:
         return [_entry(counts)]
     if 'gpustack:time_to_first_token_seconds_sum{' in query:
@@ -459,9 +459,301 @@ def _histogram_data(query, counts=10, other_bucket=None):
     if 'gpustack:time_to_first_token_seconds_bucket{' in query:
         return [
             _entry(v, le=le)
-            for le, v in [('0.1', counts / 2), ('0.2', counts), ('+Inf', counts)]
+            for le, v in [
+                (bounds[0], counts / 2),
+                (bounds[1], counts),
+                ('+Inf', counts),
+            ]
         ]
     return []
+
+
+def _histogram_range_component(part, labels, *values):
+    return {
+        'metric': {**labels, 'histogram_component': part},
+        'values': list(values),
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('view', ['aggregate', 'instances'])
+@pytest.mark.parametrize(
+    ('zero_bucket', 'all_zero'),
+    [(None, False), (0, False), (10, True), (None, True)],
+    ids=['absent', 'empty', 'full', 'vllm-exact-zero'],
+)
+async def test_first_bucket_tpot_keeps_average_without_fabricated_percentiles(
+    monkeypatch, view, zero_bucket, all_zero
+):
+    module = _collector()
+    prefix = 'gpustack:time_per_output_token_seconds'
+    average = 0.0 if all_zero else 0.0032
+    later_average = 0.0 if all_zero else 0.008
+    bounds = (
+        '0.01',
+        '0.025',
+        '0.05',
+        '0.075',
+        '0.1',
+        '0.15',
+        '0.2',
+        '0.3',
+        '0.4',
+        '0.5',
+        '0.75',
+        '1.0',
+        '2.5',
+        '5.0',
+        '7.5',
+        '10.0',
+        '20.0',
+        '40.0',
+        '80.0',
+        '+Inf',
+    )
+    buckets = [_entry(10, le=bound) for bound in bounds]
+    if zero_bucket is not None:
+        buckets.insert(0, _entry(zero_bucket, le='0'))
+
+    def instant(query):
+        if prefix + '_count{' in query:
+            return [_entry(10)]
+        if prefix + '_sum{' in query:
+            return [_entry(average * 10)]
+        if prefix + '_bucket{' in query:
+            return buckets
+        return []
+
+    def ranges(query):
+        if prefix + '_' not in query:
+            return []
+        labels = _entry(0)['metric']
+        if 'histogram_component' in query:
+            later_buckets = {'0.01': '5'} if not all_zero else {}
+            return [
+                _histogram_range_component('count', labels, (4910, '10'), (5000, '10')),
+                _histogram_range_component(
+                    'sum', labels, (4910, average * 10), (5000, later_average * 10)
+                ),
+            ] + [
+                _histogram_range_component(
+                    'buckets',
+                    row['metric'],
+                    (4910, row['value'][1]),
+                    (5000, later_buckets.get(row['metric']['le'], row['value'][1])),
+                )
+                for row in buckets
+            ]
+        for quantile, interpolated, resolved in (
+            ('0.5', 0.005, 0.01),
+            ('0.95', 0.0095, 0.0235),
+            ('0.99', 0.0099, 0.0247),
+        ):
+            if f'histogram_quantile({quantile},' in query:
+                if zero_bucket == 10:
+                    interpolated = resolved = 0
+                elif all_zero:
+                    resolved = interpolated
+                return [
+                    {
+                        'metric': labels,
+                        'values': [[4910, str(interpolated)], [5000, str(resolved)]],
+                    }
+                ]
+        return [{'metric': labels, 'values': [[4910, average], [5000, later_average]]}]
+
+    _prometheus(monkeypatch, module, instant, ranges)
+    result = await module.collect_model_metrics(
+        _model(),
+        [_instance()],
+        start=1400,
+        end=5000,
+        window_seconds=3600,
+        view=view,
+        statistics=('avg', 'p50', 'p95', 'p99'),
+        section='llm',
+        client=object(),
+    )
+
+    metric = result.metrics['tpot']
+    summaries = {s.statistic: s.value for s in metric.summaries}
+    series = {line.statistic: line.points for line in metric.series}
+    if all_zero:
+        assert metric.reason is None
+        assert summaries == dict.fromkeys(('avg', 'p50', 'p95', 'p99'), 0)
+        assert series == dict.fromkeys(summaries, [(4910, 0), (5000, 0)])
+        return
+
+    assert metric.reason == 'histogram_first_bucket_unresolved'
+    assert summaries == {
+        'avg': 0.0032,
+        'p50': None,
+        'p95': None,
+        'p99': None,
+    }
+    assert series == {
+        'avg': [(4910, 0.0032), (5000, 0.008)],
+        'p50': [(4910, None), (5000, 0.01)],
+        'p95': [(4910, None), (5000, 0.0235)],
+        'p99': [(4910, None), (5000, 0.0247)],
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('view', ['aggregate', 'instances'])
+async def test_first_bucket_trend_uses_each_points_active_layout(monkeypatch, view):
+    module = _collector()
+    prefix = 'gpustack:time_to_first_token_seconds'
+    labels = _entry(0)['metric']
+    old_labels = _entry(0, restart='1')['metric']
+
+    def instant(query):
+        if prefix + '_count{' in query:
+            return [_entry(100)]
+        if prefix + '_sum{' in query:
+            return [_entry(1)]
+        if prefix + '_bucket{' in query:
+            return [_entry(100, le=bound) for bound in ('0.01', '0.02', '+Inf')]
+        return []
+
+    def ranges(query):
+        if prefix + '_' not in query:
+            return []
+        if 'histogram_quantile(' in query:
+            return [
+                {
+                    'metric': labels,
+                    'values': [[4910, '0.005'], [4925, '0.0025'], [5000, '0.005']],
+                }
+            ]
+        if 'histogram_component' in query:
+            return (
+                [
+                    _histogram_range_component(
+                        'count', old_labels, (4910, '100'), (4925, '100')
+                    ),
+                    _histogram_range_component('count', labels, (5000, '100')),
+                ]
+                + [
+                    _histogram_range_component(
+                        'buckets',
+                        {**old_labels, 'le': bound},
+                        (4910, old),
+                        (4925, '100'),
+                    )
+                    for bound, old in [
+                        ('0.005', '50'),
+                        ('0.01', '100'),
+                        ('+Inf', '100'),
+                    ]
+                ]
+                + [
+                    _histogram_range_component(
+                        'buckets', {**labels, 'le': bound}, (5000, '100')
+                    )
+                    for bound in ('0.01', '0.02', '+Inf')
+                ]
+            )
+        return []
+
+    _prometheus(monkeypatch, module, instant, ranges)
+    result = await module.collect_model_metrics(
+        _model(),
+        [_instance()],
+        start=1400,
+        end=5000,
+        window_seconds=3600,
+        view=view,
+        statistics=('p50',),
+        section='llm',
+        client=object(),
+    )
+
+    assert result.metrics['ttft'].series[0].points == [
+        (4910, 0.005),
+        (4925, None),
+        (5000, None),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('view', ['aggregate', 'instances'])
+@pytest.mark.parametrize(
+    ('bucket_state', 'reason'),
+    [('missing', 'histogram_bounds_unavailable'), ('failed', 'query_failed')],
+)
+async def test_first_bucket_trend_reports_incomplete_buckets(
+    monkeypatch, view, bucket_state, reason
+):
+    module = _collector()
+
+    def instant(query):
+        if 'time_to_first_token_seconds_sum{' in query:
+            return [_entry(0.1)]
+        return _histogram_data(query, bounds=('0.01', '0.02'))
+
+    def ranges(query):
+        if 'gpustack:time_to_first_token_seconds_' not in query:
+            return []
+        labels = _entry(0)['metric']
+        old_labels = _entry(0, restart='1')['metric']
+        if 'histogram_quantile(' in query:
+            return [
+                {
+                    'metric': labels,
+                    'values': [[4910, '0.0025'], [4925, '0.0025'], [5000, '0.01']],
+                }
+            ]
+        if 'histogram_component' in query:
+            if bucket_state == 'failed':
+                raise OSError('Bucket source unavailable')
+            return (
+                [
+                    _histogram_range_component(
+                        'count', old_labels, (4910, '10'), (4925, '10')
+                    ),
+                    _histogram_range_component('count', labels, (5000, '10')),
+                ]
+                + [
+                    _histogram_range_component(
+                        'buckets', {**old_labels, 'le': bound}, (4910, '10')
+                    )
+                    for bound in ('0.005', '0.01', '+Inf')
+                ]
+                + [
+                    _histogram_range_component(
+                        'buckets', {**labels, 'le': bound}, (5000, later)
+                    )
+                    for bound, later in [('0.01', '5'), ('0.02', '10'), ('+Inf', '10')]
+                ]
+            )
+        return [
+            {
+                'metric': labels,
+                'values': [[4910, '0.003'], [4925, '0.004'], [5000, '0.01']],
+            }
+        ]
+
+    _prometheus(monkeypatch, module, instant, ranges)
+    result = await module.collect_model_metrics(
+        _model(),
+        [_instance()],
+        start=1400,
+        end=5000,
+        window_seconds=3600,
+        view=view,
+        statistics=('avg', 'p50'),
+        section='llm',
+        client=object(),
+    )
+
+    metric = result.metrics['ttft']
+    assert metric.status == 'available'
+    assert metric.reason == reason
+    series = {line.statistic: line.points for line in metric.series}
+    assert series['avg'] == [(4910, 0.003), (4925, 0.004), (5000, 0.01)]
+    verified = None if bucket_state == 'missing' else 0.0025
+    assert series['p50'] == [(4910, verified), (4925, 0.0025), (5000, 0.01)]
 
 
 @pytest.mark.asyncio
@@ -595,9 +887,19 @@ async def test_valid_histogram_history_with_idle_points_does_not_keep_no_samples
     def ranges(query):
         if 'time_to_first_token_seconds' not in query:
             return []
+        labels = _entry(1)['metric']
+        if 'histogram_component' in query:
+            return [
+                _histogram_range_component('count', labels, (3500, '10'), (5000, '0')),
+            ] + [
+                _histogram_range_component(
+                    'buckets', {**labels, 'le': bound}, (3500, count), (5000, '0')
+                )
+                for bound, count in [('0.1', '5'), ('0.2', '10'), ('+Inf', '10')]
+            ]
         return [
             {
-                'metric': _entry(1)['metric'],
+                'metric': labels,
                 'values': [[3500, '0.15'], [5000, 'NaN']],
             }
         ]
@@ -1462,16 +1764,29 @@ def _censored_transfer_source(monkeypatch, cdf_state='available', *, short=False
         if 'histogram_upper_bound' in query:
             if cdf_state == 'failed':
                 raise OSError('CDF source unavailable')
-            return (
-                []
-                if cdf_state == 'missing'
-                else [
-                    {
-                        'metric': {**labels, 'histogram_upper_bound': '5.0'},
-                        'values': [[times[0], '0.02'], [times[1], '0.5']],
-                    }
+            if cdf_state == 'missing':
+                return []
+            return [
+                {
+                    'metric': {**labels, 'histogram_upper_bound': '5.0'},
+                    'values': [[times[0], '0.02'], [times[1], '0.5']],
+                },
+                _histogram_range_component(
+                    'count', labels, (times[0], '100'), (times[1], '100')
+                ),
+            ] + [
+                _histogram_range_component(
+                    'buckets',
+                    {**labels, 'le': bound},
+                    (times[0], first),
+                    (times[1], last),
+                )
+                for bound, first, last in [
+                    ('1.0', '0', '0'),
+                    ('5.0', '2', '50'),
+                    ('+Inf', '100', '100'),
                 ]
-            )
+            ]
         value = '5' if 'histogram_quantile(' in query else '14'
         return [{'metric': labels, 'values': [[times[0], value], [times[1], value]]}]
 
@@ -1737,6 +2052,12 @@ async def test_numeric_bucket_aliases_fail_closed_only_within_one_native_cohort(
         if prefix + '_' not in query:
             return []
         requests.append(query)
+        if 'histogram_component' in query:
+            return [
+                _histogram_range_component(part, row['metric'], (5000, row['value'][1]))
+                for part, native in [('count', 'count'), ('buckets', 'bucket')]
+                for row in module.deduplicate_instant(records(native))
+            ]
         return [{'metric': _entry(0)['metric'], 'values': [[5000, '0.25']]}]
 
     monkeypatch.setattr(module, '_prometheus_url', lambda: 'http://metrics.invalid')

@@ -98,11 +98,38 @@ def test_merge_keeps_range_observations_but_not_summary_from_old_window():
     assert result.metrics['ttft'].summaries == []
 
 
+def test_clean_recapture_clears_warning_after_replacing_saved_percentiles():
+    previous, current = histogram(), histogram()
+    previous.metrics['ttft'].reason = 'histogram_bounds_unavailable'
+    previous.metrics['ttft'].series[0].points[0] = (1000, 2.5)
+    current.metrics['ttft'].series[0].points[0] = (1000, 3)
+
+    metric = worker._merge_scope(current, previous, 1000, 1015).metrics['ttft']
+
+    assert metric.reason is None
+    assert metric.series[0].points[0] == (1000, 3)
+
+
 @pytest.mark.asyncio
-async def test_run_tail_uses_frozen_grid_and_native_summary(monkeypatch):
+@pytest.mark.parametrize(
+    'saved_reason, saved_value',
+    [
+        (None, None),
+        ('histogram_first_bucket_unresolved', None),
+        ('histogram_bounds_unavailable', 2.5),
+        ('query_failed', 2.5),
+    ],
+)
+async def test_run_tail_uses_frozen_grid_and_native_summary(
+    monkeypatch, saved_reason, saved_value
+):
     job = worker.BenchmarkMonitoringArchiver(SimpleNamespace())
     key = 'run/runtime/all/aggregate'
     previous = histogram()
+    previous.metrics['ttft'].reason = saved_reason
+    if saved_reason:
+        previous.metrics['ttft'].series[0].lower_bounds = None
+        previous.metrics['ttft'].series[0].points[1] = (1005, saved_value)
     tail = histogram(start=1015, end=1025)
     tail.metrics['ttft'].series[0].points = [(1015, 42), (1020, 44)]
     tail.metrics['ttft'].series[0].lower_bounds = None
@@ -128,9 +155,10 @@ async def test_run_tail_uses_frozen_grid_and_native_summary(monkeypatch):
     value = scopes[key]
     assert not errors
     assert value.metrics['ttft'].summaries[0].value == 79
+    assert value.metrics['ttft'].reason == saved_reason
     assert value.metrics['ttft'].series[0].points == [
         (1000, 0),
-        (1005, None),
+        (1005, saved_value),
         (1010, 30),
         (1015, 42),
         (1020, 44),
