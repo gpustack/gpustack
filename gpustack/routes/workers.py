@@ -1053,11 +1053,20 @@ async def delete_worker(
     # Free them now, or a re-registered worker on the same address is rejected
     # as a foreign claim until the server restarts.
     handler = getattr(request.app.state, "message_server_handler", None)
-    try:
-        if handler is not None:
-            await handler.release_client(uuid.UUID(worker_uuid))
-    except Exception as e:
-        logger.error(f"Failed to release tunnel claims for worker {worker_uuid}: {e}")
+    if handler is None:
+        pass
+    elif not worker_uuid:
+        logger.warning(
+            f"Skipping tunnel claim release for deleted worker {id}: "
+            "worker has no worker_uuid"
+        )
+    else:
+        try:
+            await handler.force_release(uuid.UUID(worker_uuid))
+        except Exception as e:
+            logger.error(
+                f"Failed to release tunnel claims for worker {worker_uuid}: {e}"
+            )
 
 
 async def create_worker_status(user: CurrentUserDep, input: WorkerStatusStored):
