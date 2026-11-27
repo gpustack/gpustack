@@ -45,7 +45,7 @@ from gpustack.utils.diffusion import normalize_diffusers_model_index
 
 logger = logging.getLogger(__name__)
 fetch_file_timeout_in_seconds = 15
-_DIFFUSERS_INDEX_TIMEOUT_SECONDS = 10
+_DIFFUSERS_INDEX_TIMEOUT_SECONDS = fetch_file_timeout_in_seconds
 
 
 class GPUOffloadEnum(str, Enum):
