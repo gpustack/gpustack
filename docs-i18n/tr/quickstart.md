@@ -64,13 +64,17 @@ Tarayıcınızı açın ve GPUStack kullanıcı arayüzüne erişmek için `http
 
 5. `Add Worker` adımlarını izleyin. `Run command` adımındaki Docker komutu, çalışan düğümün kaydı için gereken küme kayıt belirtecini içerir. Aşağıdaki örnekte `your_cluster_registration_token` bu belirtecin yerini tutar.
 
+!!! note "Server ve Worker verilerini ayırın"
+
+    Server ve Worker aynı ana bilgisayarda çalışıyorsa farklı veri birimleri kullanın. Örneklerde Server için `gpustack-data`, Worker için `gpustack-worker-data` kullanılır. UI tarafından oluşturulan Worker komutunu Server ana bilgisayarında çalıştırmadan önce birim adını kontrol edin. Bu adlar yeni dağıtımlar içindir; bağlanan birimin adını değiştirmek mevcut verileri taşımaz.
+
 ```bash
 sudo docker run -d --name gpustack-worker \
       --restart=unless-stopped \
       --privileged \
       --network=host \
       --volume /var/run/docker.sock:/var/run/docker.sock \
-      --volume gpustack-data:/var/lib/gpustack \
+      --volume gpustack-worker-data:/var/lib/gpustack \
       --runtime nvidia \
       gpustack/gpustack \
       --server-url http://your_gpustack_server_url \
