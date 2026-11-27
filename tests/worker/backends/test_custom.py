@@ -283,6 +283,17 @@ def test_managed_vllm_router_tracing_falls_back_on_missing_python_entrypoint(
         exec(script, {})
     assert exec_calls == [("vllm-router", ["vllm-router", *router_args])]
 
+    # Unrelated transitive ImportError must propagate rather than silently falling back.
+    broken_dep_launcher = ModuleType("vllm_router.launch_router")
+
+    def _raise_dep_error(_name):
+        raise ImportError("missing transitive dependency", name="some_missing_dep")
+
+    broken_dep_launcher.__getattr__ = _raise_dep_error
+    monkeypatch.setitem(sys.modules, broken_dep_launcher.__name__, broken_dep_launcher)
+    with pytest.raises(ImportError, match="missing transitive dependency"):
+        exec(script, {})
+
     # Real startup failures inside launch_router must propagate rather than falling back.
     failing_launcher = ModuleType("vllm_router.launch_router")
     failing_launcher.parse_router_args = lambda args: SimpleNamespace()

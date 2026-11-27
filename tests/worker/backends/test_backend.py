@@ -100,6 +100,7 @@ def _capture_observable_engine_launch(
     model_env=None,
     image_override=None,
     version_override=None,
+    backend_version_image=None,
     run_command=None,
     entrypoint=None,
     device_info=None,
@@ -111,19 +112,20 @@ def _capture_observable_engine_launch(
         log_otlp_endpoint="http://collector.internal:4318/v1/logs" if logs else None,
         trace_otlp_endpoint=_TRACE_COLLECTOR if traces else None,
     )
+    effective_version = version_override or version
+    version_configs = {}
+    if entrypoint or backend_version_image:
+        version_configs[effective_version] = VersionConfig(
+            image_name=backend_version_image,
+            entrypoint=shlex.join(entrypoint) if entrypoint else None,
+        )
     server.inference_backend = (
         InferenceBackend(
             backend_name=backend,
-            default_version=version,
-            version_configs=(
-                VersionConfigDict(
-                    root={version: VersionConfig(entrypoint=shlex.join(entrypoint))}
-                )
-                if entrypoint
-                else VersionConfigDict(root={})
-            ),
+            default_version=effective_version,
+            version_configs=VersionConfigDict(root=version_configs),
         )
-        if run_command or entrypoint
+        if run_command or entrypoint or backend_version_image
         else None
     )
     server._model_path = "/models/llm"
@@ -425,6 +427,18 @@ def test_engine_observability_preserves_custom_launches(tmp_path, engine, overri
         (
             "sglang",
             {"image_override": "third-party/runner:cuda13.0-sglang0.5.22"},
+            True,
+            False,
+        ),
+        (
+            "vllm",
+            {"backend_version_image": "custom-registry/vllm:0.32.0"},
+            True,
+            False,
+        ),
+        (
+            "sglang",
+            {"backend_version_image": "custom-registry/sglang:0.5.22"},
             True,
             False,
         ),

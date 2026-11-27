@@ -54,16 +54,18 @@ if TYPE_CHECKING:
     from gpustack.schemas.models import ModelBase, ModelInstance
 
 
-# vllm-router 0.1.15+ exposes tracing in its Python binding; fall back to the
-# plain CLI if an older or incompatible package lacks this entrypoint.
+# vllm-router exposes tracing in its Python binding rather than CLI flags; fall
+# back to the plain CLI if this helper entrypoint is unavailable.
 _VLLM_ROUTER_TRACE_SCRIPT = """\
 import os
 import sys
 
 try:
     from vllm_router.launch_router import launch_router, parse_router_args
-except ImportError:
-    os.execvp("vllm-router", ["vllm-router", *sys.argv[2:]])
+except ImportError as exc:
+    if exc.name in (None, "vllm_router", "vllm_router.launch_router"):
+        os.execvp("vllm-router", ["vllm-router", *sys.argv[2:]])
+    raise
 
 args = parse_router_args(sys.argv[2:])
 args.enable_trace = True
