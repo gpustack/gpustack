@@ -80,6 +80,7 @@ from gpustack.worker.backends.base import (
     is_ascend,
     cal_distributed_parallelism_arguments,
     read_lora_max_rank,
+    version_at_least,
 )
 
 logger = logging.getLogger(__name__)
@@ -256,7 +257,6 @@ class VLLMServer(InferenceServer):
             ),
             entrypoint=command,
             deployment_metadata=deployment_metadata,
-            image=image,
             env=env,
         )
 
@@ -1522,7 +1522,6 @@ class VLLMServer(InferenceServer):
         entrypoint: Optional[List[str]] = None,
         deployment_metadata: Optional[ModelInstanceDeploymentMetadata] = None,
         *,
-        image: Optional[str] = None,
         env: Optional[Dict[str, str]] = None,
     ) -> Tuple[List[str], List[str]]:
         """
@@ -1582,8 +1581,7 @@ class VLLMServer(InferenceServer):
         # Inject user-defined backend parameters
         user_backend_parameters = self._flatten_backend_param()
         if (
-            image
-            and env is not None
+            env is not None
             and entrypoint == ["vllm", "serve"]
             and arguments is default_arguments
             and not self._model.run_command
@@ -1634,14 +1632,19 @@ class VLLMServer(InferenceServer):
         if "--config" in options:
             return []
 
+        backend_version = self._model.backend_version
         arguments: List[str] = []
+        # --enable-log-requests was introduced in vLLM 0.10.1.
         if (
             config.log_otlp_endpoint
+            and version_at_least(backend_version, "0.10.1")
             and not env.get("VLLM_LOGGING_CONFIG_PATH")
             and options.isdisjoint(
                 (
                     "--enable-log-requests",
                     "--no-enable-log-requests",
+                    "--disable-log-requests",
+                    "--no-disable-log-requests",
                     "--enable-log-outputs",
                     "--max-log-len",
                 )
@@ -1649,8 +1652,13 @@ class VLLMServer(InferenceServer):
         ):
             # Keep prompt text and token IDs empty even at DEBUG.
             arguments.extend(["--enable-log-requests", "--max-log-len", "0"])
+        # vLLM bundled OpenTelemetry dependencies in default builds starting in 0.17.0.
+        # Restrict auto-injection to managed runner images so custom images without
+        # OTel packages do not fail at startup.
         if (
             trace_endpoint
+            and getattr(self, "_resolved_runner_image", False)
+            and version_at_least(backend_version, "0.17.0")
             and "--otlp-traces-endpoint" not in options
             and not env.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
             and env.get("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "grpc") == "grpc"

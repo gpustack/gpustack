@@ -102,6 +102,7 @@ def _capture_observable_engine_launch(
     version_override=None,
     run_command=None,
     entrypoint=None,
+    device_info=None,
 ):
     cls, backend, version, recipe = _ENGINE_SETUP[engine]
     server = cls.__new__(cls)
@@ -155,9 +156,13 @@ def _capture_observable_engine_launch(
         server._model.disaggregation = DisaggregationSpec(mode=recipe)
         server._pd_template_variables = lambda: {"net_device": "eth0"}
     server._get_serving_port = lambda: instance.port
-    server._get_device_info = lambda: ("cuda", "13.0", None)
+    server._get_device_info = lambda: device_info or ("cuda", "13.0", None)
     server._get_selected_gpu_devices = lambda: [
-        types.SimpleNamespace(index=0, vendor="NVIDIA", arch_family=None)
+        types.SimpleNamespace(
+            index=0,
+            vendor=("Huawei" if device_info and device_info[0] == "cann" else "NVIDIA"),
+            arch_family=device_info[2] if device_info else None,
+        )
     ]
     server._fetch_runner_overrides = lambda: []
     server._fallback_registry = "docker.io"
@@ -240,6 +245,7 @@ def test_engine_observability_with_pd_recipe(tmp_path, engine, role, logs):
     "engine,parameters,model_env,logs,traces",
     [
         ("vllm", ["--no_enable_log_requests"], {}, False, True),
+        ("vllm", ["--disable-log-requests"], {}, False, True),
         ("vllm", ["--enable-log-outputs"], {}, False, True),
         (
             "vllm",
@@ -343,24 +349,81 @@ def test_engine_observability_preserves_custom_launches(tmp_path, engine, overri
 
 
 @pytest.mark.parametrize(
-    "engine,overrides",
+    "engine,overrides,logs,traces",
     [
-        ("vllm", {"version_override": "0.31.0"}),
-        ("sglang", {"version_override": "0.5.21"}),
-        ("vllm", {"image_override": "third-party/runner:cuda13.0-vllm0.32.0"}),
-        ("sglang", {"image_override": "third-party/runner:cuda13.0-sglang0.5.22"}),
-        ("vllm", {"image_override": "third-party/vllm:custom"}),
-        ("sglang", {"image_override": "third-party/sglang:custom"}),
+        # vLLM logging requires >= 0.10.1; tracing requires managed runner >= 0.17.0.
+        (
+            "vllm",
+            {"version_override": "0.9.1", "device_info": ("cann", "8.2", "910b")},
+            False,
+            False,
+        ),
+        (
+            "vllm",
+            {"version_override": "0.10.0", "device_info": ("cann", "8.2", "310p")},
+            False,
+            False,
+        ),
+        ("vllm", {"version_override": "0.10.2"}, True, False),
+        ("vllm", {"version_override": "0.16.0"}, True, False),
+        ("vllm", {"version_override": "0.17.1"}, True, True),
+        ("vllm", {"version_override": "0.31.0"}, True, True),
+        # SGLang logging requires >= 0.5.9; tracing requires managed runner >= 0.5.12.
+        ("sglang", {"version_override": "0.5.5.post3"}, False, False),
+        ("sglang", {"version_override": "0.5.6.post2"}, False, False),
+        ("sglang", {"version_override": "0.5.7"}, False, False),
+        ("sglang", {"version_override": "0.5.8.post1"}, False, False),
+        ("sglang", {"version_override": "0.5.9"}, True, False),
+        (
+            "sglang",
+            {
+                "version_override": "0.5.12.post1",
+                "device_info": ("cann", "8.5", "910b"),
+            },
+            True,
+            True,
+        ),
+        ("sglang", {"version_override": "0.5.21"}, True, True),
+        # Custom images keep version-compatible request logging when version is known,
+        # but never auto-inject OTel tracing because OTel packages are unverified.
+        (
+            "vllm",
+            {"image_override": "third-party/runner:cuda13.0-vllm0.32.0"},
+            True,
+            False,
+        ),
+        (
+            "sglang",
+            {"image_override": "third-party/runner:cuda13.0-sglang0.5.22"},
+            True,
+            False,
+        ),
+        (
+            "vllm",
+            {"image_override": "third-party/vllm:custom", "version_override": "custom"},
+            False,
+            False,
+        ),
+        (
+            "sglang",
+            {
+                "image_override": "third-party/sglang:custom",
+                "version_override": "0.5.9rc0",
+            },
+            False,
+            False,
+        ),
     ],
 )
-def test_engine_observability_is_not_pinned_to_image_or_version(
-    tmp_path, engine, overrides
+def test_engine_observability_version_and_runner_gates(
+    tmp_path, engine, overrides, logs, traces
 ):
     launch, injected = _capture_observable_engine_launch(tmp_path, engine, **overrides)
-    assert all(flag in launch["command_args"] for flag in _NATIVE_LOG_FLAGS[engine])
-    assert "--otlp-traces-endpoint" in launch["command_args"]
-    assert _TRACE_COLLECTOR in launch["command_args"]
-    assert any("--otlp-traces-endpoint" in item for item in injected)
+    arguments = launch["command_args"]
+    assert all(flag in arguments for flag in _NATIVE_LOG_FLAGS[engine]) is logs
+    assert ("--otlp-traces-endpoint" in arguments) is traces
+    assert (_TRACE_COLLECTOR in arguments) is traces
+    assert any("--otlp-traces-endpoint" in item for item in injected) is traces
 
 
 def test_engine_trace_endpoint_comes_from_worker_config(tmp_path, monkeypatch):

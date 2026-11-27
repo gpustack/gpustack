@@ -58,6 +58,7 @@ from gpustack.worker.backends.base import (
     is_ascend,
     is_ascend_310p,
     read_lora_max_rank,
+    version_at_least,
 )
 
 from gpustack.utils.model_instance_workers import (
@@ -295,7 +296,6 @@ class SGLangServer(InferenceServer):
                 is_distributed=deployment_metadata.distributed,
                 is_distributed_leader=deployment_metadata.distributed_leader,
                 entrypoint=command,
-                image=image,
                 env=env,
             )
 
@@ -580,7 +580,6 @@ class SGLangServer(InferenceServer):
         is_distributed_leader: bool,
         entrypoint: Optional[List[str]] = None,
         *,
-        image: Optional[str] = None,
         env: Optional[Dict[str, str]] = None,
     ) -> Tuple[List[str], List[str]]:
         """
@@ -695,8 +694,7 @@ class SGLangServer(InferenceServer):
                 user_backend_parameters, self._smg_image_dependencies, tokenized=True
             )
         if (
-            image
-            and env is not None
+            env is not None
             and entrypoint == ["sglang", "serve"]
             and arguments is default_arguments
             and not self._model.run_command
@@ -741,9 +739,13 @@ class SGLangServer(InferenceServer):
         if "--config" in options:
             return []
 
+        backend_version = self._model.backend_version
         arguments: List[str] = []
+        # SGLang 0.5.7 added --log-requests-format json and 0.5.9 added
+        # SGLANG_LOG_REQUEST_HEADERS for platform request ID correlation.
         if (
             config.log_otlp_endpoint
+            and version_at_least(backend_version, "0.5.9")
             and not env.get("SGLANG_LOG_REQUEST_HEADERS")
             and options.isdisjoint(
                 (
@@ -765,8 +767,12 @@ class SGLangServer(InferenceServer):
                     "json",
                 ]
             )
+        # SGLang 0.5.12 added SGLANG_TRACE_LEVEL to avoid per-step decode span storms.
+        # Restrict auto-injection to managed runner images with known OTel packages.
         if (
             trace_endpoint
+            and getattr(self, "_resolved_runner_image", False)
+            and version_at_least(backend_version, "0.5.12")
             and options.isdisjoint(("--enable-trace", "--otlp-traces-endpoint"))
             and not env.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
             and env.get("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "grpc") == "grpc"

@@ -253,6 +253,49 @@ def test_managed_vllm_router_launches_native_tracing(
     assert vars(parsed_args) == dict(enable_trace=True, otlp_traces_endpoint=endpoint)
 
 
+def test_managed_vllm_router_tracing_falls_back_on_missing_python_entrypoint(
+    create_custom_workload, monkeypatch
+):
+    router_args = ["--vllm-pd-disaggregation", "--enable-igw"]
+    container = create_custom_workload(
+        image="gpustack/runner:cuda13.0-vllm0.32.0",
+        arguments=["vllm-router", *router_args],
+        trace_endpoint="collector:4317",
+        return_container=True,
+    )
+    script = container.execution.args[6]
+    monkeypatch.setattr(sys, "argv", ["-c", *container.execution.args[7:]])
+
+    # Missing Python tracing helper falls back to the plain CLI via execvp.
+    empty_launcher = ModuleType("vllm_router.launch_router")
+    monkeypatch.setitem(sys.modules, empty_launcher.__name__, empty_launcher)
+    exec_calls = []
+
+    class _ExecInvoked(BaseException):
+        pass
+
+    def fake_execvp(file, args):
+        exec_calls.append((file, args))
+        raise _ExecInvoked()
+
+    monkeypatch.setattr("os.execvp", fake_execvp)
+    with pytest.raises(_ExecInvoked):
+        exec(script, {})
+    assert exec_calls == [("vllm-router", ["vllm-router", *router_args])]
+
+    # Real startup failures inside launch_router must propagate rather than falling back.
+    failing_launcher = ModuleType("vllm_router.launch_router")
+    failing_launcher.parse_router_args = lambda args: SimpleNamespace()
+
+    def fail_launch(_args):
+        raise RuntimeError("router failed to bind")
+
+    failing_launcher.launch_router = fail_launch
+    monkeypatch.setitem(sys.modules, failing_launcher.__name__, failing_launcher)
+    with pytest.raises(RuntimeError, match="router failed to bind"):
+        exec(script, {})
+
+
 @pytest.mark.parametrize(
     "overrides",
     [

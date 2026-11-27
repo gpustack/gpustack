@@ -9,6 +9,7 @@ from functools import cached_property, lru_cache
 from pathlib import Path
 from typing import Dict, Optional, List, Tuple, Union
 from abc import ABC, abstractmethod
+from packaging.version import InvalidVersion, Version
 from transformers import PretrainedConfig
 
 from gpustack_runner.runner import BackendVersionedRunner
@@ -112,6 +113,20 @@ lock = threading.Lock()
 
 class ModelInstanceStateError(Exception):
     pass
+
+
+def version_at_least(backend_version: Optional[str], minimum: str) -> bool:
+    """Return True when ``backend_version`` parses as a PEP 440 version >= ``minimum``.
+
+    Unknown or unparseable versions return False so auto-injected engine flags
+    never break older or custom images.
+    """
+    if not backend_version:
+        return False
+    try:
+        return Version(backend_version) >= Version(minimum)
+    except InvalidVersion:
+        return False
 
 
 def _uses_builtin_nixl_device(model, instance) -> bool:
@@ -1947,6 +1962,8 @@ exec "$@"
             image_name, backend_version
 
         """
+        if spec is None:
+            self._resolved_runner_image = False
         self._resolved_image_dependencies = None
         model = spec if spec is not None else self._model
         if inference_backend is _INHERIT:
@@ -1974,6 +1991,8 @@ exec "$@"
             self._resolved_image_dependencies = (
                 dict(dependencies) if dependencies is not None else None
             )
+            if spec is None:
+                self._resolved_runner_image = True
             return bvr.variants[0].services[0].versions[0].platforms[0].docker_image
 
         backend, runtime_version, arch_family = self._get_device_info()
