@@ -5570,3 +5570,117 @@ def test_video_respects_explicit_native_storage_config(monkeypatch, tmp_path):
     }
     env = _configured_video_storage_env(monkeypatch, tmp_path, model_env=storage)
     assert {key: env[key] for key in storage} == storage
+
+
+@pytest.mark.parametrize("executor_backend", ["mp", "ray"])
+@pytest.mark.parametrize("vendor", ["ascend", "nvidia"])
+def test_vllm_set_distributed_env_keeps_vllm_vars_and_delegates_common_env(
+    executor_backend, vendor
+):
+    assert VLLMServer._set_ascend_env is InferenceServer._set_ascend_env
+
+    server = VLLMServer.__new__(VLLMServer)
+    server._model = types.SimpleNamespace(
+        backend_parameters=["--distributed-executor-backend", executor_backend],
+        backend_version=None,
+        image_name=None,
+    )
+    server._model_instance = types.SimpleNamespace(
+        ports=[40000, 40001, 40002, 40042, 40063],
+        gpu_indexes=[0],
+        gpu_type=None,
+        distributed_servers=None,
+        worker_id=1,
+    )
+    device = types.SimpleNamespace(
+        index=0,
+        vendor=vendor,
+        type="cann" if vendor == "ascend" else "cuda",
+        arch_family="Ascend910B4" if vendor == "ascend" else "Hopper",
+    )
+    server._worker = types.SimpleNamespace(
+        id=1,
+        ip="10.0.0.1",
+        ifname="eth0",
+        status=types.SimpleNamespace(gpu_devices=[device]),
+    )
+    server._resolve_multinode_shape = lambda _meta: "dp_only"
+
+    env = {}
+    server._set_distributed_env(env, types.SimpleNamespace())
+
+    assert env["VLLM_HOST_IP"] == "10.0.0.1"
+    if executor_backend == "mp":
+        assert env["VLLM_DP_MASTER_PORT"] == "40063"
+        assert env["VLLM_PORT"] == "40042"
+    else:
+        assert env["VLLM_PORT"] == "40063"
+        assert env["RAY_LOG_TO_STDERR"] == "0"
+        assert env["RAY_BACKEND_LOG_LEVEL"] == "warning"
+
+    if vendor == "ascend":
+        assert env["HCCL_IF_IP"] == "10.0.0.1"
+        assert env["HCCL_SOCKET_IFNAME"] == "=eth0"
+        assert env["GLOO_SOCKET_IFNAME"] == "eth0"
+        assert env["TP_SOCKET_IFNAME"] == "eth0"
+    else:
+        assert env["NCCL_SOCKET_IFNAME"] == "=eth0"
+        assert env["GLOO_SOCKET_IFNAME"] == "eth0"
+
+
+@pytest.mark.parametrize("is_distributed", [False, True])
+def test_sglang_inherits_shared_ascend_and_distributed_env(monkeypatch, is_distributed):
+    assert SGLangServer._set_distributed_env is InferenceServer._set_distributed_env
+    assert SGLangServer._set_ascend_env is InferenceServer._set_ascend_env
+
+    monkeypatch.setattr(
+        "gpustack.worker.backends.base.filter_env_vars", lambda _env: {}
+    )
+    server = SGLangServer.__new__(SGLangServer)
+    server._config = None
+    server._model = types.SimpleNamespace(
+        env=None,
+        disaggregation=None,
+        extended_kv_cache=None,
+    )
+    server._model_spec = None
+    server._model_path = None
+    server._model_instance = types.SimpleNamespace(
+        gpu_indexes=[0],
+        gpu_type=None,
+        distributed_servers=None,
+        worker_id=1,
+        role=None,
+    )
+    ascend_device = types.SimpleNamespace(
+        index=0,
+        vendor="ascend",
+        type="cann",
+        arch_family="Ascend910B4",
+    )
+    server._worker = types.SimpleNamespace(
+        id=1,
+        ip="10.0.0.1",
+        ifname="eth0",
+        status=types.SimpleNamespace(gpu_devices=[ascend_device]),
+    )
+    server._should_disable_cuda_compat = lambda: False
+    server._pd_injection_resolved = False
+    server._pd_injection_cache = None
+
+    env = server._get_configured_env(is_distributed=is_distributed)
+
+    assert env["TASK_QUEUE_ENABLE"] == "1"
+    assert env["HCCL_CONNECT_TIMEOUT"] == "7200"
+    assert env["HCCL_EXEC_TIMEOUT"] == "0"
+    assert env["HCCL_OP_EXPANSION_MODE"] == "AIV"
+    if is_distributed:
+        assert env["HCCL_IF_IP"] == "10.0.0.1"
+        assert env["HCCL_SOCKET_IFNAME"] == "=eth0"
+        assert env["GLOO_SOCKET_IFNAME"] == "eth0"
+        assert env["TP_SOCKET_IFNAME"] == "eth0"
+    else:
+        assert "HCCL_IF_IP" not in env
+        assert "HCCL_SOCKET_IFNAME" not in env
+        assert "GLOO_SOCKET_IFNAME" not in env
+        assert "TP_SOCKET_IFNAME" not in env

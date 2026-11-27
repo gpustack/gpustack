@@ -10,7 +10,7 @@ from gpustack.schemas.models import (
 )
 from gpustack.utils.command import format_backend_parameters
 from gpustack.utils.envs import sanitize_env
-from gpustack.worker.backends.base import InferenceServer
+from gpustack.worker.backends.base import InferenceServer, is_ascend
 from gpustack.worker.pd_router import is_managed_router
 
 from gpustack_runtime.deployer import (
@@ -82,7 +82,9 @@ class CustomServer(InferenceServer):
 
         deployment_metadata = self._get_deployment_metadata()
 
-        env = self._get_configured_env()
+        env = self._get_configured_env(
+            is_distributed=deployment_metadata.distributed,
+        )
 
         command = None
         launch = getattr(self, '_router_launch', None)
@@ -231,6 +233,20 @@ class CustomServer(InferenceServer):
         logger.info(
             f"Created custom backend container workload: {deployment_metadata.name}"
         )
+
+    def _get_configured_env(self, is_distributed: bool = False) -> Dict[str, str]:
+        """
+        Get environment variables for the custom backend service.
+        """
+        env = super()._get_configured_env()
+
+        if is_distributed:
+            self._set_distributed_env(env)
+
+        if is_ascend(self._get_selected_gpu_devices()):
+            self._set_ascend_env(env)
+
+        return env
 
     def _build_command_args(
         self, entrypoint: Optional[List[str]] = None

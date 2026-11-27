@@ -1079,6 +1079,47 @@ class InferenceServer(ABC):
             return
         env[variable] = cache_dir
 
+    def _set_distributed_env(self, env: Dict[str, str]):
+        """
+        Set up common network interface environment variables for distributed execution.
+        """
+        if is_ascend(self._get_selected_gpu_devices()):
+            # See https://vllm-ascend.readthedocs.io/en/latest/tutorials/multi-node_dsv3.2.html.
+            if "HCCL_SOCKET_IFNAME" not in env:
+                if self._worker.ip:
+                    env.setdefault("HCCL_IF_IP", self._worker.ip)
+                if self._worker.ifname:
+                    env["HCCL_SOCKET_IFNAME"] = f"={self._worker.ifname}"
+                    env.setdefault("GLOO_SOCKET_IFNAME", self._worker.ifname)
+                    env.setdefault("TP_SOCKET_IFNAME", self._worker.ifname)
+            return
+
+        if "NCCL_SOCKET_IFNAME" not in env and self._worker.ifname:
+            env["NCCL_SOCKET_IFNAME"] = f"={self._worker.ifname}"
+            env.setdefault("GLOO_SOCKET_IFNAME", self._worker.ifname)
+
+    def _set_ascend_env(self, env: Dict[str, str]):
+        """
+        Set up environment variables for Ascend devices.
+        """
+
+        # -- Optimize Pytorch NPU operations delivery performance.
+        env.setdefault("TASK_QUEUE_ENABLE", "1")
+        # -- Enable NUMA coarse-grained binding.
+        env.setdefault("CPU_AFFINITY_CONF", "1")
+        # -- Reuse memory in multi-streams.
+        env.setdefault("PYTORCH_NPU_ALLOC_CONF", "expandable_segments:True")
+        # -- Increase HCCL connection timeout to avoid issues in large clusters.
+        env.setdefault("HCCL_CONNECT_TIMEOUT", "7200")
+        # -- Enable RDMA PCIe direct post with no strict mode for better performance.
+        env.setdefault("HCCL_RDMA_PCIE_DIRECT_POST_NOSTRICT", "TRUE")
+        if not is_ascend_310p(self._get_selected_gpu_devices()):
+            # -- Disable HCCL execution timeout for better stability.
+            env.setdefault("HCCL_EXEC_TIMEOUT", "0")
+            # -- Schedule communication by AI Vector directly with ROCE
+            # instead of AI CPU.
+            env.setdefault("HCCL_OP_EXPANSION_MODE", "AIV")
+
     @lru_cache
     def _get_selected_gpu_devices(self) -> GPUDevicesStatus:
         """
