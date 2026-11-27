@@ -172,6 +172,28 @@ async def test_hopper_and_blackwell_rtx_share_default_recipe(packaged_catalog):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["vLLM", "SGLang"])
+async def test_direct_h3_selection_carries_catalog_metadata(packaged_catalog, backend):
+    source = (
+        "huggingface" if packaged_catalog == "model-catalog.yaml" else "model_scope"
+    )
+    model = ModelSpec(
+        name="user-alias",
+        backend=backend,
+        source=source,
+        **(
+            {"huggingface_repo_id": "MiniMaxAI/MiniMax-H3"}
+            if source == "huggingface"
+            else {"model_scope_model_id": "MiniMax/MiniMax-H3"}
+        ),
+        meta={"custom": "preserved"},
+    )
+    assert await evaluator.set_default_spec(None, model, [make_worker()])
+    assert model.meta == {"custom": "preserved", "video": {"family": "minimax_h3"}}
+    assert model.backend_parameters
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("selection", ["gpu", "worker"])
 async def test_manual_selection_narrows_default_hardware(packaged_catalog, selection):
     model = make_model(

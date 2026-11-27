@@ -110,8 +110,8 @@ async def test_catalog_metadata_preserves_evaluation_fields(
         )
         monkeypatch.setattr(
             scheduler,
-            "check_diffusers_model_index_from_workers",
-            AsyncMock(return_value=False),
+            "get_diffusers_model_index_with_workers",
+            AsyncMock(return_value=None),
         )
     await scheduler.evaluate_pretrained_config(model)
     assert model.categories == case["categories"]
