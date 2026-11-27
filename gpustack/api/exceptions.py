@@ -46,6 +46,10 @@ class OpenAIAPIException(HTTPException):
     pass
 
 
+class ClientFacingValidationError(ValueError):
+    """A model validation error with a message safe to return to API callers."""
+
+
 def http_exception_factory(
     status_code: int,
     reason: str,
@@ -279,9 +283,15 @@ def register_handlers(app: FastAPI):
 
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(request, exc: RequestValidationError):
-        message = f"{len(exc.errors())} validation errors:\n"
-        for err in exc.errors():
-            message += f"  {err}\n"
+        errors = exc.errors()
+        context = errors[0].get("ctx") if len(errors) == 1 else None
+        cause = context.get("error") if context else None
+        if isinstance(cause, ClientFacingValidationError):
+            message = str(cause)
+        else:
+            message = f"{len(errors)} validation errors:\n"
+            for err in errors:
+                message += f"  {err}\n"
         return JSONResponse(
             status_code=HTTP_422_UNPROCESSABLE,
             content=ErrorResponse(
