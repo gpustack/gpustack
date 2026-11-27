@@ -155,7 +155,7 @@ helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart 
   --set 'worker.gpuVendors={nvidia}'
 ```
 
-`worker.gpuVendors` の対応値：`nvidia`、`mthreads`、`amd`、`ascend`、`hygon`、`metax`、`iluvatar`、`cambricon`、`thead`。
+`worker.gpuVendors` の対応値：`nvidia`、`mthreads`、`amd`、`ascend`、`hygon`、`metax`、`iluvatar`、`cambricon`、`thead`。それ以外の名前（スペルミスなど）を指定するとレンダリングが失敗し、対応値が表示されます。
 
 !!! note
 

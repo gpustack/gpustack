@@ -421,6 +421,40 @@ class TestCPUWorkerDisabled:
         render("--set", "worker.cpuEnabled=false")
 
 
+class TestWorkerGPUVendorsValidation:
+    """`worker.gpuVendors` names must be canonical vendors; a typo fails the render."""
+
+    def test_every_listed_vendor_valid_renders_one_daemonset_each(self):
+        docs = render(
+            "--set",
+            "worker.enabled=true",
+            "--set",
+            "worker.gpuVendors={nvidia,amd}",
+        )
+        assert {"gpustack-worker-nvidia", "gpustack-worker-amd"} <= names(
+            docs, "DaemonSet"
+        )
+
+    @pytest.mark.parametrize(
+        "vendors", ["{nvidiaa}", "{nvidia,amdd}", "{nvidia,bogus,amd}"]
+    )
+    def test_refuses_a_misspelled_vendor_even_with_the_cpu_daemonset_on(self, vendors):
+        # The CPU DaemonSet keeps the release installable, so without this guard
+        # the dropped vendor's DaemonSet is just silently absent.
+        error = render_error(
+            "--set",
+            "worker.enabled=true",
+            "--set",
+            f"worker.gpuVendors={vendors}",
+        )
+        bad = next(v for v in ("nvidiaa", "amdd", "bogus") if v in vendors)
+        assert f"unsupported GPU vendor(s) in worker.gpuVendors: {bad}" in error
+        assert "amd, ascend, cambricon" in error
+
+    def test_ignores_gpu_vendors_when_the_worker_is_off(self):
+        render("--set", "worker.gpuVendors={bogus}")
+
+
 class TestWorkerOnly:
     def test_deploys_no_server_side_components(self):
         docs = render(*WORKER_ONLY, *SERVER_AND_TOKEN)

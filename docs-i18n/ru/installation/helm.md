@@ -155,7 +155,7 @@ helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart 
   --set 'worker.gpuVendors={nvidia}'
 ```
 
-Поддерживаемые значения `worker.gpuVendors`: `nvidia`, `mthreads`, `amd`, `ascend`, `hygon`, `metax`, `iluvatar`, `cambricon`, `thead`.
+Поддерживаемые значения `worker.gpuVendors`: `nvidia`, `mthreads`, `amd`, `ascend`, `hygon`, `metax`, `iluvatar`, `cambricon`, `thead`. Любое другое имя (например, опечатка) приводит к ошибке рендеринга со списком поддерживаемых значений.
 
 !!! note
 

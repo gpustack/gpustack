@@ -135,7 +135,7 @@ If you need to customize Higress parameters, refer to the [Higress documentation
 | higressPlugins.image.repository          | "" (server image)                 | Image repo with namespace; empty runs the gpustack server image           |
 | higressPlugins.image.tag                 | "" (follows image.tag)            | Required together with repository when pinning a dedicated image          |
 | higressPlugins.image.pullPolicy          | IfNotPresent                      | Higress plugins image pull policy                                         |
-| worker.gpuVendors                        | [nvidia]                          | List of GPU vendors; `[]` renders the CPU worker DaemonSet only           |
+| worker.gpuVendors                        | [nvidia]                          | GPU vendors; `[]` renders the CPU DaemonSet only; unknown names fail      |
 | worker.cpuEnabled                        | true                              | Render the CPU worker DaemonSet; `false` requires a GPU vendor            |
 | worker.nodeSelector                      | {}                                | Base worker nodeSelector; replaces `global.nodeSelector` when non-empty   |
 | worker.port                              | 10150                             | Worker service port                                                       |

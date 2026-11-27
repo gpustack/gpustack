@@ -21,12 +21,30 @@ worker to the cluster at all.
 Counted over the *sorted* vendors, which is the list worker-daemonset.yaml
 iterates: it renders nothing for a name outside the canonical set, so a typo
 would otherwise satisfy a guard reading the raw list and land in exactly the
-state this rejects. A name it drops while the CPU DaemonSet is on still installs
-today — that is a separate guard, and this file is not where one of those goes.
+state this rejects. A name it drops while the CPU DaemonSet is on is refused by
+the unsupported-vendor guard below.
 */}}
 {{- if and .Values.worker.enabled (not (include "gpustack.workerCPUEnabled" .)) }}
 {{- if not (include "gpustack.sortedVendors" . | fromJsonArray) }}
 {{- fail (printf "worker.cpuEnabled is false and worker.gpuVendors names no supported GPU vendor: the release would render no worker DaemonSet at all. Name at least one of %s in worker.gpuVendors, or leave the CPU DaemonSet enabled." (include "gpustack.canonicalVendorOrder" . | fromJsonArray | join ", ")) }}
+{{- end }}
+{{- end }}
+
+{{/*
+A vendor name outside the canonical set (a typo, or a runtime this chart does
+not ship). worker-daemonset.yaml renders nothing for it, so the release would
+install with that vendor's DaemonSet silently missing.
+*/}}
+{{- if .Values.worker.enabled }}
+{{- $canonical := include "gpustack.canonicalVendorOrder" . | fromJsonArray }}
+{{- $unsupported := list }}
+{{- range include "gpustack.workerVendors" . | fromJsonArray }}
+{{- if not (has . $canonical) }}
+{{- $unsupported = append $unsupported . }}
+{{- end }}
+{{- end }}
+{{- if $unsupported }}
+{{- fail (printf "unsupported GPU vendor(s) in worker.gpuVendors: %s. Supported vendors: %s." (join ", " $unsupported) (join ", " $canonical)) }}
 {{- end }}
 {{- end }}
 
