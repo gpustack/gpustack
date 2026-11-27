@@ -1,28 +1,45 @@
 """Tests for the authenticated Worker-to-Server OTLP trace proxy."""
 
+import gzip
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import httpx
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
+    ExportTraceServiceRequest,
+)
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 import pytest
 
 from gpustack.api import exceptions
+from gpustack.api.auth import get_current_user
 from gpustack.observability.trace_proxy import LocalOTLPTraceProxy
 from gpustack.routes import request_traces as trace_routes
+from gpustack.schemas.principals import PrincipalType
+from gpustack.server.db import get_session
 
 
-def _make_ingest_app(ingest_url, tempo_response):
+def _make_ingest_app(monkeypatch, ingest_url, tempo_response):
+    monkeypatch.setattr(
+        trace_routes,
+        "get_global_config",
+        lambda: SimpleNamespace(get_trace_ingest_url=lambda: ingest_url),
+    )
     app = FastAPI()
     app.add_api_route(
         "/v2/traces/otlp", trace_routes.ingest_worker_traces, methods=["POST"]
     )
+    worker = SimpleNamespace(id=1, cluster_id=3)
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
+        worker=worker, kind=PrincipalType.SYSTEM
+    )
+    app.dependency_overrides[get_session] = lambda: None
     exceptions.register_handlers(app)
     session = MagicMock()
     session.post.return_value.__aenter__.return_value = tempo_response
@@ -46,16 +63,17 @@ def test_local_otlp_trace_proxy_forwards_grpc_spans_to_authenticated_server(
 ):
     forwarded = []
     app, session = _make_ingest_app(
-        "http://127.0.0.1:4318/v1/traces", _tempo_response(status=200, body=b"")
-    )
-    monkeypatch.setattr(
-        trace_routes,
-        "get_global_config",
-        lambda: SimpleNamespace(
-            get_trace_ingest_url=lambda: "http://127.0.0.1:4318/v1/traces"
-        ),
+        monkeypatch,
+        "http://127.0.0.1:4318/v1/traces",
+        _tempo_response(status=200, body=b""),
     )
 
+    instance = SimpleNamespace(
+        id=7, worker_id=1, cluster_id=3, model_id=42, deleted_at=None
+    )
+    monkeypatch.setattr(
+        trace_routes.ModelInstance, "all_by_ids", AsyncMock(return_value=[instance])
+    )
     with TestClient(app) as server_client:
         real_post = server_client.post
 
@@ -72,14 +90,20 @@ def test_local_otlp_trace_proxy_forwards_grpc_spans_to_authenticated_server(
         endpoint = proxy.start()
         try:
             provider = TracerProvider(
-                resource=Resource.create({"service.name": "vllm"})
+                resource=Resource.create(
+                    {
+                        "service.name": "vllm",
+                        "gpustack.model_id": "42",
+                        "gpustack.engine_instance_id": "7",
+                    }
+                )
             )
             provider.add_span_processor(
                 SimpleSpanProcessor(OTLPSpanExporter(endpoint=endpoint, insecure=True))
             )
             tracer = provider.get_tracer(__name__)
-            with tracer.start_as_current_span("llm_request") as span:
-                span.set_attribute("gpustack.model_id", 42)
+            with tracer.start_as_current_span("llm_request"):
+                pass
             provider.force_flush()
             provider.shutdown()
         finally:
@@ -99,24 +123,32 @@ def test_local_otlp_trace_proxy_forwards_grpc_spans_to_authenticated_server(
 @pytest.mark.parametrize(
     "content_type, encoding, body, expected_status",
     [
+        ("application/x-protobuf", "", b"invalid", 400),
+        ("application/x-protobuf", "gzip", b"invalid", 400),
+        (
+            "application/x-protobuf",
+            "gzip",
+            gzip.compress(bytes(4 * 1024 * 1024 + 1)),
+            413,
+        ),
         ("application/json", "", b"{}", 415),
         ("application/x-protobuf", "br", b"abc", 415),
         ("application/x-protobuf", "", b"x" * (4 * 1024 * 1024 + 1), 413),
     ],
-    ids=["non_protobuf", "unsupported_encoding", "too_large"],
+    ids=[
+        "invalid_proto",
+        "invalid_gzip",
+        "inflated_size",
+        "non_protobuf",
+        "unsupported_encoding",
+        "too_large",
+    ],
 )
 def test_ingest_worker_traces_validates_headers_and_size(
     monkeypatch, content_type, encoding, body, expected_status
 ):
     app, session = _make_ingest_app(
-        "http://127.0.0.1:4318/v1/traces", _tempo_response()
-    )
-    monkeypatch.setattr(
-        trace_routes,
-        "get_global_config",
-        lambda: SimpleNamespace(
-            get_trace_ingest_url=lambda: "http://127.0.0.1:4318/v1/traces"
-        ),
+        monkeypatch, "http://127.0.0.1:4318/v1/traces", _tempo_response()
     )
     headers = {"Content-Type": content_type}
     if encoding:
@@ -129,19 +161,121 @@ def test_ingest_worker_traces_validates_headers_and_size(
     session.post.assert_not_called()
 
 
-def test_ingest_worker_traces_returns_503_when_disabled_or_tempo_unreachable(
-    monkeypatch,
+@pytest.mark.parametrize(
+    "service,model_id,instance_id,status",
+    [
+        ("gpustack.worker", 42, 8, 200),  # A subordinate Worker can report its member.
+        ("sglang", 42, 8, 200),
+        ("gpustack.worker", 43, 9, 403),  # Assigned to another Org's Worker.
+        ("vllm", 43, 9, 403),
+        ("gpustack.worker", 43, 7, 403),  # Local instance paired with another model.
+        ("vllm", 42, 10, 403),  # Stale assignment from another cluster.
+        ("vllm", 42, 11, 403),  # Assignment is soft-deleted.
+        ("sglang", 42, 999, 403),  # Instance removed before export.
+        ("gpustack.worker", 42, None, 403),
+        ("gpustack.worker", None, None, 403),
+        ("vllm", None, 7, 403),
+        ("gpustack.server", 42, 7, 403),
+        ("gpustack.higress", 42, 7, 403),
+    ],
+)
+def test_ingest_authorizes_every_workload_before_forwarding(
+    monkeypatch, service, model_id, instance_id, status
 ):
-    app, session = _make_ingest_app(None, _tempo_response())
-    monkeypatch.setattr(
-        trace_routes,
-        "get_global_config",
-        lambda: SimpleNamespace(get_trace_ingest_url=lambda: None),
+    app, tempo = _make_ingest_app(monkeypatch, "http://tempo", _tempo_response())
+    instances = [
+        SimpleNamespace(id=7, worker_id=1, cluster_id=3, model_id=42, deleted_at=None),
+        SimpleNamespace(
+            deleted_at=None,
+            id=8,
+            worker_id=2,
+            cluster_id=3,
+            model_id=42,
+            distributed_servers=SimpleNamespace(
+                subordinate_workers=[SimpleNamespace(worker_id=1)]
+            ),
+        ),
+        SimpleNamespace(
+            id=9,
+            worker_id=2,
+            cluster_id=3,
+            model_id=43,
+            deleted_at=None,
+            owner_principal_id=99,
+        ),
+        SimpleNamespace(id=10, worker_id=1, cluster_id=4, model_id=42, deleted_at=None),
+        SimpleNamespace(
+            id=11, worker_id=1, cluster_id=3, model_id=42, deleted_at=object()
+        ),
+    ]
+    lookup = AsyncMock(
+        side_effect=lambda session, ids: [i for i in instances if i.id in ids]
+    )
+    monkeypatch.setattr(trace_routes.ModelInstance, "all_by_ids", lookup)
+    batch = ExportTraceServiceRequest()
+    for name, model, instance in [
+        ("gpustack.worker", 42, 7),
+        (service, model_id, instance_id),
+    ]:
+        group = batch.resource_spans.add()
+        resource = group.resource.attributes
+        resource.add(key="service.name").value.string_value = name
+        span = group.scope_spans.add().spans.add()
+        if name == "gpustack.worker":
+            if model is not None:
+                span.attributes.add(key="gpustack.model_id").value.int_value = model
+            if instance is not None:
+                span.attributes.add(
+                    key="gpustack.model_instance_id"
+                ).value.int_value = instance
+        else:
+            if model is not None:
+                resource.add(key="gpustack.model_id").value.string_value = str(model)
+            if instance is not None:
+                resource.add(key="gpustack.engine_instance_id").value.string_value = (
+                    str(instance)
+                )
+    body = gzip.compress(batch.SerializeToString())
+    with TestClient(app) as client:
+        response = client.post(
+            "/v2/traces/otlp",
+            content=body,
+            headers={
+                "Content-Type": "application/x-protobuf",
+                "Content-Encoding": "gzip",
+            },
+        )
+    assert response.status_code == status
+    if status == 200:
+        lookup.assert_awaited_once_with(None, [7, 8])
+        assert tempo.post.call_args.kwargs["data"] == body
+    else:
+        tempo.post.assert_not_called()
+
+
+def test_ingest_requires_a_bound_worker(monkeypatch):
+    app, tempo = _make_ingest_app(monkeypatch, "http://tempo", _tempo_response())
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
+        worker=None, is_admin=True, kind=PrincipalType.USER
     )
     with TestClient(app) as client:
         response = client.post(
             "/v2/traces/otlp",
-            content=b"proto",
+            content=b"",
+            headers={"Content-Type": "application/x-protobuf"},
+        )
+    assert response.status_code == 403
+    tempo.post.assert_not_called()
+
+
+def test_ingest_worker_traces_returns_503_when_disabled_or_tempo_unreachable(
+    monkeypatch,
+):
+    app, session = _make_ingest_app(monkeypatch, None, _tempo_response())
+    with TestClient(app) as client:
+        response = client.post(
+            "/v2/traces/otlp",
+            content=b"",
             headers={"Content-Type": "application/x-protobuf"},
         )
     assert response.status_code == 503
@@ -157,7 +291,7 @@ def test_ingest_worker_traces_returns_503_when_disabled_or_tempo_unreachable(
     with TestClient(app) as client:
         response = client.post(
             "/v2/traces/otlp",
-            content=b"proto",
+            content=b"",
             headers={"Content-Type": "application/x-protobuf"},
         )
     assert response.status_code == 503

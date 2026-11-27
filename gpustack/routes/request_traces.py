@@ -1,13 +1,22 @@
 import asyncio
 import base64
+import gzip
+import io
+import re
 import time
+import zlib
 from typing import Annotated, List, Optional
 
 import aiohttp
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
+from google.protobuf.message import DecodeError
+from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
+    ExportTraceServiceRequest,
+)
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from gpustack.api.auth import get_worker_principal
 from gpustack.api.exceptions import (
     BadRequestException,
     ForbiddenException,
@@ -36,8 +45,9 @@ from gpustack.observability.request_traces import (
     search_request_trace_page,
 )
 from gpustack.schemas.model_usage_details import ModelUsageDetails
-from gpustack.schemas.models import Model
-from gpustack.schemas.principals import PrincipalType
+from gpustack.schemas.models import Model, ModelInstance, member_worker_ids
+from gpustack.schemas.principals import Principal, PrincipalType
+from gpustack.schemas.workers import Worker
 from gpustack.server.deps import SessionDep, TenantContextDep
 
 
@@ -216,7 +226,93 @@ _MAX_TRACE_INGEST_BYTES = 4 * 1024 * 1024
 _TRACE_INGEST_TIMEOUT = 5
 
 
-async def ingest_worker_traces(request: Request) -> Response:
+def _trace_target(
+    attributes, instance_key: str, *, resource: bool = False
+) -> Optional[tuple[int, int]]:
+    model_key = "gpustack.model_id"
+    ids = {}
+    for attr in attributes:
+        if attr.key not in (model_key, instance_key):
+            continue
+        value = attr.value.int_value
+        if resource and re.fullmatch(r"[1-9][0-9]{0,9}", attr.value.string_value):
+            value = int(attr.value.string_value)
+        if attr.key in ids or not 0 < value <= 2**31 - 1:
+            raise ForbiddenException(message="Invalid trace workload identity")
+        ids[attr.key] = value
+    if not ids:
+        return None
+    if len(ids) != 2:
+        raise ForbiddenException(message="Incomplete trace workload identity")
+    return ids[model_key], ids[instance_key]
+
+
+def _worker_trace_targets(batch: ExportTraceServiceRequest) -> set[tuple[int, int]]:
+    targets = set()
+    for group in batch.resource_spans:
+        attributes = group.resource.attributes
+        services = [a.value.string_value for a in attributes if a.key == "service.name"]
+        if len(services) > 1 or any(
+            name in ("gpustack.server", "gpustack.higress") for name in services
+        ):
+            raise ForbiddenException(message="Invalid Worker trace service")
+        worker_service = services == ["gpustack.worker"]
+        engine = _trace_target(attributes, "gpustack.engine_instance_id", resource=True)
+        if engine:
+            targets.add(engine)
+        for scope in group.scope_spans:
+            for span in scope.spans:
+                target = _trace_target(span.attributes, "gpustack.model_instance_id")
+                # Require the identity that model-scoped queries use for this source.
+                if (worker_service and not target) or (
+                    not worker_service and not engine
+                ):
+                    raise ForbiddenException(message="Missing trace workload identity")
+                if target:
+                    targets.add(target)
+    return targets
+
+
+async def _authorize_trace_batch(
+    body: bytes, encoding: str, session: AsyncSession, worker: Worker
+) -> None:
+    try:
+        if encoding == "gzip":
+            with gzip.GzipFile(fileobj=io.BytesIO(body)) as compressed:
+                body = compressed.read(_MAX_TRACE_INGEST_BYTES + 1)
+            if len(body) > _MAX_TRACE_INGEST_BYTES:
+                raise HTTPException(status_code=413, detail="Trace batch is too large")
+        batch = ExportTraceServiceRequest.FromString(body)
+    except (DecodeError, gzip.BadGzipFile, EOFError, zlib.error):
+        raise HTTPException(
+            status_code=400, detail="Invalid OTLP trace batch"
+        ) from None
+
+    targets = _worker_trace_targets(batch)
+    instance_ids = sorted({instance_id for _, instance_id in targets})
+    assigned = set()
+    for start in range(0, len(instance_ids), 1000):
+        instances = await ModelInstance.all_by_ids(
+            session, instance_ids[start : start + 1000]
+        )
+        assigned.update(
+            (instance.model_id, instance.id)
+            for instance in instances
+            if instance.deleted_at is None
+            and instance.cluster_id == worker.cluster_id
+            and worker.id in member_worker_ids(instance)
+        )
+    if not targets <= assigned:
+        raise ForbiddenException(
+            message="Worker is not assigned to this trace workload"
+        )
+
+
+async def ingest_worker_traces(
+    request: Request,
+    session: SessionDep,
+    principal: Annotated[Principal, Depends(get_worker_principal)],
+) -> Response:
     """Forward authenticated Worker OTLP/protobuf trace batches to local Tempo."""
     cfg = get_global_config()
     ingest_url = cfg.get_trace_ingest_url() if cfg else None
@@ -236,11 +332,18 @@ async def ingest_worker_traces(request: Request) -> Response:
             status_code=415, detail="Unsupported content-encoding for trace ingest"
         )
 
+    if principal.worker is None:
+        raise ForbiddenException(
+            message="Trace ingest requires a bound Worker principal"
+        )
+
     body = bytearray()
     async for chunk in request.stream():
-        body.extend(chunk)
-        if len(body) > _MAX_TRACE_INGEST_BYTES:
+        if len(body) + len(chunk) > _MAX_TRACE_INGEST_BYTES:
             raise HTTPException(status_code=413, detail="Trace batch is too large")
+        body.extend(chunk)
+    payload = bytes(body)
+    await _authorize_trace_batch(payload, content_encoding, session, principal.worker)
 
     client: Optional[aiohttp.ClientSession] = getattr(
         request.app.state, "http_client_no_proxy", None
@@ -255,7 +358,7 @@ async def ingest_worker_traces(request: Request) -> Response:
     try:
         async with client.post(
             ingest_url,
-            data=bytes(body),
+            data=payload,
             headers=headers,
             allow_redirects=False,
             timeout=aiohttp.ClientTimeout(total=_TRACE_INGEST_TIMEOUT),
