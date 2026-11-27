@@ -20,6 +20,7 @@ from gpustack_runtime.deployer import (
 from gpustack_runtime.deployer.__utils__ import compare_versions
 from gpustack_runtime.detector import ManufacturerEnum, manufacturer_to_backend
 from gpustack.observability.tracing import (
+    allows_managed_engine_tracing,
     set_engine_trace_instance,
     set_engine_trace_service_name,
 )
@@ -1660,8 +1661,7 @@ class VLLMServer(InferenceServer):
             and getattr(self, "_resolved_runner_image", False)
             and version_at_least(backend_version, "0.17.0")
             and "--otlp-traces-endpoint" not in options
-            and not env.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
-            and env.get("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "grpc") == "grpc"
+            and allows_managed_engine_tracing(env)
         ):
             arguments.extend(["--otlp-traces-endpoint", trace_endpoint])
             set_engine_trace_service_name(env, "vllm", self._model_instance.role)

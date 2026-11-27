@@ -1,7 +1,7 @@
 import asyncio
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
-from typing import AsyncIterator, Dict, Iterator, Optional
+from typing import AsyncIterator, Dict, Iterator, Mapping, Optional
 from urllib.parse import quote, unquote
 
 from opentelemetry import trace
@@ -58,6 +58,20 @@ PUBLIC_INFERENCE_PATHS = frozenset(
 _INFERENCE_TRACER: ContextVar[Optional[trace.Tracer]] = ContextVar(
     "inference_tracer", default=None
 )
+
+
+def allows_managed_engine_tracing(env: Mapping[str, str]) -> bool:
+    """Return True when env has no explicit OTLP trace override or non-gRPC protocol."""
+    if env.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") or env.get(
+        "OTEL_EXPORTER_OTLP_ENDPOINT"
+    ):
+        return False
+    protocol = (
+        env.get("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL")
+        or env.get("OTEL_EXPORTER_OTLP_PROTOCOL")
+        or "grpc"
+    )
+    return protocol == "grpc"
 
 
 def set_engine_trace_service_name(

@@ -23,7 +23,10 @@ from typing import TYPE_CHECKING, Dict, List, Mapping, NamedTuple, Optional, Seq
 
 from pydantic import BaseModel
 
-from gpustack.observability.tracing import set_engine_trace_instance
+from gpustack.observability.tracing import (
+    allows_managed_engine_tracing,
+    set_engine_trace_instance,
+)
 from gpustack.schemas.models import PDModeEnum
 from gpustack.utils.command import (
     find_last_int_parameter,
@@ -98,13 +101,7 @@ def apply_router_observability(
         and trace_endpoint
         and args[:1] == ["vllm-router"]
         and options.isdisjoint(("--enable-trace", "--otlp-traces-endpoint"))
-        and not env.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
-        and not env.get("OTEL_EXPORTER_OTLP_ENDPOINT")
-        and env.get(
-            "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
-            env.get("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc"),
-        )
-        == "grpc"
+        and allows_managed_engine_tracing(env)
     ):
         set_engine_trace_instance(
             env, instance.id, instance.name, instance.model_id, "router"

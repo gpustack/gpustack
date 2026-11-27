@@ -20,6 +20,7 @@ from gpustack_runtime.deployer import (
 from gpustack_runtime.deployer.__utils__ import compare_versions
 
 from gpustack.observability.tracing import (
+    allows_managed_engine_tracing,
     set_engine_trace_instance,
     set_engine_trace_service_name,
 )
@@ -774,8 +775,7 @@ class SGLangServer(InferenceServer):
             and getattr(self, "_resolved_runner_image", False)
             and version_at_least(backend_version, "0.5.12")
             and options.isdisjoint(("--enable-trace", "--otlp-traces-endpoint"))
-            and not env.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
-            and env.get("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "grpc") == "grpc"
+            and allows_managed_engine_tracing(env)
         ):
             # Keep the major stages while omitting per-step decode spans.
             env.setdefault("SGLANG_TRACE_LEVEL", "1")
