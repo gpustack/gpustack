@@ -9,6 +9,7 @@ from functools import cached_property, lru_cache
 from pathlib import Path
 from typing import Dict, Optional, List, Tuple, Union
 from abc import ABC, abstractmethod
+from packaging.version import InvalidVersion, Version
 from transformers import PretrainedConfig
 
 from gpustack_runner.runner import BackendVersionedRunner
@@ -89,6 +90,7 @@ from gpustack.utils.profiling import time_decorator
 from gpustack.utils import platform
 from gpustack.utils.version import pick_runtime_version
 from gpustack.utils.runtime import transform_workload_plan
+from gpustack.worker.log_export import pod_log_labels
 from gpustack.worker.pd_injection import (
     PDInjection,
     PDInjectionError,
@@ -111,6 +113,20 @@ lock = threading.Lock()
 
 class ModelInstanceStateError(Exception):
     pass
+
+
+def version_at_least(backend_version: Optional[str], minimum: str) -> bool:
+    """Return True when ``backend_version`` parses as a PEP 440 version >= ``minimum``.
+
+    Unknown or unparseable versions return False so auto-injected engine flags
+    never break older or custom images.
+    """
+    if not backend_version:
+        return False
+    try:
+        return Version(backend_version) >= Version(minimum)
+    except InvalidVersion:
+        return False
 
 
 def _uses_builtin_nixl_device(model, instance) -> bool:
@@ -1007,6 +1023,15 @@ class InferenceServer(ABC):
             env = env.copy()
             del env["UCX_NET_DEVICES"]
         return env
+
+    def _engine_trace_endpoint(self) -> Optional[str]:
+        # A PD role may replace its environment. Read the deployment's intent
+        # before role projection so every managed engine and Router honors it.
+        deployment = self._model_spec or self._model
+        disabled = (deployment.env or {}).get("GPUSTACK_DISABLE_ENGINE_TRACING", "")
+        if disabled.strip().lower() in {"1", "true"}:
+            return None
+        return self._config.effective_trace_otlp_endpoint
 
     def _get_configured_env(self, **kwargs) -> Dict[str, str]:
         """
@@ -1946,6 +1971,8 @@ exec "$@"
             image_name, backend_version
 
         """
+        if spec is None:
+            self._resolved_runner_image = False
         self._resolved_image_dependencies = None
         model = spec if spec is not None else self._model
         if inference_backend is _INHERIT:
@@ -1973,6 +2000,8 @@ exec "$@"
             self._resolved_image_dependencies = (
                 dict(dependencies) if dependencies is not None else None
             )
+            if spec is None:
+                self._resolved_runner_image = True
             return bvr.variants[0].services[0].versions[0].platforms[0].docker_image
 
         backend, runtime_version, arch_family = self._get_device_info()
@@ -2223,6 +2252,10 @@ exec "$@"
             # Hand the operator InstanceType name to the runtime; the
             # runtime's Kubernetes deployer owns queue admission from here.
             workload.instance_type = selector.type
+        if get_model_instance_workloads(self._model_instance) is None:
+            labels = pod_log_labels(self._config, self._model_instance, self._worker.id)
+            if labels:
+                workload.labels = {**(workload.labels or {}), **labels}
         return transform_workload_plan(self._config, workload, self._fallback_registry)
 
 

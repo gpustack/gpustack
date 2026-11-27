@@ -1,0 +1,4 @@
+#!/command/with-contenv /bin/sh
+# shellcheck shell=sh
+set -eu
+exec /usr/local/bin/tempo "-config.file=${GPUSTACK_RUN_DIR:-/run/gpustack}/tempo/config.yaml"

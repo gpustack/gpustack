@@ -368,3 +368,86 @@ imagePullSecrets:
 {{- toYaml . | nindent 2 }}
 {{- end }}
 {{- end -}}
+
+{{- define "gpustack.tempoName" -}}
+{{- printf "%s-tempo" .Release.Name -}}
+{{- end -}}
+
+{{- define "gpustack.tempoHost" -}}
+{{- printf "%s.%s.svc.%s" (include "gpustack.tempoName" .) .Release.Namespace .Values.clusterDomain -}}
+{{- end -}}
+
+{{- define "gpustack.builtinTempoEnabled" -}}
+{{- if and .Values.tracing.enabled .Values.server.enabled (not .Values.tracing.endpoint) -}}
+true
+{{- end -}}
+{{- end -}}
+
+{{- define "gpustack.tempoQueryTLSSecretName" -}}
+{{- .Values.tracing.tempo.queryTLSSecretName | default (printf "%s-tempo-query-tls" .Release.Name) -}}
+{{- end -}}
+
+{{- define "gpustack.tracingEndpoint" -}}
+{{- if .Values.tracing.enabled -}}
+{{- if .Values.tracing.endpoint -}}
+{{- .Values.tracing.endpoint -}}
+{{- else if .Values.server.enabled -}}
+{{- printf "%s:4317" (include "gpustack.tempoHost" .) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "gpustack.observabilityEnv" -}}
+{{- with .Values.logging.endpoint }}
+- name: GPUSTACK_LOG_OTLP_ENDPOINT
+  value: {{ . | quote }}
+- name: GPUSTACK_LOG_POD_RELEASE
+  value: {{ $.Release.Name | quote }}
+{{- end }}
+{{- if not .Values.tracing.enabled }}
+- name: GPUSTACK_DISABLE_TRACING
+  value: "true"
+{{- else }}
+{{- with (include "gpustack.tracingEndpoint" .) }}
+- name: GPUSTACK_TRACE_OTLP_ENDPOINT
+  value: {{ . | quote }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- define "gpustack.loggingAuthorizationEnv" -}}
+{{- with .Values.logging.authorizationSecret.name }}
+- name: GPUSTACK_LOG_OTLP_AUTHORIZATION
+  valueFrom:
+    secretKeyRef:
+      name: {{ . | quote }}
+      key: {{ $.Values.logging.authorizationSecret.key | quote }}
+{{- end }}
+{{- end }}
+
+{{- define "gpustack.loggingCaMount" -}}
+{{- if and .Values.logging.endpoint .Values.logging.caSecret.name }}
+- name: gpustack-otel-ca
+  mountPath: /etc/gpustack/otel-ca
+  readOnly: true
+{{- end }}
+{{- end }}
+
+{{- define "gpustack.loggingCaVolume" -}}
+{{- with .Values.logging.caSecret }}
+{{- if and $.Values.logging.endpoint .name }}
+- name: gpustack-otel-ca
+  secret:
+    secretName: {{ .name | quote }}
+    items:
+      - key: {{ .key | quote }}
+        path: ca.crt
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- define "gpustack.collectHigressLogs" -}}
+{{- if and .Values.logging.endpoint .Values.server.enabled (index .Values "higress-core" "enabled") (not (index .Values "higress-core" "global" "o11y" "enabled")) (dig "enabled" true (.Values.logging.higress | default dict)) -}}
+true
+{{- end -}}
+{{- end -}}

@@ -1,13 +1,15 @@
 import json
 import subprocess
 import sys
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
 from gpustack.schemas.models import DisaggregationSpec, RoleSpec
-from gpustack.server.pd_mode_catalog import load_pd_modes
+from gpustack.server.pd_mode_catalog import get_pd_mode, load_pd_modes
+from gpustack.utils.pd_router_launch import resolve_router_launch
 from gpustack.worker.backends.custom import CustomServer
+from gpustack.worker.pd_router import PeerAddress, render_router
 
 
 @pytest.fixture
@@ -27,10 +29,16 @@ def create_custom_workload(monkeypatch):
         router_backend=None,
         mode="vllm-nixl",
         definition=None,
+        env=None,
+        log_collection=False,
+        trace_endpoint=None,
+        deployment_env=None,
+        return_container=False,
     ):
         backend = CustomServer.__new__(CustomServer)
         backend._model_spec = SimpleNamespace(
             image_name=model_image,
+            env=deployment_env,
             disaggregation=(DisaggregationSpec(mode=mode) if disaggregated else None),
             roles=[
                 RoleSpec(
@@ -44,18 +52,20 @@ def create_custom_workload(monkeypatch):
             ],
         )
         backend._model = SimpleNamespace(**vars(backend._model_spec))
+        backend._model.env = dict(env or {})
         backend._model.image_name = (
             router_image or (model_image if router_backend is None else None) or image
         )
         backend._model.backend_version = None
         backend.inference_backend = definition
-        if definition:
-            from gpustack.utils.pd_router_launch import resolve_router_launch
-
-            backend._router_launch = resolve_router_launch(
-                backend._model_spec, definition
-            )
-        backend._model_instance = SimpleNamespace(role=role)
+        backend._router_launch = resolve_router_launch(backend._model_spec, definition)
+        backend._config = SimpleNamespace(
+            log_otlp_endpoint="http://otel/v1/logs" if log_collection else None,
+            effective_trace_otlp_endpoint=trace_endpoint,
+        )
+        backend._model_instance = SimpleNamespace(
+            id=7, name="test-router", model_id=42, role=role
+        )
         backend._get_configured_image = lambda: backend._model.image_name
         backend._get_configured_resources = lambda: {}
         backend._get_configured_mounts = lambda: []
@@ -74,9 +84,10 @@ def create_custom_workload(monkeypatch):
                 if arguments is not None
                 else ["vllm-router", "--model", "a model", "--port", "40006"]
             ),
-            env={},
+            env=dict(env or {}),
         )
-        return workloads[0].containers[0].execution
+        container = workloads[0].containers[0]
+        return container if return_container else container.execution
 
     return create
 
@@ -97,6 +108,243 @@ def test_managed_router_wraps_the_original_command(create_custom_workload, comma
         "--port",
         "40006",
     ]
+
+
+@pytest.mark.parametrize(
+    "options, json_logs",
+    [
+        ({"log_collection": False}, False),
+        ({"mode": "vllm-nixl"}, False),
+        ({"mode": "sglang-nixl"}, False),
+        ({"role": "prefill"}, False),
+        ({"image": "gpustack/runner:cuda13.0-sglang0.5.21"}, True),
+        ({"image": "mirror.example/team/sglang:custom"}, True),
+        ({"router_image": "custom/runner:cuda13.0-sglang0.5.22"}, False),
+        ({"model_image": "custom/runner:cuda13.0-sglang0.5.22"}, False),
+        ({"router_command": "custom-router"}, False),
+        ({"command": ["tini", "--"]}, False),
+        ({"arguments": ["smg", "launch"]}, False),
+        ({"env": {"PYPI_PACKAGES_INSTALL": "sglang-router==0.2.0"}}, False),
+        ({}, True),
+        ({"trace_endpoint": "collector:4317", "log_collection": False}, False),
+        ({"trace_endpoint": "collector:4317"}, True),
+        ({"env": {"RUST_LOG": "smg=warn"}}, True),
+        (
+            {
+                "arguments": [
+                    "python3",
+                    "-m",
+                    "sglang_router.launch_router",
+                    "--log-level=warn",
+                ]
+            },
+            True,
+        ),
+        (
+            {
+                "arguments": [
+                    "python3",
+                    "-m",
+                    "sglang_router.launch_router",
+                    "--json-log",
+                ]
+            },
+            True,
+        ),
+    ],
+)
+def test_managed_sglang_router_request_logging(
+    create_custom_workload, options, json_logs
+):
+    image = "gpustack/runner:cuda13.0-sglang0.5.22"
+    plan = render_router(
+        get_pd_mode("sglang-mooncake"),
+        {
+            "worker_ip": "10.0.0.1",
+            "port": 40006,
+            "ports.prometheus": 40007,
+            "runner_image": image,
+        },
+        {
+            "prefill": [PeerAddress("10.0.0.2", 40006, {"bootstrap": 8998})],
+            "decode": [PeerAddress("10.0.0.3", 40006)],
+        },
+    )
+    defaults = dict(
+        image=image,
+        arguments=plan.command,
+        mode="sglang-mooncake",
+        log_collection=True,
+    )
+    container = create_custom_workload(**{**defaults, **options}, return_container=True)
+
+    env = {item.name: item.value for item in container.envs}
+    args = container.execution.args
+    assert args.count("--json-log") == int(json_logs)
+    # The bundled router preserves the incoming trace only with its exporter off.
+    assert {arg.partition("=")[0] for arg in args}.isdisjoint(
+        {"--enable-trace", "--otlp-traces-endpoint"}
+    )
+    default_filter = (
+        "smg=info,smg::observability::events=debug"
+        if json_logs and "--log-level=warn" not in args
+        else None
+    )
+    assert env.get("RUST_LOG") == options.get("env", {}).get("RUST_LOG", default_filter)
+
+
+@pytest.mark.parametrize("log_collection", [False, True])
+@pytest.mark.parametrize(
+    "image",
+    [
+        "mirror.example/team/runner:cuda13.0-vllm0.32.0",
+        "gpustack/runner:cuda13.0-vllm0.31.0",
+        "gpustack/runner:cuda13.0-vllm0.33.0",
+        "mirror.example/team/vllm:custom",
+    ],
+)
+def test_managed_vllm_router_launches_native_tracing(
+    create_custom_workload, monkeypatch, log_collection, image
+):
+    endpoint = "collector:4317"
+    router_args = [
+        "--vllm-pd-disaggregation",
+        "--enable-igw",
+        "--prefill",
+        "http://prefill:8000",
+        "--decode",
+        "http://decode:8000",
+    ]
+    container = create_custom_workload(
+        image=image,
+        arguments=["vllm-router", *router_args],
+        trace_endpoint=endpoint,
+        log_collection=log_collection,
+        env={
+            "OTEL_RESOURCE_ATTRIBUTES": "deployment.environment=qa,gpustack.model_id=1",
+            "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+            "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL": "grpc",
+        },
+        return_container=True,
+    )
+    env = {item.name: item.value for item in container.envs}
+    assert env["OTEL_RESOURCE_ATTRIBUTES"] == (
+        "deployment.environment=qa,gpustack.engine_instance_id=7,"
+        "gpustack.engine_instance_name=test-router,"
+        "gpustack.model_id=42,gpustack.engine_role=router"
+    )
+    execution = container.execution
+    assert execution.args[:2] == ["/bin/sh", "-c"]
+    assert execution.args[4:6] == ["python3", "-c"]
+    script = execution.args[6]
+    assert execution.args[7:] == [endpoint, *router_args]
+
+    parsed_args = SimpleNamespace()
+    launched = []
+
+    def parse_router_args(args):
+        assert args == router_args
+        return parsed_args
+
+    launcher = ModuleType("vllm_router.launch_router")
+    launcher.parse_router_args = parse_router_args
+    launcher.launch_router = launched.append
+    monkeypatch.setitem(sys.modules, launcher.__name__, launcher)
+    monkeypatch.setattr(sys, "argv", ["-c", *execution.args[7:]])
+    exec(script, {})
+    assert launched == [parsed_args]
+    assert vars(parsed_args) == dict(enable_trace=True, otlp_traces_endpoint=endpoint)
+
+
+def test_managed_vllm_router_tracing_falls_back_on_missing_python_entrypoint(
+    create_custom_workload, monkeypatch
+):
+    router_args = ["--vllm-pd-disaggregation", "--enable-igw"]
+    container = create_custom_workload(
+        image="gpustack/runner:cuda13.0-vllm0.32.0",
+        arguments=["vllm-router", *router_args],
+        trace_endpoint="collector:4317",
+        return_container=True,
+    )
+    script = container.execution.args[6]
+    monkeypatch.setattr(sys, "argv", ["-c", *container.execution.args[7:]])
+
+    # Missing Python tracing helper falls back to the plain CLI via execvp.
+    empty_launcher = ModuleType("vllm_router.launch_router")
+    monkeypatch.setitem(sys.modules, empty_launcher.__name__, empty_launcher)
+    exec_calls = []
+
+    class _ExecInvoked(BaseException):
+        pass
+
+    def fake_execvp(file, args):
+        exec_calls.append((file, args))
+        raise _ExecInvoked()
+
+    monkeypatch.setattr("os.execvp", fake_execvp)
+    with pytest.raises(_ExecInvoked):
+        exec(script, {})
+    assert exec_calls == [("vllm-router", ["vllm-router", *router_args])]
+
+    # Unrelated transitive ImportError must propagate rather than silently falling back.
+    broken_dep_launcher = ModuleType("vllm_router.launch_router")
+
+    def _raise_dep_error(_name):
+        raise ImportError("missing transitive dependency", name="some_missing_dep")
+
+    broken_dep_launcher.__getattr__ = _raise_dep_error
+    monkeypatch.setitem(sys.modules, broken_dep_launcher.__name__, broken_dep_launcher)
+    with pytest.raises(ImportError, match="missing transitive dependency"):
+        exec(script, {})
+
+    # Real startup failures inside launch_router must propagate rather than falling back.
+    failing_launcher = ModuleType("vllm_router.launch_router")
+    failing_launcher.parse_router_args = lambda args: SimpleNamespace()
+
+    def fail_launch(_args):
+        raise RuntimeError("router failed to bind")
+
+    failing_launcher.launch_router = fail_launch
+    monkeypatch.setitem(sys.modules, failing_launcher.__name__, failing_launcher)
+    with pytest.raises(RuntimeError, match="router failed to bind"):
+        exec(script, {})
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"trace_endpoint": None},
+        {"deployment_env": {"GPUSTACK_DISABLE_ENGINE_TRACING": "1"}},
+        {"router_command": "vllm-router"},
+        {"command": ["tini", "--"]},
+        {"arguments": ["custom-launcher", "vllm-router"]},
+        {"router_image": "custom/runner:cuda13.0-vllm0.32.0"},
+        {"model_image": "custom/runner:cuda13.0-vllm0.32.0"},
+        {"env": {"PYPI_PACKAGES_INSTALL": "vllm-router==0.1.17"}},
+        {"env": {"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "custom:4317"}},
+        {"env": {"OTEL_EXPORTER_OTLP_ENDPOINT": "custom:4317"}},
+        {"env": {"OTEL_EXPORTER_OTLP_TRACES_PROTOCOL": "http/protobuf"}},
+        {"env": {"OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf"}},
+        {"arguments": ["vllm-router", "--otlp-traces-endpoint=custom:4317"]},
+        {"arguments": ["vllm-router", "--enable-trace"]},
+    ],
+)
+def test_router_retains_existing_command_when_tracing_is_not_injected(
+    create_custom_workload, overrides
+):
+    options = {
+        "image": "gpustack/runner:cuda13.0-vllm0.32.0",
+        "trace_endpoint": "collector:4317",
+        "arguments": ["vllm-router", "--enable-igw"],
+        **overrides,
+    }
+    container = create_custom_workload(**options, return_container=True)
+    assert {item.name: item.value for item in container.envs} == options.get("env", {})
+    execution = container.execution
+    actual_args = (execution.command or []) + execution.args
+    if actual_args[:2] == ["/bin/sh", "-c"]:
+        actual_args = actual_args[4:]
+    assert actual_args == options.get("command", []) + options["arguments"]
 
 
 def test_router_keeps_the_image_entrypoint(create_custom_workload):

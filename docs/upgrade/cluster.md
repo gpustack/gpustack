@@ -32,6 +32,10 @@ docker run -d --name gpustack-worker \
 
     You can obtain an up-to-date `docker run` command for the target version from the GPUStack UI: on the `Clusters` page, open the cluster's `Add Worker` step and copy the generated `Run command`.
 
+### Enable Tracing on Existing Docker Workers
+
+With built-in Tempo enabled on the Server, upgraded Docker Workers automatically forward traces through the authenticated Server API without exposing port `4317`. To send traces to an external receiver instead, add `-e GPUSTACK_TRACE_OTLP_ENDPOINT=<worker-reachable-host>:<port>` when recreating the Worker container, keeping its existing Worker name and data volume to preserve its identity. If you prefer direct OTLP/gRPC ingest into built-in Tempo on a trusted network, set `GPUSTACK_BUILTIN_TEMPO_OTLP_LISTEN_ADDRESS=<private-server-ip>` on a host-networked Server, or set `GPUSTACK_BUILTIN_TEMPO_OTLP_LISTEN_ADDRESS=0.0.0.0` and publish `-p <private-server-ip>:4317:4317` on a Docker bridge network (and set `GPUSTACK_TRACE_ADVERTISE_ENDPOINT` if Workers use a different address or published port).
+
 ## Kubernetes Cluster
 
 Workers in a Kubernetes cluster are deployed as DaemonSets, managed by the GPUStack Operator, from the manifests applied during cluster registration. To upgrade, re-apply the manifests generated for the new version:
@@ -42,6 +46,8 @@ Workers in a Kubernetes cluster are deployed as DaemonSets, managed by the GPUSt
 4. Run the command in an environment where `kubectl` is installed and `kubeconfig` is configured for the target cluster. This re-applies the updated manifests, and the Operator rolls the worker DaemonSets to the new version.
 
 Once the worker pods reach `Ready`, the cluster is running the new version.
+
+For a Worker-only Helm release, reapply the generated registration configuration or set `tracing.endpoint` to the receiver address that the Workers and inference containers can reach. Configure log export separately through `logging.endpoint`. See [Configure Helm](../user-guide/observability.md#configure-helm).
 
 ## Cloud Provider Cluster
 

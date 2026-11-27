@@ -98,6 +98,7 @@ from gpustack.k8s.bootstrap import render_bootstrap
 from gpustack.k8s.chart import chart_available
 from gpustack.k8s.manifest_template import TemplateConfig
 from gpustack.config.config import (
+    worker_trace_endpoint,
     get_global_config,
     get_cluster_image_name,
     has_custom_container_namespace,
@@ -1208,6 +1209,9 @@ def get_registration_from_cluster(
     server_url = get_server_url(request, cluster.server_url)
     env = parse_base_model_to_env_vars(sensitive_registration)
     global_config = get_global_config()
+    trace_endpoint = worker_trace_endpoint(global_config, server_url)
+    if trace_endpoint:
+        env["GPUSTACK_TRACE_OTLP_ENDPOINT"] = trace_endpoint
     is_server_configured_endpoint = cluster.server_url is None or bool(
         global_config
         and global_config.server_external_url

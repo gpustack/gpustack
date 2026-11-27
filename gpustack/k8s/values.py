@@ -231,6 +231,10 @@ def build_chart_values(config: TemplateConfig) -> Dict[str, Any]:
     if data_dir:
         values["worker"]["dataDir"] = data_dir
 
+    trace_endpoint = config.env.get("GPUSTACK_TRACE_OTLP_ENDPOINT")
+    if trace_endpoint:
+        values["tracing"] = {"endpoint": trace_endpoint}
+
     # Explicit even when empty: the chart's default references the canonical
     # Secret it would otherwise create, and with `create: false` that would
     # leave every pod pointing at a Secret nobody made.

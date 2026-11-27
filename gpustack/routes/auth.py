@@ -1042,7 +1042,7 @@ async def validate_cas_ticket(
         f"?ticket={quote(ticket, safe='')}"
         f"&service={quote(service, safe='')}"
     )
-    logger.debug("Validating CAS ticket against %s", validate_url)
+    logger.debug("Validating CAS service ticket")
 
     try:
         response = await client.get(validate_url)
@@ -1050,9 +1050,11 @@ async def validate_cas_ticket(
     except httpx.HTTPStatusError as e:
         raise UnauthorizedException(
             message=f"CAS validation HTTP error: {e.response.status_code}"
-        )
+        ) from None
     except httpx.HTTPError as e:
-        raise UnauthorizedException(message=f"CAS validation request failed: {e}")
+        raise UnauthorizedException(
+            message=f"CAS validation request failed: {type(e).__name__}"
+        ) from None
 
     try:
         # Parse the raw bytes so the XML declaration's ``encoding=``
@@ -1068,16 +1070,26 @@ async def validate_cas_ticket(
         )
         root = etree.fromstring(response.content, parser=parser)
     except etree.XMLSyntaxError as e:
-        raise UnauthorizedException(message=f"Failed to parse CAS response: {e}")
+        line, column = e.position
+        raise UnauthorizedException(
+            message=f"Failed to parse CAS response at line {line}, column {column}"
+        ) from None
 
     success_elem = _cas_find(root, "authenticationSuccess")
     if success_elem is None:
         failure_elem = _cas_find(root, "authenticationFailure")
         if failure_elem is not None:
-            code = failure_elem.get("code", "UNKNOWN")
-            message = (failure_elem.text or "Authentication failed").strip()
+            code = failure_elem.get("code")
+            known_codes = {
+                "INVALID_REQUEST",
+                "INVALID_TICKET",
+                "INVALID_SERVICE",
+                "INTERNAL_ERROR",
+            }
+            # The CAS server's free-form error message can echo the ticket.
+            safe_code = code if code in known_codes else "UNKNOWN"
             raise UnauthorizedException(
-                message=f"CAS authentication failed: {code} - {message}"
+                message=f"CAS authentication failed: {safe_code}"
             )
         raise UnauthorizedException(
             message="CAS authentication failed: invalid response"

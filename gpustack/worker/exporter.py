@@ -17,7 +17,7 @@ from prometheus_client.core import (
 )
 from gpustack.client.generated_clientset import ClientSet
 from gpustack.config.config import Config
-from gpustack.logging import setup_logging
+from gpustack.logging import setup_logging, uvicorn_log_config
 from gpustack.policies.resource_view import compute_worker_allocated
 from gpustack.utils.name import metric_name
 from gpustack.utils.hardware_metrics import (
@@ -654,6 +654,7 @@ class MetricExporter(Collector):
                 port=self._port,
                 access_log=False,
                 log_level="error",
+                log_config=uvicorn_log_config(),
             )
 
             setup_logging()

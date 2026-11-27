@@ -54,6 +54,7 @@ class WorkerManager:
         self._is_embedded = is_embedded
         self._cfg = cfg
         self._collector = collector
+        self.trace_proxy_enabled = False
         worker_token = read_worker_token(self._cfg.data_dir)
         if worker_token:
             self._prepare_clients(worker_token)
@@ -89,6 +90,9 @@ class WorkerManager:
         try:
             worker_registerred = await self._register_worker()
             token = worker_registerred.token
+            self.trace_proxy_enabled = bool(
+                getattr(worker_registerred, "trace_proxy_enabled", False)
+            )
             write_worker_token(self._cfg.data_dir, token)
             self._prepare_clients(token)
             return self._clientset, worker_registerred.worker_config

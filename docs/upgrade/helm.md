@@ -16,6 +16,12 @@ The following upgrade instructions apply only to GPUStack v2.2.0 and later, whic
 
     If you use an external database (`server.externalDatabaseURL`), follow your database provider's backup procedure instead.
 
+## Trace Storage on Helm Upgrades
+
+Built-in Tempo runs in a separate workload. When upgrading a release where Tempo ran in a Server Pod, the new Tempo workload uses its own volume. Helm leaves the old `<data_dir>/tempo` files in the Server data volume. Back up those files separately if you need to retain historical traces.
+
+By default, the new Tempo Pod uses an `emptyDir` and starts with empty trace storage on every Pod replacement. To keep traces across later Pod replacements, set `tracing.tempo.existingClaim` to an existing PVC before upgrading. See [Configure Helm](../user-guide/observability.md#configure-helm).
+
 ## Upgrade the Release
 
 Always pin the target version with `--version <chart-version>` so the upgrade lands on a known, reproducible release (the chart version matches the GPUStack release, e.g. `2.2.0`), and reuse the values you supplied at install time by passing the same `-f values.yaml` (and/or `--set`) flags you used originally, or `--reuse-values` to keep the previously applied values. The release name depends on the documentation you followed at install time — older instructions used `gpustack`, current ones use `gpustack-server` — so the snippet below derives it from the `meta.helm.sh/release-name` annotations on the namespace's StatefulSets (worker-only releases registered through GPUStack clusters own no StatefulSet and are excluded by the pattern) and only runs the upgrade when exactly one matching release is found:

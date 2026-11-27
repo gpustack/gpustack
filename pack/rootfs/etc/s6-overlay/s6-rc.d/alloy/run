@@ -1,0 +1,17 @@
+#!/command/with-contenv /bin/sh
+# shellcheck shell=sh
+set -eu
+logging_dir="${GPUSTACK_RUN_DIR:-/run/gpustack}/logging"
+storage_path="$(cat "${logging_dir}/storage-path")"
+# Alloy needs a concrete port to initialize memberlist even without peers.
+port="$(python3 - <<'PY'
+import socket
+
+with socket.socket() as listener:
+    listener.bind(("127.0.0.1", 0))
+    print(listener.getsockname()[1])
+PY
+)"
+exec /usr/local/bin/alloy run --disable-reporting --stability.level=public-preview \
+    --server.http.listen-addr="127.0.0.1:${port}" --storage.path="${storage_path}" \
+    "${logging_dir}/config.alloy"

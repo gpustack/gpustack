@@ -5,10 +5,14 @@ import logging
 from pathlib import Path
 from shutil import move
 from typing import List, Dict
+
 from gpustack.config.config import Config
 from gpustack.schemas.config import GatewayModeEnum
 from gpustack.envs import MIGRATION_DATA_DIR, DATA_MIGRATION
 from gpustack.logging import setup_logging
+from gpustack.gateway.embedded_config import prepare_gateway_config
+from gpustack.observability.alloy import prepare_log_collection
+from gpustack.observability.tempo import prepare_builtin_tempo
 from gpustack.cmd.start import (
     start_cmd_options,
     parse_args,
@@ -25,6 +29,8 @@ from gpustack.utils.s6_services import (
     postgres_services,
     migration_services,
     observability_services,
+    log_collection_services,
+    trace_storage_services,
     all_services,
     gpustack_service_name,
 )
@@ -57,7 +63,11 @@ def run(args: argparse.Namespace):
             "Starting pre-run checks and setup s6-overlay configuration for GPUStack..."
         )
         s6_base_path = args.s6_base_path or "/etc/s6-overlay/s6-rc.d"
-        enabled_services = determine_enabled_services(cfg)
+        logs_active = prepare_log_collection(cfg)
+        tempo_active = prepare_builtin_tempo(cfg)
+        enabled_services = determine_enabled_services(
+            cfg, logs_active=logs_active, tempo_active=tempo_active
+        )
         # migrate hardcode postgres data dir if needed for determining dependency services
         migrate_hardcode_postgres_data_and_password(cfg, enabled_services)
         dependency_services = determine_dependency_services(cfg)
@@ -74,7 +84,9 @@ def run(args: argparse.Namespace):
         if "postgres" in enabled_services:
             prepare_postgres_config(cfg)
         if cfg.gateway_mode == GatewayModeEnum.embedded:
-            prepare_gateway_config(cfg)
+            prepare_gateway_config(
+                cfg, prepare_env("GPUSTACK_GATEWAY_CONFIG", "gateway")
+            )
         if use_builtin_grafana(cfg):
             prepare_observability_config(cfg)
         logger.info("Pre-run checks and setup completed successfully.")
@@ -115,6 +127,9 @@ def ports_for_services(cfg: Config) -> Dict[int, str]:
     if not gateway_disabled:
         ports[cfg.api_port] = gpustack_service_name
 
+    if cfg.use_builtin_tempo():
+        trace_storage_services.set_ports(cfg, ports)
+
     return ports
 
 
@@ -122,10 +137,11 @@ def check_ports_availability(cfg: Config, *services: str):
     # Implement port availability checks here
     all_services = list(services) + [gpustack_service_name]
     ports = ports_for_services(cfg)
+    # Tempo's longrun waits for occupied ports without blocking the Server.
     ports_to_check = {
         port: service
         for port, service in ports.items()
-        if not all_services or service in all_services
+        if service in all_services and service not in trace_storage_services.services
     }
     should_fail = False
     for port, service in ports_to_check.items():
@@ -232,42 +248,6 @@ def prepare_postgres_config(cfg: Config):
 
 def get_migration_done_file(cfg: Config) -> Path:
     return Path(cfg.data_dir) / "run" / "state_migration_done"
-
-
-def prepare_gateway_config(cfg: Config):
-    # prepare gateway dirs
-    config_path = prepare_env("GPUSTACK_GATEWAY_CONFIG", "gateway")
-    higress_embedded_kubeconfig = Path(cfg.higress_base_dir()) / "kubeconfig"
-
-    if cfg.gateway_mode == GatewayModeEnum.embedded:
-        with open(config_path, "w") as f:
-            f.write(f"DATA_DIR={cfg.data_dir}\n")
-            f.write(f"LOG_DIR={cfg.log_dir}\n")
-            f.write(f"GATEWAY_HTTP_PORT={cfg.get_gateway_port()}\n")
-            f.write(f"GATEWAY_HTTPS_PORT={cfg.tls_port}\n")
-            f.write(f"GATEWAY_CONCURRENCY={cfg.gateway_concurrency}\n")
-            f.write(f"GPUSTACK_API_PORT={cfg.get_api_port()}\n")
-            f.write(f"EMBEDDED_KUBECONFIG_PATH={higress_embedded_kubeconfig}\n")
-        with open(higress_embedded_kubeconfig, "w") as f:
-            f.write(
-                f"""apiVersion: v1
-kind: Config
-clusters:
-  - name: higress
-    cluster:
-      server: https://127.0.0.1:{os.getenv('APISERVER_PORT', '18443')}
-      insecure-skip-tls-verify: true
-users:
-  - name: higress-admin
-    user: {{}}
-contexts:
-  - name: higress
-    context:
-      cluster: higress
-      user: higress-admin
-current-context: higress
-"""
-            )
 
 
 def prepare_observability_config(cfg: Config):
@@ -400,7 +380,9 @@ datasources:
     )
 
 
-def determine_enabled_services(cfg: Config) -> List[str]:
+def determine_enabled_services(
+    cfg: Config, logs_active: bool = False, tempo_active: bool = False
+) -> List[str]:
     services = []
     # embedded database
     if cfg.database_url is None and cfg.server_role() in [
@@ -416,6 +398,10 @@ def determine_enabled_services(cfg: Config) -> List[str]:
     # embedded observability
     if use_builtin_grafana(cfg):
         services.extend(observability_services.all_services())
+    if logs_active:
+        services.extend(log_collection_services.all_services())
+    if tempo_active:
+        services.extend(trace_storage_services.all_services())
 
     return services
 

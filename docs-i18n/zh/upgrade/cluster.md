@@ -32,6 +32,10 @@ docker run -d --name gpustack-worker \
 
     可以从 GPUStack UI 获取目标版本的最新 `docker run` 命令：在 `Clusters` 页面打开集群的 `Add Worker` 步骤，复制生成的 `Run command`。
 
+### 为现有 Docker Worker 启用追踪 { #enable-tracing-on-existing-docker-workers }
+
+当 Server 启用内置 Tempo 时，升级后的 Docker Worker 会自动通过已认证的 Server API 转发追踪数据，无需暴露 `4317` 端口。若需改为将追踪发送到外部接收端，请在重新创建 Worker 容器时添加 `-e GPUSTACK_TRACE_OTLP_ENDPOINT=<worker-reachable-host>:<port>`，并保留原有 Worker 名称和数据卷以维持其身份。如果希望在可信网络中通过 OTLP/gRPC 直接写入内置 Tempo，请在使用宿主机网络的 Server 上设置 `GPUSTACK_BUILTIN_TEMPO_OTLP_LISTEN_ADDRESS=<private-server-ip>`，或在 Docker 桥接网络中设置 `GPUSTACK_BUILTIN_TEMPO_OTLP_LISTEN_ADDRESS=0.0.0.0` 并发布 `-p <private-server-ip>:4317:4317`（若 Worker 使用不同的地址或发布端口，再设置 `GPUSTACK_TRACE_ADVERTISE_ENDPOINT`）。
+
 ## Kubernetes 集群 { #kubernetes-cluster }
 
 Kubernetes 集群中的 Worker 部署为 DaemonSet，由 GPUStack Operator 管理，来自集群注册时应用的清单。如需升级，请重新应用为新版本生成的清单：
@@ -42,6 +46,8 @@ Kubernetes 集群中的 Worker 部署为 DaemonSet，由 GPUStack Operator 管�
 4. 在已安装 `kubectl` 且 `kubeconfig` 配置为目标集群的环境中运行该命令。此操作重新应用更新后的清单，Operator 将 Worker DaemonSet 滚动更新到新版本。
 
 Worker Pod 达到 `Ready` 状态后，集群即运行新版本。
+
+对于仅部署 Worker 的 Helm release，请重新应用生成的注册配置，或将 `tracing.endpoint` 设为 Worker 和推理容器均可访问的接收端地址。通过 `logging.endpoint` 单独配置日志上报。参见[配置 Helm](../user-guide/observability.md#configure-helm)。
 
 ## 云提供方集群 { #cloud-provider-cluster }
 

@@ -16,6 +16,12 @@
 
     如果使用外部数据库（`server.externalDatabaseURL`），请改用数据库提供方的备份流程。
 
+## Helm 升级中的追踪存储 { #trace-storage-on-helm-upgrades }
+
+内置 Tempo 作为独立工作负载运行。升级原先在 Server Pod 内运行 Tempo 的 release 时，新 Tempo 工作负载会使用自己的存储卷。Helm 将旧的 `<data_dir>/tempo` 文件留在 Server 数据卷上。若需保留历史 Trace，请单独备份这些文件。
+
+新 Tempo Pod 默认使用 `emptyDir`，每次替换 Pod 时都会从空的追踪存储开始。若要在后续替换 Pod 时保留 Trace，请在升级前将 `tracing.tempo.existingClaim` 设为已有的 PVC。参见[配置 Helm](../user-guide/observability.md#configure-helm)。
+
 ## 升级 Release { #upgrade-the-release }
 
 始终通过 `--version <chart-version>` 固定目标版本，以确保升级到已知且可重复部署的版本（Chart 版本与 GPUStack 发布版本对应，例如 `2.2.0`），并通过传入安装时使用的相同 `-f values.yaml` 和/或 `--set` 参数复用配置，也可以使用 `--reuse-values` 保留之前应用的值。release 名称取决于安装时遵循的文档——旧版文档使用 `gpustack`，当前文档使用 `gpustack-server`——因此下面的命令会从命名空间内各 StatefulSet 的 `meta.helm.sh/release-name` 注解中自动推导该名称（通过 GPUStack 集群注册产生的 worker-only release 不拥有 StatefulSet，会被匹配模式排除），且只有在恰好找到一个匹配的 release 时才会执行升级：

@@ -20,7 +20,7 @@ def test_memory_profiling_is_independent_of_debug(
     monkeypatch.setattr(start, "parse_args", lambda args: cfg)
     for name in (
         "export_insecure_tls_env",
-        "setup_logging",
+        "setup_application_logging",
         "debug_env_info",
         "set_third_party_env",
         "initialize_gateway",
@@ -90,7 +90,9 @@ def _probe_spawned_worker(connection, debug):
     try:
         # Exercise the worker entry point without starting hardware or network services.
         with patch.object(start, "Worker", ProbeWorker):
-            start.run_worker(SimpleNamespace(debug=debug, server_url=None))
+            start.run_worker(
+                SimpleNamespace(debug=debug, server_url=None, log_otlp_endpoint=None)
+            )
     finally:
         connection.close()
 

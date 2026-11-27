@@ -88,6 +88,18 @@ observability_services = S6Services(
     S6Service("prometheus", ["builtin_prometheus_port"]),
     support_pipeline=True,
 )
+log_collection_services = S6Services(S6Service("alloy"))
+trace_storage_services = S6Services(
+    S6Service(
+        "tempo",
+        [
+            "builtin_tempo_otlp_port",
+            "builtin_tempo_otlp_http_port",
+            "builtin_tempo_http_port",
+            "builtin_tempo_grpc_port",
+        ],
+    )
+)
 
 
 def all_services() -> List[str]:
@@ -96,6 +108,8 @@ def all_services() -> List[str]:
         *postgres_services.all_services(),
         *migration_services.all_services(),
         *observability_services.all_services(),
+        *log_collection_services.all_services(),
+        *trace_storage_services.all_services(),
     ]
 
 

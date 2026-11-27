@@ -1,0 +1,39 @@
+import.file "gpustack" {
+  filename = "/etc/gpustack/logging/common.alloy"
+}
+
+gpustack.logs "export" {
+  endpoint = ${endpoint}
+  headers = ${headers}
+  ca_file = ${ca_file}
+}
+
+otelcol.storage.file "offsets" {
+  directory = ${offsets}
+}
+
+${application_receiver}
+
+${higress_receiver}
+
+otelcol.receiver.filelog "engine" {
+  include = ${engine}
+  start_at = "beginning"
+  include_file_path = true
+  storage = otelcol.storage.file.offsets.handler
+
+  multiline {
+    line_start_pattern = `^(?:\[[0-9]{4}-[0-9]{2}-[0-9]{2} |(?:\([^)]*\) )?(?:TRACE|DEBUG|INFO|WARNING|WARN|ERROR|CRITICAL)[: ]|\{\s*"|(?:\x1b\[[0-9;]*m)*[0-9]{4}-[0-9]{2}-[0-9]{2} [^\r\n]*Generated vLLM request ID)`
+  }
+
+  operators = [{
+    type = "regex_parser",
+    parse_from = `attributes["log.file.path"]`,
+    on_error = "drop",
+    regex = `/engine-export/archives/(?P<cluster_id>[0-9]+)\.(?P<worker_id>[0-9]+)\.(?P<model_id>[0-9]+)\.(?P<model_instance_id>[0-9]+)\.(?P<restart_count>[0-9]+)\.(?P<role>[A-Za-z0-9_-]+)\.[0-9]+/container(?:\.workload-[0-9a-f]{64})?\.log(?:\.[0-9]+)?$$`,
+  }]
+
+  output {
+    logs = [gpustack.logs.export.engine]
+  }
+}

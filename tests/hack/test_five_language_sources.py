@@ -10,7 +10,6 @@ import yaml
 
 from hack import mkdocs_i18n as i18n
 
-
 ROOT = Path(__file__).resolve().parents[2]
 PAGES = sorted(
     path.relative_to(ROOT / "docs") for path in (ROOT / "docs").rglob("*.md")
@@ -50,7 +49,6 @@ def test_translated_document_contract(language, relative):
     if relative.as_posix() == "index.md":
         assert translated == english
         return
-    assert body(translated) != body(english)
     assert not re.search(r"⟪\d+⟫|⟦\d+⟧", translated)
     metadata = (
         yaml.safe_load(translated.split("---", 2)[1])
@@ -61,6 +59,11 @@ def test_translated_document_contract(language, relative):
         assert not metadata, "auto-appended snippets must not contain page metadata"
     else:
         assert metadata.get("translation_status") == "translated"
+    assert_translated_content(english, translated)
+
+
+def assert_translated_content(english, translated):
+    assert body(translated) != body(english)
     assert code_blocks(english) == code_blocks(translated)
     english_prose = body(english)
     translated_prose = body(translated)
@@ -79,6 +82,72 @@ def test_translated_document_contract(language, relative):
     assert heading_ids(english) == heading_ids(translated)
     destinations = r'\]\(([^)]+)\)|(?:href|src)=["\']([^"\']+)["\']'
     assert re.findall(destinations, english) == re.findall(destinations, translated)
+
+
+@pytest.mark.parametrize("language", ["zh", "ja"])
+@pytest.mark.parametrize(
+    "relative, title, anchor",
+    [
+        (
+            "user-guide/observability.md",
+            "Inference Logs and Traces",
+            "inference-logs-and-traces",
+        ),
+        (
+            "environment-variables.md",
+            "Inference Observability Configuration",
+            "inference-observability-configuration",
+        ),
+        (
+            "environment-variables.md",
+            "Trace Storage Configuration",
+            "trace-storage-configuration",
+        ),
+        (
+            "upgrade/cluster.md",
+            "Enable Tracing on Existing Docker Workers",
+            "enable-tracing-on-existing-docker-workers",
+        ),
+        ("upgrade/cluster.md", "Kubernetes Cluster", "kubernetes-cluster"),
+        (
+            "upgrade/helm.md",
+            "Trace Storage on Helm Upgrades",
+            "trace-storage-on-helm-upgrades",
+        ),
+    ],
+)
+def test_inference_observability_sections(language, relative, title, anchor):
+    def section(source, heading):
+        start = re.search(rf"^(#+) {heading}$", source, re.M)
+        assert start, f"Missing section: {anchor}"
+        remainder = source[start.end() :]
+        next_heading = re.search(rf"^#{{1,{len(start[1])}}} ", remainder, re.M)
+        return start[0] + remainder[: next_heading.start() if next_heading else None]
+
+    english = (ROOT / "docs" / relative).read_text()
+    translated = (ROOT / f"docs-i18n/{language}" / relative).read_text()
+    assert_translated_content(
+        section(english, re.escape(title)),
+        section(translated, rf"[^\n]+ {{ #{re.escape(anchor)} }}"),
+    )
+
+
+@pytest.mark.parametrize("language", ["zh", "ja"])
+def test_inference_observability_cli_options(language):
+    def options(source):
+        return re.findall(
+            r"^\| `--(?:disable-tracing|trace-otlp-endpoint|log-otlp-endpoint|"
+            r"trace-query-url)`[^\n]*$",
+            source,
+            re.M,
+        )
+
+    english = options((ROOT / "docs/cli-reference/start.md").read_text())
+    translated = options(
+        (ROOT / f"docs-i18n/{language}/cli-reference/start.md").read_text()
+    )
+    assert len(english) == len(translated) == 4
+    assert_translated_content("\n".join(english), "\n".join(translated))
 
 
 @pytest.mark.parametrize("language", ["en", "zh", "ja", "ru", "tr"])

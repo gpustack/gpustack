@@ -117,3 +117,7 @@ class StreamingResponseWithStatusCode(StreamingResponse):
                     "more_body": False,
                 }
             )
+        finally:
+            close = getattr(self.body_iterator, "aclose", None)
+            if close is not None:
+                await close()

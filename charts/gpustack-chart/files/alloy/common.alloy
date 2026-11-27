@@ -1,0 +1,282 @@
+// The file and Pod readers normalize transport metadata before forwarding here.
+declare "vllm_pd" {
+  export "coordinator_id_pattern" {
+    value = `(?P<pd_coordinator_id>___prefill_addr_[A-Za-z0-9_.:\\[\\]-]{1,256}___decode_addr_[A-Za-z0-9_.:\\[\\]-]{1,256}_[0-9a-fA-F]{32})`
+  }
+}
+
+declare "logs" {
+  vllm_pd "ids" {}
+
+  argument "endpoint" {
+    optional = false
+  }
+
+  argument "headers" {
+    optional = false
+  }
+
+  argument "ca_file" {
+    optional = false
+  }
+
+  argument "redact_pattern" {
+    optional = true
+    // Scope each rule's flags. With no rules, a word boundary and its
+    // negation cannot both match.
+    default = "(?:" + coalesce(
+      string.join(encoding.from_json(coalesce(sys.env("GPUSTACK_LOG_REDACT_PATTERNS"), "[]")), ")|(?:"),
+      `\A\b\B`,
+    ) + ")"
+  }
+
+  export "application" {
+    value = otelcol.processor.transform.application.input
+  }
+
+  export "higress" {
+    value = otelcol.processor.transform.higress.input
+  }
+
+  export "engine" {
+    value = otelcol.processor.filter.engine_format.input
+  }
+
+  otelcol.processor.transform "redact" {
+    error_mode = "propagate"
+
+    log_statements {
+      context = "log"
+      conditions = [string.format(`not IsMatch("", %q)`, argument.redact_pattern.value)]
+      statements = [
+        string.format(`replace_pattern(log.body, %q, "***") where IsString(log.body)`, argument.redact_pattern.value),
+        string.format(`replace_pattern(log.attributes["exception.stacktrace"], %q, "***") where IsString(log.attributes["exception.stacktrace"])`, argument.redact_pattern.value),
+        string.format(`replace_pattern(log.attributes["path"], %q, "***") where IsString(log.attributes["path"])`, argument.redact_pattern.value),
+      ]
+    }
+
+    log_statements {
+      context = "log"
+      conditions = [string.format(`IsMatch("", %q)`, argument.redact_pattern.value)]
+      statements = [
+        `set(log.body, "Log text omitted because a redaction pattern matches the empty string")`,
+        `delete_key(log.attributes, "exception.stacktrace")`,
+        `delete_key(log.attributes, "path")`,
+      ]
+    }
+
+    output {
+      logs = [otelcol.exporter.otlphttp.logs.input]
+    }
+  }
+
+  otelcol.exporter.otlphttp "logs" {
+    logs_endpoint = argument.endpoint.value
+
+    client {
+      endpoint = argument.endpoint.value
+      headers = argument.headers.value
+
+      tls {
+        ca_file = argument.ca_file.value
+      }
+    }
+
+    sending_queue {
+      sizer = "bytes"
+      queue_size = 16777216
+    }
+
+    retry_on_failure {
+      max_elapsed_time = "300s"
+    }
+  }
+
+  otelcol.processor.transform "application" {
+    error_mode = "ignore"
+
+    statements {
+      log = [
+        `set(log.cache["json"], ParseJSON(log.body)) where IsString(log.body) and IsMatch(log.body, "^[[:space:]]*[{]")`,
+        `merge_maps(log.attributes, log.cache["json"], "upsert") where IsMap(log.cache["json"])`,
+        `set(log.attributes["service.name"], log.attributes["service"]) where log.attributes["service"] == "gpustack.server" or log.attributes["service"] == "gpustack.worker"`,
+        `set(log.time, Time(log.attributes["timestamp"], "%Y-%m-%dT%H:%M:%S.%f%j")) where IsString(log.attributes["timestamp"])`,
+        `set(log.severity_text, log.attributes["severity"]) where IsString(log.attributes["severity"])`,
+        `set(log.severity_number, SEVERITY_NUMBER_TRACE) where log.severity_text == "TRACE"`,
+        `set(log.severity_number, SEVERITY_NUMBER_DEBUG) where log.severity_text == "DEBUG"`,
+        `set(log.severity_number, SEVERITY_NUMBER_INFO) where log.severity_text == "INFO"`,
+        `set(log.severity_number, SEVERITY_NUMBER_WARN) where log.severity_text == "WARNING"`,
+        `set(log.severity_number, SEVERITY_NUMBER_ERROR) where log.severity_text == "ERROR"`,
+        `set(log.severity_number, SEVERITY_NUMBER_FATAL) where log.severity_text == "CRITICAL"`,
+        `set(log.body, log.attributes["message"]) where IsString(log.attributes["message"])`,
+        `set(log.attributes["exception.stacktrace"], log.attributes["exception"]) where IsString(log.attributes["exception"])`,
+        `keep_keys(log.attributes, ["service.name", "timestamp", "severity", "trace_id", "span_id", "trace_flags", "request_id", "pd_coordinator_id", "logger", "exception.stacktrace", "cluster_id", "worker_id", "worker_name", "model_id", "model_route_id", "model_instance_id", "owner_principal_id", "restart_count", "method", "path", "response_code", "duration"])`,
+        `set(log.trace_id, TraceID(log.attributes["trace_id"])) where IsString(log.attributes["trace_id"]) and IsMatch(log.attributes["trace_id"], "^[0-9a-fA-F]{32}$")`,
+        `set(log.span_id, SpanID(log.attributes["span_id"])) where IsString(log.attributes["span_id"]) and IsMatch(log.attributes["span_id"], "^[0-9a-fA-F]{16}$")`,
+        `set(log.flags, log.attributes["trace_flags"]) where IsInt(log.attributes["trace_flags"]) and log.attributes["trace_flags"] >= 0 and log.attributes["trace_flags"] <= 255`,
+        `delete_key(log.attributes, "timestamp")`,
+        `delete_key(log.attributes, "severity")`,
+        `delete_key(log.attributes, "trace_id")`,
+        `delete_key(log.attributes, "span_id")`,
+        `delete_key(log.attributes, "trace_flags")`,
+      ]
+    }
+
+    output {
+      logs = [otelcol.processor.filter.application.input]
+    }
+  }
+
+  otelcol.processor.filter "application" {
+    error_mode = "ignore"
+
+    log_conditions {
+      context = "log"
+      conditions = [
+        `log.attributes["service.name"] != "gpustack.server" and log.attributes["service.name"] != "gpustack.worker"`,
+      ]
+    }
+
+    output {
+      logs = [otelcol.processor.groupbyattrs.application.input]
+    }
+  }
+
+  otelcol.processor.groupbyattrs "application" {
+    keys = ["service.name"]
+
+    output {
+      logs = [otelcol.processor.transform.redact.input]
+    }
+  }
+
+  otelcol.processor.transform "higress" {
+    error_mode = "ignore"
+
+    statements {
+      log = [
+        `set(log.cache["json"], ParseJSON(log.body)) where IsString(log.body) and IsMatch(log.body, "^[[:space:]]*[{]")`,
+        `merge_maps(log.attributes, log.cache["json"], "upsert") where IsMap(log.cache["json"])`,
+        `set(resource.attributes["service.name"], "higress")`,
+        `set(log.time, Time(log.attributes["start_time"], "%Y-%m-%dT%H:%M:%S.%LZ", "UTC")) where IsString(log.attributes["start_time"])`,
+        `set(log.time_unix_nano, log.observed_time_unix_nano) where log.time_unix_nano == 0`,
+        `merge_maps(log.cache, ExtractPatterns(log.attributes["traceparent"], "^00-(?P<trace_id>[0-9a-f]{32})-(?P<propagated_span_id>[0-9a-f]{16})-01$"), "upsert") where IsString(log.attributes["traceparent"]) and IsString(log.attributes["upstream_host"]) and log.attributes["upstream_host"] != "-"`,
+        `set(log.trace_id, TraceID(log.cache["trace_id"])) where IsString(log.cache["trace_id"]) and log.cache["trace_id"] != "00000000000000000000000000000000" and log.cache["propagated_span_id"] != "0000000000000000"`,
+        `set(log.body, "Higress access log")`,
+        `delete_key(log.attributes, "pd_coordinator_id")`,
+        `set(log.cache["ai_log_json"], log.attributes["ai_log"]) where (log.attributes["response_code"] == 200 or log.attributes["response_code"] == "200") and IsString(log.attributes["ai_log"]) and IsMatch(log.attributes["ai_log"], "___prefill_addr_")`,
+        `set(log.cache["ai_log_json"], ParseJSON(Concat(["[\"", log.cache["ai_log_json"], "\"]"], ""))[0]) where IsString(log.cache["ai_log_json"]) and HasPrefix(log.cache["ai_log_json"], "{\\\"")`,
+        `set(log.cache["ai_log"], ParseJSON(log.cache["ai_log_json"])) where IsString(log.cache["ai_log_json"])`,
+        `set(log.cache["ai_log"], log.attributes["ai_log"]) where (log.attributes["response_code"] == 200 or log.attributes["response_code"] == "200") and IsMap(log.attributes["ai_log"])`,
+        string.format(`merge_maps(log.attributes, ExtractPatterns(log.cache["ai_log"]["chat_id"], "^(?:chatcmpl-|cmpl-)%s$"), "upsert") where IsString(log.cache["ai_log"]["chat_id"])`, vllm_pd.ids.coordinator_id_pattern),
+        `keep_keys(log.attributes, ["request_id", "pd_coordinator_id", "method", "path", "response_code", "duration", "response_flags", "upstream_cluster", "upstream_host"])`,
+        `set(log.attributes["request_id_missing"], true) where not IsString(log.attributes["request_id"]) or log.attributes["request_id"] == "" or log.attributes["request_id"] == "-"`,
+        `set(log.attributes["path"], Split(log.attributes["path"], "?")[0]) where IsString(log.attributes["path"])`,
+        `set(log.body, Concat([log.attributes["method"], log.attributes["path"], String(log.attributes["response_code"])], " ")) where IsString(log.attributes["method"]) and IsString(log.attributes["path"]) and (IsString(log.attributes["response_code"]) or IsInt(log.attributes["response_code"]))`,
+      ]
+    }
+
+    output {
+      logs = [otelcol.processor.filter.higress_format.input]
+    }
+  }
+
+  otelcol.processor.filter "higress_format" {
+    error_mode = "ignore"
+
+    log_conditions {
+      conditions = [`not IsString(log.attributes["path"])`]
+    }
+
+    output {
+      logs = [otelcol.processor.filter.higress.input]
+    }
+  }
+
+  otelcol.processor.filter "higress" {
+    error_mode = "ignore"
+
+    log_conditions {
+      context = "log"
+      conditions = [
+        `IsMatch(log.attributes["path"], "^/(healthz|livez|readyz|metrics)([/?]|$)")`,
+      ]
+    }
+
+    output {
+      logs = [otelcol.processor.transform.redact.input]
+    }
+  }
+
+  otelcol.processor.filter "engine_format" {
+    error_mode = "ignore"
+
+    log_conditions {
+      context = "log"
+      conditions = [
+        `not (IsMatch(log.body, "^([[][0-9]{4}-[0-9]{2}-[0-9]{2} |([(][^)]*[)] )?(TRACE|DEBUG|INFO|WARNING|WARN|ERROR|CRITICAL)[: ]|[{][[:space:]]*\")") or (log.attributes["role"] == "router" and IsMatch(log.body, "Generated vLLM request ID")))`,
+      ]
+    }
+
+    output {
+      logs = [otelcol.processor.filter.engine.input]
+    }
+  }
+
+  otelcol.processor.filter "engine" {
+    error_mode = "ignore"
+
+    log_conditions {
+      context = "log"
+      conditions = [
+        `IsMatch(log.body, "Received request |Generated response |details: prompt:|details: output_token_ids:| JSON body:|Receive: obj=|Receive OpenAI: obj=|Finish: obj=")`,
+      ]
+    }
+
+    output {
+      logs = [otelcol.processor.transform.engine.input]
+    }
+  }
+
+  otelcol.processor.transform "engine" {
+    error_mode = "ignore"
+
+    statements {
+      log = [
+        `set(resource.attributes["service.name"], "gpustack.engine")`,
+        `set(log.time_unix_nano, log.observed_time_unix_nano) where log.time_unix_nano == 0`,
+        `merge_maps(log.attributes, ExtractPatterns(log.body, "^(?:\\([^)]*\\) )?INFO\\s+[^\\r\\n]*?\\sAdded request (?P<engine_request_id>[A-Za-z0-9_.:-]{1,256})\\.(?:\\r?\\n|$)"), "upsert") where IsMatch(log.body, "Added request ")`,
+        `merge_maps(log.attributes, ExtractPatterns(log.attributes["engine_request_id"], "^(?:[0-9]+_)?(?:[A-Za-z]+-)?(?P<request_id>[0-9a-fA-F]{32}|[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})(?:-[0-9a-fA-F]{8})?$"), "upsert") where IsString(log.attributes["engine_request_id"])`,
+        string.format(`merge_maps(log.attributes, ExtractPatterns(log.body, "^(?:\\([^)]*\\) )?INFO\\s+[^\\r\\n]*?\\sAdded request (?P<engine_request_id>(?:[0-9]+_)?(?:chatcmpl-|cmpl-)?%s(?:_[0-9]+)?(?:-[0-9a-fA-F]{8})?)\\.(?:\\r?\\n|$)"), "upsert") where (log.attributes["role"] == "prefill" or log.attributes["role"] == "decode") and IsMatch(log.body, "___prefill_addr_")`, vllm_pd.ids.coordinator_id_pattern),
+        string.format(`merge_maps(log.attributes, ExtractPatterns(log.body, "^(?:\\x1b\\[[0-9;]*m)*[0-9]{4}-[0-9]{2}-[0-9]{2} [^\\r\\n]*vllm_router_rs::routers::http::vllm_pd_router[^\\r\\n]*Generated vLLM request ID(?: for P2P coordination)?: %s(?:\\x1b\\[[0-9;]*m)*(?:\\r?\\n|$)"), "upsert") where log.attributes["role"] == "router" and IsMatch(log.body, "Generated vLLM request ID")`, vllm_pd.ids.coordinator_id_pattern),
+        `set(log.cache["sglang_request"], IsMatch(log.body, "\"event\"[[:space:]]*:[[:space:]]*\"request[.](received([.]openai)?|finished)\""))`,
+        `set(log.cache["engine_json"], ExtractPatterns(log.body, "^(?:\\[[^\\r\\n\\]]+\\] )?(?P<engine_json>\\{[^\\r\\n]+\\})")["engine_json"]) where log.cache["sglang_request"] == true`,
+        // ParseJSON converts numbers to float64. Keep the full bootstrap room ID.
+        `replace_pattern(log.cache["engine_json"], "(\"bootstrap_room\"\\s*:\\s*)([0-9]{1,20})(\\s*[,}])", "$1\"$2\"$3") where IsString(log.cache["engine_json"])`,
+        `set(log.cache["engine_record"], ParseJSON(log.cache["engine_json"])) where IsString(log.cache["engine_json"])`,
+        `set(log.body, "SGLang request event") where log.cache["sglang_request"] == true`,
+        `set(log.cache["sglang_router"], true) where log.attributes["role"] == "router" and IsMatch(log.body, "\"target\"[[:space:]]*:[[:space:]]*\"smg(::[^\"]+)?\"")`,
+        `set(log.cache["router_record"], ParseJSON(log.body)) where log.cache["sglang_router"] == true`,
+        `set(log.body, "SGLang Router log") where log.cache["sglang_router"] == true`,
+        `delete_key(log.attributes, "log.file.path")`,
+        `set(log.body, "vLLM Router generated PD request ID") where log.attributes["role"] == "router" and log.attributes["pd_coordinator_id"] != nil`,
+        `set(log.body, log.cache["engine_record"]["event"]) where IsString(log.cache["engine_record"]["event"]) and IsMatch(log.cache["engine_record"]["event"], "^request[.](received([.]openai)?|finished)$")`,
+        `set(log.attributes["engine_request_id"], log.cache["engine_record"]["rid"]) where IsString(log.cache["engine_record"]["rid"]) and IsMatch(log.cache["engine_record"]["rid"], "^[A-Za-z0-9_.:-]{1,256}$")`,
+        `set(log.attributes["request_id"], log.cache["engine_record"]["headers"]["x-request-id"]) where IsString(log.cache["engine_record"]["headers"]["x-request-id"]) and IsMatch(log.cache["engine_record"]["headers"]["x-request-id"], "^[0-9a-fA-F]{32}$|^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$")`,
+        `set(log.attributes["pd_attempt_id"], log.cache["engine_record"]["obj"]["bootstrap_room"]) where (log.attributes["role"] == "prefill" or log.attributes["role"] == "decode") and log.attributes["request_id"] != nil and IsString(log.cache["engine_record"]["obj"]["bootstrap_room"]) and IsMatch(log.cache["engine_record"]["obj"]["bootstrap_room"], "^[0-9]{1,20}$")`,
+        `set(log.body, log.cache["router_record"]["message"]) where IsString(log.cache["router_record"]["message"]) and log.cache["router_record"]["span"] == nil and log.cache["router_record"]["spans"] == nil`,
+        `set(log.attributes["request_id"], log.cache["router_record"]["span"]["request_id"]) where log.cache["router_record"]["span"]["name"] == "http_request" and log.cache["router_record"]["span"]["method"] == "POST" and IsString(log.cache["router_record"]["span"]["request_id"]) and IsMatch(log.cache["router_record"]["span"]["request_id"], "^[0-9a-fA-F]{32}$|^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$")`,
+        `set(log.body, log.cache["router_record"]["message"]) where log.attributes["request_id"] != nil and IsString(log.cache["router_record"]["message"]) and IsMatch(log.cache["router_record"]["message"], "^(started processing request|finished processing request|request failed with (client|server) error|Sending concurrent requests|Received concurrent requests)$")`,
+        `set(log.attributes["response_code"], Int(log.cache["router_record"]["span"]["status_code"])) where log.attributes["request_id"] != nil and IsDouble(log.cache["router_record"]["span"]["status_code"]) and log.cache["router_record"]["span"]["status_code"] >= 100 and log.cache["router_record"]["span"]["status_code"] <= 599`,
+        `set(log.attributes["prefill_endpoint"], log.cache["router_record"]["prefill_url"]) where log.cache["router_record"]["message"] == "Sending concurrent requests" and log.attributes["request_id"] != nil and IsString(log.cache["router_record"]["prefill_url"]) and IsMatch(log.cache["router_record"]["prefill_url"], "^https?://([a-zA-Z0-9.-]+|[[][a-fA-F0-9:]+[]]):[0-9]{1,5}$")`,
+        `set(log.attributes["decode_endpoint"], log.cache["router_record"]["decode_url"]) where log.cache["router_record"]["message"] == "Sending concurrent requests" and log.attributes["request_id"] != nil and IsString(log.cache["router_record"]["decode_url"]) and IsMatch(log.cache["router_record"]["decode_url"], "^https?://([a-zA-Z0-9.-]+|[[][a-fA-F0-9:]+[]]):[0-9]{1,5}$")`,
+        `delete_key(log.attributes, "loki.attribute.labels")`,
+        `delete_key(log.attributes, "log.file.name")`,
+      ]
+    }
+
+    output {
+      logs = [otelcol.processor.transform.redact.input]
+    }
+  }
+}

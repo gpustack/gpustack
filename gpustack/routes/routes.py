@@ -33,6 +33,7 @@ from gpustack.routes import (
     pd_modes,
     probes,
     proxy,
+    request_traces,
     source_probe,
     update,
     user_groups,
@@ -124,6 +125,7 @@ SYSTEM_ROUTES = frozenset(
         ("GET", inference_backend.list_backend_configs),
         ("GET", metrics.get_metrics_config),
         ("GET", metrics.get_default_metrics_config),
+        ("POST", request_traces.ingest_worker_traces),
     }
 )
 # Cluster credentials serve bootstrap and controller Kubernetes operations.
@@ -252,6 +254,12 @@ model_routers = [
         "dependencies": _org_owner_only,
     },
     {
+        "router": request_traces.router,
+        "prefix": "/models",
+        "tags": ["Models"],
+        "dependencies": _org_owner_only,
+    },
+    {
         "router": model_instances.router,
         "prefix": "/model-instances",
         "tags": ["Model Instances"],
@@ -354,6 +362,12 @@ worker_client_router.add_api_route(
     methods=["GET"],
     response_model=inference_backend.RunnerOverrideEntriesPublic,
     tags=["Inference Backend"],
+)
+worker_client_router.add_api_route(
+    path="/traces/otlp",
+    endpoint=request_traces.ingest_worker_traces,
+    methods=["POST"],
+    include_in_schema=False,
 )
 
 # Tenant-aware routers: any logged-in user can hit them; the handlers

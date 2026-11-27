@@ -55,6 +55,9 @@ gpustack start [OPTIONS]
 | `--trusted-proxy-cidrs` 値               | (empty)                                | ゲートウェイ前方にデプロイされたプロキシの CIDR ネットワーク(複数回指定可)。クライアント IP の解決では、これらのプロキシを通じて `X-Forwarded-For` を右からたどります。未設定の場合はゲートウェイ自身が観測したアドレスのみが使用され、クライアントが送る転送ヘッダーで送信元アドレスを偽装することはできません。前方のプロキシが自身で `X-Forwarded-For` を追加する場合にのみ設定してください。 |
 | `--service-discovery-name` 値            | （空）                                | DNS上のサービスディスカバリーサービス名。サービスディスカバリーを使用してKubernetesにデプロイする場合のみ有効です。 |
 | `--namespace` 値                         | （空）                                | GPUStackがゲートウェイのルーティングルールとモデルインスタンスをデプロイするKubernetes名前空間。 |
+| `--disable-tracing` | `False` | GPUStack が管理するトレースのエクスポートと組み込み Tempo を無効にします。 |
+| `--trace-otlp-endpoint` value | (空) | トレースを外部レシーバーにエクスポートするための OTLP/gRPC の `host:port`。設定すると組み込み Tempo に代わって使用されます。 |
+| `--log-otlp-endpoint` value | (空) | 構造化ログの収集とエクスポートを有効にする完全な OTLP/HTTP ログ URL。例は `http://<collector-host>:4318/v1/logs` です。 |
 
 ### サーバーオプション { #server-options }
 
@@ -120,6 +123,7 @@ gpustack start [OPTIONS]
 | `--saml-sp-attribute-prefix` 値               | （空）                                          | SAML Service Providerの属性プレフィックス。--external-auth-\*で指定した属性を取得する際に使用します。 |
 | `--gateway-concurrency` 値                    | `16`                                             | 組み込みゲートウェイの同時接続数。 |
 | `--disable-builtin-observability`                | `False`                                          | 組み込みGrafanaおよびPrometheusサービスを無効にします。 |
+| `--trace-query-url` value | (空) | デプロイの詳細画面から Tempo に問い合わせるための HTTP(S) ベース URL。 |
 | `--builtin-prometheus-port` 値                | `19090`                                          | 組み込みPrometheusサービスのポート。 |
 | `--builtin-grafana-port` 値                   | `13000`                                          | 組み込みGrafanaサービスのポート。 |
 | `--prometheus-url` 値                         | （空）                                          | クエリー先となる外部PrometheusのベースURL。未設定の場合、有効になっていれば組み込みPrometheusを使用します。可観測性を独自のスタックに委譲する構成でも、メトリクスに依存する機能（モデルとPDのダッシュボード、帯域幅のセルフチェック）を動作させるために設定します。 |
@@ -146,6 +150,7 @@ gpustack start [OPTIONS]
 | `--disable-worker-metrics`               | `False`                                | メトリクスを無効にします。 |
 | `--worker-metrics-port` 値            | `10151`                                | メトリクスを公開するポート。 |
 | `--worker-port` 値                    | `10150`                                | ワーカーがバインドするポート。すべてのワーカーで同じ値を使用してください。 |
+| `--worker-trace-proxy-port` 値 | （自動） | Worker の OTLP トレースプロキシがループバックで待ち受けるポート。既定では自動割り当てされたポートを保存し、再起動時に再利用します。 (`GPUSTACK_WORKER_TRACE_PROXY_PORT`) |
 | `--service-port-range` 値             | `40000-40063`                          | 推論サービスのポート範囲。'N1-N2'形式の文字列で指定します。範囲の両端を含みます。 |
 | `--ray-port-range` 値                 | `41000-41999`                          | Rayサービス（vLLMの分散デプロイで使用）のポート範囲。'N1-N2'形式の文字列で指定します。範囲の両端を含みます。 |
 | `--log-dir` 値                        | （空）                                | ログを保存するディレクトリー。 |

@@ -119,6 +119,24 @@ TLS バージョンの設定は `GPUSTACK_GATEWAY_MIRROR_INGRESS_NAME` で
 | `GPUSTACK_HIGRESS_EXT_AUTH_TIMEOUT_MS`                | ゲートウェイの認証呼び出しタイムアウト（ミリ秒）。 | `gateway_plugin.gpustack-ext-auth.config.authz.timeout`    | `30000`                              | サーバー |
 | `GPUSTACK_GATEWAY_AI_STATISTICS_PLUGIN_CONTENT_TYPES` | トークン使用量を計測するコンテンツタイプのコンマ区切り一覧。 | `gateway_plugin.ai-statistics.config.enable_content_types` | `application/json,text/event-stream` | サーバー |
 
+### 推論の可観測性の設定 { #inference-observability-configuration }
+
+| 変数 | 説明 | デフォルト | 対象 |
+| --- | --- | --- | --- |
+| `GPUSTACK_DISABLE_TRACING` | GPUStack が管理するトレースのエクスポートと組み込み Tempo を無効にします。 | `false` | サーバー & ワーカー |
+| `GPUSTACK_TRACE_OTLP_ENDPOINT` | トレースのエクスポート先となる外部の OTLP/gRPC `host:port`。設定すると、デフォルトの組み込み Tempo レシーバーに代わって使用されます。 | — | サーバー & ワーカー |
+| `GPUSTACK_TRACE_ADVERTISE_ENDPOINT` | 新しく生成するワーカー登録コマンドに含める OTLP/gRPC の `host:port`。ワーカーからデフォルトの取り込み先に到達できない場合に設定します。 | — | サーバー |
+| `GPUSTACK_TRACE_QUERY_URL` | デプロイの詳細画面でトレースを検索するための Tempo の HTTP(S) ベース URL。 | — | サーバー |
+| `GPUSTACK_LOG_OTLP_ENDPOINT` | OTLP/HTTP の完全なログ取り込み URL。例は `http://<collector-host>:4318/v1/logs` です。設定すると構造化ログのエクスポートが有効になります。 | — | サーバー & ワーカー |
+| `GPUSTACK_LOG_REDACT_PATTERNS` | エクスポートするログの一致箇所をマスクするための、空でない RE2 正規表現の JSON 配列です。[エクスポートするログのマスキング](user-guide/observability.md#redact-exported-logs)を参照してください。 | `[]` | サーバー & ワーカー |
+
+### トレースストレージの設定 { #trace-storage-configuration }
+
+| 変数 | 説明 | デフォルト | 対象 |
+| --- | --- | --- | --- |
+| `GPUSTACK_BUILTIN_TEMPO_OTLP_LISTEN_ADDRESS` | Docker 組み込み Tempo の OTLP/gRPC レシーバーがバインドする IP アドレスです。デフォルトはループバックです。リモートワーカーからスパンを受け付けるには、信頼できるプライベート IP（またはプライベートインターフェースで公開するブリッジ環境では `0.0.0.0`）を設定します。 | `127.0.0.1` | サーバー |
+| `GPUSTACK_BUILTIN_TEMPO_RETENTION` | Docker に組み込まれた Tempo のブロック保持期間です。`72h` のように正の Go の期間を指定します。無効な値の場合は警告が記録され、`168h` が使われます。[推論ログとトレース](user-guide/observability.md#inference-logs-and-traces)を参照してください。 | `168h` | サーバー |
+
 ### 使用量追跡の設定 { #usage-tracking-configuration }
 
 | 変数 | 説明 | デフォルト | 適用先 |

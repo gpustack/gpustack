@@ -1,0 +1,183 @@
+{{- if include "gpustack.builtinTempoEnabled" . }}
+{{- $name := include "gpustack.tempoName" . }}
+{{- $tlsDir := "/etc/gpustack/tempo-query-tls" }}
+{{- $retention := toString .Values.tracing.tempo.retention }}
+{{- /* dateModify uses Go's duration parser. Compare at nanosecond precision to require a positive duration. */}}
+{{- $epoch := toDate "2006-01-02" "2000-01-01" }}
+{{- $format := "2006-01-02T15:04:05.000000000" }}
+{{- if not (gt (dateInZone $format (dateModify $retention $epoch) "UTC") (dateInZone $format $epoch "UTC")) }}
+{{- $retention = "168h" }}
+{{- end }}
+{{- $config := printf `target: all
+server:
+  http_listen_port: 3200
+  http_tls_config:
+    cert_file: %s/server.crt
+    key_file: %s/server.key
+    client_ca_file: %s/ca.crt
+    client_auth_type: RequireAndVerifyClientCert
+  grpc_listen_address: 127.0.0.1
+internal_server:
+  enable: true
+  http_listen_port: 3201
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+ingester:
+  lifecycler:
+    address: 127.0.0.1
+  flush_all_on_shutdown: true
+memberlist:
+  bind_addr: [127.0.0.1]
+  bind_port: 0
+storage:
+  trace:
+    backend: local
+    blocklist_poll: 1m
+    wal:
+      path: /var/tempo/wal
+    local:
+      path: /var/tempo/blocks
+compactor:
+  compaction:
+    block_retention: %q
+usage_report:
+  reporting_enabled: false` $tlsDir $tlsDir $tlsDir $retention }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+data:
+  config.yaml: |
+    {{- $config | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+{{ include "chart_labels" . | indent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: {{ $name }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ $config | sha256sum }}
+      labels:
+        app: {{ $name }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      {{- with (include "image_pull_secrets" . | trim) }}
+      {{- . | nindent 6 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+      containers:
+        - name: tempo
+          image: {{ printf "%s/grafana/tempo:2.10.10" (include "gpustack.hub" .) | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["-config.file=/etc/tempo/config.yaml"]
+          ports:
+            - name: otlp-grpc
+              containerPort: 4317
+            - name: https
+              containerPort: 3200
+            - name: readiness
+              containerPort: 3201
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: readiness
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: tempo-config
+              mountPath: /etc/tempo
+              readOnly: true
+            - name: tempo-data
+              mountPath: /var/tempo
+            - name: tempo-query-tls
+              mountPath: {{ $tlsDir }}
+              readOnly: true
+      volumes:
+        - name: tempo-config
+          configMap:
+            name: {{ $name }}
+        - name: tempo-data
+          {{- with .Values.tracing.tempo.existingClaim }}
+          persistentVolumeClaim:
+            claimName: {{ . | quote }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: tempo-query-tls
+          secret:
+            secretName: {{ include "gpustack.tempoQueryTLSSecretName" . | quote }}
+            defaultMode: 0440
+            items:
+              - key: ca.crt
+                path: ca.crt
+              - key: server.crt
+                path: server.crt
+              - key: server.key
+                path: server.key
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  type: ClusterIP
+  selector:
+    app: {{ $name }}
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: otlp-grpc
+    - name: https
+      port: 3200
+      targetPort: https
+{{- if not .Values.tracing.tempo.queryTLSSecretName }}
+---
+{{- $secretName := include "gpustack.tempoQueryTLSSecretName" . }}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace $secretName }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $secretName }}
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+data:
+  {{- if $existing }}
+  {{- toYaml $existing.data | nindent 2 }}
+  {{- else }}
+  {{- $host := include "gpustack.tempoHost" . }}
+  {{- $ca := genCA $secretName 3650 }}
+  {{- $server := genSignedCert $host nil (list $host) 3650 $ca }}
+  {{- $client := genSignedCert (printf "%s-server" .Release.Name) nil nil 3650 $ca }}
+  ca.crt: {{ $ca.Cert | b64enc }}
+  server.crt: {{ $server.Cert | b64enc }}
+  server.key: {{ $server.Key | b64enc }}
+  client.crt: {{ $client.Cert | b64enc }}
+  client.key: {{ $client.Key | b64enc }}
+  {{- end }}
+{{- end }}
+{{- end }}

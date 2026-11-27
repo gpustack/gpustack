@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from gpustack.config.config import Config
 from gpustack.schemas.inference_backend import (
     InferenceBackend,
     ParameterFormatEnum,
@@ -20,8 +21,11 @@ from gpustack.schemas.inference_backend import (
 from gpustack.schemas.cache_services import CacheConfigSnapshot
 from gpustack.schemas.models import (
     BackendEnum,
+    DisaggregationSpec,
     ExtendedKVCacheConfig,
     KVCacheModeEnum,
+    PDModeEnum,
+    RoleSpec,
     SpeculativeConfig,
 )
 from gpustack.utils.config import apply_registry_override_to_image
@@ -62,6 +66,426 @@ from gpustack.schemas.models import (
     ModelInstanceSubordinateWorker,
 )
 from tests.utils.model import new_model, new_model_instance
+
+_TRACE_COLLECTOR = "collector.internal:4317"
+_ENGINE_SETUP = {
+    "vllm": (VLLMServer, BackendEnum.VLLM, "0.32.0", PDModeEnum.VLLM_NIXL),
+    "sglang": (
+        SGLangServer,
+        BackendEnum.SGLANG,
+        "0.5.22",
+        PDModeEnum.SGLANG_MOONCAKE,
+    ),
+}
+_NATIVE_LOG_FLAGS = {
+    "vllm": ["--enable-log-requests", "--max-log-len", "0"],
+    "sglang": [
+        "--log-requests",
+        "--log-requests-level",
+        "0",
+        "--log-requests-format",
+        "json",
+    ],
+}
+
+
+def _capture_observable_engine_launch(
+    tmp_path,
+    engine,
+    *,
+    logs=True,
+    traces=True,
+    role=None,
+    parameters=None,
+    model_env=None,
+    image_override=None,
+    version_override=None,
+    backend_version_image=None,
+    run_command=None,
+    entrypoint=None,
+    device_info=None,
+):
+    cls, backend, version, recipe = _ENGINE_SETUP[engine]
+    server = cls.__new__(cls)
+    server._config = Config(
+        data_dir=str(tmp_path),
+        log_otlp_endpoint="http://collector.internal:4318/v1/logs" if logs else None,
+        trace_otlp_endpoint=_TRACE_COLLECTOR if traces else None,
+    )
+    effective_version = version_override or version
+    version_configs = {}
+    if entrypoint or backend_version_image:
+        version_configs[effective_version] = VersionConfig(
+            image_name=backend_version_image,
+            entrypoint=shlex.join(entrypoint) if entrypoint else None,
+        )
+    server.inference_backend = (
+        InferenceBackend(
+            backend_name=backend,
+            default_version=effective_version,
+            version_configs=VersionConfigDict(root=version_configs),
+        )
+        if run_command or entrypoint or backend_version_image
+        else None
+    )
+    server._model_path = "/models/llm"
+    server._worker = types.SimpleNamespace(id=1, ip="192.168.50.10")
+    instance = new_model_instance(1, "llm-1", 1, worker_id=1, gpu_indexes=[0])
+    instance.port = 40000
+    instance.ports = [40000]
+    server._model_instance = instance
+    server._model = new_model(
+        1,
+        "llm",
+        huggingface_repo_id="org/llm",
+        backend=backend,
+        backend_parameters=parameters or [],
+        backend_version=version_override or version,
+        image_name=image_override,
+        run_command=run_command,
+        env=model_env or {},
+    )
+    if role:
+        instance.role = role
+        instance.group_id = "group-1"
+        instance.named_ports = {
+            "kv_side_channel": PortBand(base=45000, count=1),
+            "bootstrap": PortBand(base=45001, count=1),
+        }
+        server._model.roles = [
+            RoleSpec(name=name) for name in ("prefill", "decode", "router")
+        ]
+        server._model.disaggregation = DisaggregationSpec(mode=recipe)
+        server._pd_template_variables = lambda: {"net_device": "eth0"}
+    server._get_serving_port = lambda: instance.port
+    server._get_device_info = lambda: device_info or ("cuda", "13.0", None)
+    server._get_selected_gpu_devices = lambda: [
+        types.SimpleNamespace(
+            index=0,
+            vendor=("Huawei" if device_info and device_info[0] == "cann" else "NVIDIA"),
+            arch_family=device_info[2] if device_info else None,
+        )
+    ]
+    server._fetch_runner_overrides = lambda: []
+    server._fallback_registry = "docker.io"
+    server._get_serving_command_script = lambda _: None
+    server._update_model_backend_service_version = lambda _: None
+    server._get_configured_env = lambda **_: dict(model_env or {})
+    server._derive_max_model_len = lambda: None
+    server._get_model_architecture = lambda: []
+    server._get_speculative_arguments = lambda: []
+    server._get_hicache_arguments = lambda: []
+    launch, instance_update = {}, {}
+    server._update_model_instance = lambda _, **kwargs: instance_update.update(kwargs)
+    server._create_workload = lambda **kwargs: launch.update(kwargs)
+    from unittest.mock import patch
+
+    with patch(
+        "gpustack.worker.backends.base.platform.system_arch", return_value="linux/amd64"
+    ):
+        server._start()
+    return launch, instance_update.get("injected_backend_parameters") or []
+
+
+@pytest.mark.parametrize("engine", _ENGINE_SETUP)
+@pytest.mark.parametrize(
+    "logs,traces", [(False, False), (True, False), (False, True), (True, True)]
+)
+@pytest.mark.parametrize("disabled", [None, "0", "1", "true"])
+def test_engine_observability_switches(tmp_path, engine, logs, traces, disabled):
+    launch, injected = _capture_observable_engine_launch(
+        tmp_path,
+        engine,
+        logs=logs,
+        traces=traces,
+        model_env={"GPUSTACK_DISABLE_ENGINE_TRACING": disabled} if disabled else {},
+    )
+    traces = traces and disabled not in ("1", "true")
+    arguments = launch["command_args"]
+    assert (_NATIVE_LOG_FLAGS[engine][0] in arguments) is logs
+    assert ("--otlp-traces-endpoint" in arguments) is traces
+    if logs:
+        assert all(argument in arguments for argument in _NATIVE_LOG_FLAGS[engine])
+        assert any(_NATIVE_LOG_FLAGS[engine][0] in item for item in injected)
+    if traces:
+        assert (
+            arguments[arguments.index("--otlp-traces-endpoint") + 1] == _TRACE_COLLECTOR
+        )
+        assert any("--otlp-traces-endpoint" in item for item in injected)
+        assert launch["env"]["OTEL_RESOURCE_ATTRIBUTES"] == (
+            "gpustack.engine_instance_id=1,gpustack.engine_instance_name=llm-1"
+            ",gpustack.model_id=1,gpustack.engine_role=engine"
+        )
+    assert launch["env"].get("OTEL_SERVICE_NAME") == (engine if traces else None)
+    if engine == "sglang":
+        assert ("--enable-trace" in arguments) is traces
+        assert launch["env"].get("SGLANG_LOG_REQUEST_HEADERS") == (
+            "x-request-id" if logs else None
+        )
+        assert launch["env"].get("SGLANG_TRACE_LEVEL") == ("1" if traces else None)
+
+
+@pytest.mark.parametrize("engine", _ENGINE_SETUP)
+@pytest.mark.parametrize("role", ["prefill", "decode"])
+@pytest.mark.parametrize("logs", [False, True])
+def test_engine_observability_with_pd_recipe(tmp_path, engine, role, logs):
+    launch, _ = _capture_observable_engine_launch(
+        tmp_path, engine, role=role, logs=logs
+    )
+    arguments = launch["command_args"]
+    assert arguments.count(_NATIVE_LOG_FLAGS[engine][0]) == int(logs)
+    assert arguments.count("--otlp-traces-endpoint") == 1
+    assert arguments[arguments.index("--otlp-traces-endpoint") + 1] == _TRACE_COLLECTOR
+    assert launch["env"]["OTEL_SERVICE_NAME"] == f"{engine}.{role}"
+    assert f"gpustack.engine_role={role}" in launch["env"]["OTEL_RESOURCE_ATTRIBUTES"]
+    if engine == "vllm":
+        value = arguments[arguments.index("--kv-transfer-config") + 1]
+        assert json.loads(value)["kv_role"] == (
+            "kv_producer" if role == "prefill" else "kv_consumer"
+        )
+    else:
+        assert arguments[arguments.index("--disaggregation-mode") + 1] == role
+        assert arguments.count("--enable-trace") == 1
+        assert launch["env"]["SGLANG_TRACE_LEVEL"] == "1"
+
+
+@pytest.mark.parametrize(
+    "engine,parameters,model_env,logs,traces",
+    [
+        ("vllm", ["--no_enable_log_requests"], {}, False, True),
+        ("vllm", ["--disable-log-requests"], {}, False, True),
+        ("vllm", ["--enable-log-outputs"], {}, False, True),
+        (
+            "vllm",
+            [],
+            {"VLLM_LOGGING_CONFIG_PATH": "/etc/vllm/logging.json"},
+            False,
+            True,
+        ),
+        ("vllm", ["--otlp_traces_endpoint=other:4317"], {}, True, False),
+        ("vllm", [], {"OTEL_EXPORTER_OTLP_ENDPOINT": "http://other:4318"}, True, False),
+        ("vllm", [], {"OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf"}, True, False),
+        (
+            "vllm",
+            [],
+            {
+                "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+                "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL": "grpc",
+            },
+            True,
+            True,
+        ),
+        ("sglang", ["--log-requests-format=text"], {}, False, True),
+        ("sglang", [], {"SGLANG_LOG_REQUEST_HEADERS": "authorization"}, False, True),
+        ("sglang", [], {"SGLANG_TRACE_LEVEL": "3"}, True, True),
+        (
+            "sglang",
+            ["--enable-trace", "--otlp-traces-endpoint=other:4317"],
+            {},
+            True,
+            False,
+        ),
+        ("sglang", ["--enable-trace"], {}, True, False),
+        (
+            "sglang",
+            [],
+            {"OTEL_EXPORTER_OTLP_ENDPOINT": "http://other:4318"},
+            True,
+            False,
+        ),
+        ("sglang", [], {"OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf"}, True, False),
+        (
+            "sglang",
+            [],
+            {"OTEL_EXPORTER_OTLP_TRACES_PROTOCOL": "http/protobuf"},
+            True,
+            False,
+        ),
+        (
+            "sglang",
+            [],
+            {
+                "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+                "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL": "grpc",
+            },
+            True,
+            True,
+        ),
+        ("vllm", ["--config /etc/engine.yaml"], {}, False, False),
+        ("sglang", ["--config=/etc/engine.yaml"], {}, False, False),
+    ],
+)
+def test_engine_observability_respects_explicit_settings(
+    tmp_path, engine, parameters, model_env, logs, traces
+):
+    launch, injected = _capture_observable_engine_launch(
+        tmp_path, engine, parameters=parameters, model_env=model_env
+    )
+    assert any(_NATIVE_LOG_FLAGS[engine][0] in item for item in injected) is logs
+    assert any("--otlp-traces-endpoint" in item for item in injected) is traces
+    assert (_TRACE_COLLECTOR in launch["command_args"]) is traces
+    assert all(launch["env"].get(key) == value for key, value in model_env.items())
+
+
+@pytest.mark.parametrize("engine", _ENGINE_SETUP)
+@pytest.mark.parametrize(
+    ("model_env", "expected"),
+    [
+        (
+            {
+                "OTEL_SERVICE_NAME": "custom-engine",
+                "OTEL_RESOURCE_ATTRIBUTES": "service.name=other-engine",
+            },
+            "custom-engine",
+        ),
+        (
+            {
+                "OTEL_RESOURCE_ATTRIBUTES": "team=inference, service.name=custom%20engine,gpustack.model_id=99"
+            },
+            "custom engine",
+        ),
+    ],
+)
+def test_engine_managed_tracing_preserves_configured_service_name(
+    tmp_path, engine, model_env, expected
+):
+    launch, _ = _capture_observable_engine_launch(
+        tmp_path, engine, role="decode", logs=False, model_env=model_env
+    )
+    assert launch["env"].get("OTEL_SERVICE_NAME") == expected
+    attributes = set(launch["env"]["OTEL_RESOURCE_ATTRIBUTES"].split(","))
+    custom_attributes = set(model_env["OTEL_RESOURCE_ATTRIBUTES"].split(","))
+    assert (custom_attributes - {"gpustack.model_id=99"}) <= attributes
+    assert "gpustack.model_id=1" in attributes
+    assert "gpustack.model_id=99" not in attributes
+
+
+def test_sglang_managed_tracing_preserves_cli_service_name(tmp_path):
+    launch, _ = _capture_observable_engine_launch(
+        tmp_path,
+        "sglang",
+        role="prefill",
+        logs=False,
+        parameters=["--otlp-service-name=custom-prefill"],
+    )
+    assert "--otlp-service-name=custom-prefill" in launch["command_args"]
+    assert "--enable-trace" in launch["command_args"]
+    assert "OTEL_SERVICE_NAME" not in launch["env"]
+
+
+@pytest.mark.parametrize(
+    "engine,overrides",
+    [
+        ("vllm", {"run_command": "custom-serve /models/llm"}),
+        ("sglang", {"entrypoint": ["custom-serve"]}),
+    ],
+)
+def test_engine_observability_preserves_custom_launches(tmp_path, engine, overrides):
+    launch, _ = _capture_observable_engine_launch(tmp_path, engine, **overrides)
+    assert _NATIVE_LOG_FLAGS[engine][0] not in launch["command_args"]
+    assert "--otlp-traces-endpoint" not in launch["command_args"]
+
+
+@pytest.mark.parametrize(
+    "engine,overrides,logs,traces",
+    [
+        # vLLM logging requires >= 0.10.1; tracing requires managed runner >= 0.17.0.
+        (
+            "vllm",
+            {"version_override": "0.9.1", "device_info": ("cann", "8.2", "910b")},
+            False,
+            False,
+        ),
+        (
+            "vllm",
+            {"version_override": "0.10.0", "device_info": ("cann", "8.2", "310p")},
+            False,
+            False,
+        ),
+        ("vllm", {"version_override": "0.10.2"}, True, False),
+        ("vllm", {"version_override": "0.16.0"}, True, False),
+        ("vllm", {"version_override": "0.17.1"}, True, True),
+        ("vllm", {"version_override": "0.31.0"}, True, True),
+        # SGLang logging requires >= 0.5.9; tracing requires managed runner >= 0.5.12.
+        ("sglang", {"version_override": "0.5.5.post3"}, False, False),
+        ("sglang", {"version_override": "0.5.6.post2"}, False, False),
+        ("sglang", {"version_override": "0.5.7"}, False, False),
+        ("sglang", {"version_override": "0.5.8.post1"}, False, False),
+        ("sglang", {"version_override": "0.5.9"}, True, False),
+        (
+            "sglang",
+            {
+                "version_override": "0.5.12.post1",
+                "device_info": ("cann", "8.5", "910b"),
+            },
+            True,
+            True,
+        ),
+        ("sglang", {"version_override": "0.5.21"}, True, True),
+        # Custom images keep version-compatible request logging when version is known,
+        # but never auto-inject OTel tracing because OTel packages are unverified.
+        (
+            "vllm",
+            {"image_override": "third-party/runner:cuda13.0-vllm0.32.0"},
+            True,
+            False,
+        ),
+        (
+            "sglang",
+            {"image_override": "third-party/runner:cuda13.0-sglang0.5.22"},
+            True,
+            False,
+        ),
+        (
+            "vllm",
+            {"backend_version_image": "custom-registry/vllm:0.32.0"},
+            True,
+            False,
+        ),
+        (
+            "sglang",
+            {"backend_version_image": "custom-registry/sglang:0.5.22"},
+            True,
+            False,
+        ),
+        (
+            "vllm",
+            {"image_override": "third-party/vllm:custom", "version_override": "custom"},
+            False,
+            False,
+        ),
+        (
+            "sglang",
+            {
+                "image_override": "third-party/sglang:custom",
+                "version_override": "0.5.9rc0",
+            },
+            False,
+            False,
+        ),
+    ],
+)
+def test_engine_observability_version_and_runner_gates(
+    tmp_path, engine, overrides, logs, traces
+):
+    launch, injected = _capture_observable_engine_launch(tmp_path, engine, **overrides)
+    arguments = launch["command_args"]
+    assert all(flag in arguments for flag in _NATIVE_LOG_FLAGS[engine]) is logs
+    assert ("--otlp-traces-endpoint" in arguments) is traces
+    assert (_TRACE_COLLECTOR in arguments) is traces
+    assert any("--otlp-traces-endpoint" in item for item in injected) is traces
+
+
+def test_engine_trace_endpoint_comes_from_worker_config(tmp_path, monkeypatch):
+    monkeypatch.setenv("GPUSTACK_TRACE_OTLP_ENDPOINT", " [2001:db8::1]:4317 ")
+    assert Config(data_dir=str(tmp_path)).trace_otlp_endpoint == "[2001:db8::1]:4317"
+    monkeypatch.setenv("GPUSTACK_TRACE_OTLP_ENDPOINT", " ")
+    assert Config(data_dir=str(tmp_path)).trace_otlp_endpoint is None
+    with pytest.raises(ValueError, match="OTLP/gRPC host:port"):
+        Config(
+            data_dir=str(tmp_path),
+            trace_otlp_endpoint="http://collector:4318/v1/traces",
+        )
 
 
 @pytest.mark.parametrize(
@@ -4660,6 +5084,7 @@ def test_accelerator_free_plan_conversion_skips_model_instance_type(monkeypatch)
 
     backend = _StubServer.__new__(_StubServer)
     backend._model_instance = new_model_instance(1, 'engine', 1)
+    backend._worker = types.SimpleNamespace(id=1)
     backend._model = types.SimpleNamespace(
         gpu_type_selector=types.SimpleNamespace(type='gpu-instance-type')
     )

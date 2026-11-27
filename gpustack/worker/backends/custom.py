@@ -11,7 +11,7 @@ from gpustack.schemas.models import (
 from gpustack.utils.command import format_backend_parameters
 from gpustack.utils.envs import sanitize_env
 from gpustack.worker.backends.base import InferenceServer
-from gpustack.worker.pd_router import is_managed_router
+from gpustack.worker.pd_router import apply_router_observability, is_managed_router
 
 from gpustack_runtime.deployer import (
     Container,
@@ -158,6 +158,22 @@ class CustomServer(InferenceServer):
                 self._model.backend_version
             )
             image_overridden = image_overridden or bool(configured_image)
+        use_recipe_defaults = (
+            managed_router
+            and launch
+            and launch.source == "recipe"
+            and not image_overridden
+            and not command
+        )
+        if use_recipe_defaults:
+            command_args = apply_router_observability(
+                source_model.disaggregation.mode,
+                command_args,
+                env,
+                log_enabled=bool(self._config.log_otlp_endpoint),
+                trace_endpoint=self._engine_trace_endpoint(),
+                instance=self._model_instance,
+            )
         if managed_router and not backend_command and image_overridden and not command:
             if not command_args:
                 raise ValueError("Managed PD router requires an explicit command")

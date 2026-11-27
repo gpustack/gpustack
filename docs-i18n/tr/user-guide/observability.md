@@ -4,7 +4,7 @@ translation_status: translated
 
 # Gözlemlenebilirlik { #observability }
 
-Bu belge, Prometheus ve Grafana kullanılarak GPUStack Sunucusu/Çalışan/LLM sunan çalışma zamanı ölçümlerinin nasıl izleneceğini açıklamaktadır.
+GPUStack metriklerini Prometheus ve Grafana ile izleyin ve tek tek istekleri incelemek için çıkarım günlüklerini ve izlerini kullanın.
 
 ## Genel Bakış { #overview }
 
@@ -106,6 +106,123 @@ Zaten harici bir Prometheus/Grafana yığınınız varsa, bunu manuel olarak yap
   Prometheus'a varsayılan olarak `http://<host>:19090` adresinden veya `--builtin-prometheus-port` / `GPUSTACK_BUILTIN_PROMETHEUS_PORT` ile yapılandırılan bağlantı noktasından erişin.
 - **Grafana kullanıcı arayüzü**:
   Grafana'ya varsayılan olarak `http://<host>:13000` adresinden veya `--builtin-grafana-port` / `GPUSTACK_BUILTIN_GRAFANA_PORT` ile yapılandırılan bağlantı noktasından erişin. Yerleşik Grafana, oturum açma formu devre dışı bırakılarak anonim Görüntüleyici erişimi için yapılandırılmıştır. Yönetici kimlik bilgileri varsayılan olarak `admin` / `grafana` olarak kalır.
+
+## Çıkarım Günlükleri ve İzleri { #inference-logs-and-traces }
+
+Çıkarım günlüklerini ve izlerini bulmak için `X-GPUStack-Request-Id` yanıt başlığını kullanın. Günlük veya izleme yapılandırıldığında paketle gelen ağ geçidi bu başlığı ekler. Docker sunucuları varsayılan olarak izleri gömülü Tempo'ya aktarır. Helm sunucu sürümleri varsayılan olarak ayrı bir Tempo iş yükü dağıtır. Günlük aktarımı ayrı yapılandırılır ve bir günlük uç noktası gerektirir.
+
+| İz hedefi veya ayarı | Docker | Helm |
+| --- | --- | --- |
+| Yerleşik Tempo | Sunucuda varsayılan | Sunucu sürümünde varsayılan |
+| Harici OTLP/gRPC alıcısı | `GPUSTACK_TRACE_OTLP_ENDPOINT` ayarlayın | `tracing.endpoint` ayarlayın |
+| Yerleşik Tempo bloklarının saklama süresi (varsayılan `168h`) | `GPUSTACK_BUILTIN_TEMPO_RETENTION` ayarlayın | `tracing.tempo.retention` ayarlayın |
+| Devre dışı | `GPUSTACK_DISABLE_TRACING=true` ayarlayın | `tracing.enabled=false` ayarlayın |
+
+Tempo, saklama süresi dolan blokları düzenli temizlik sırasında siler. Saklama süresi, blokların yaşını belirler. Toplam disk kullanımı, alınan izlerin hacmine ve önden yazma günlüğü (WAL), blok birleştirme ve silinmeyi bekleyen bloklar için gereken alana bağlıdır.
+
+Saklanan blokların kaplayacağı alanı hesaplamak için saniyede alınan iz sayısını, iz başına diskteki ortalama blok baytı ve saniye cinsinden saklama süresiyle çarpın. Örnek hesapta saniyede 10 istek, %100 örnekleme, örneklenen istek başına bir iz ve iz başına diskte 1.000 blok baytı varsayın. Bu, günde yaklaşık 864 MB ve yedi günde yaklaşık 6,05 GB blok alanı demektir. Örnek olarak %50 ek alan ayrıldığında toplam yaklaşık 9,1 GB olur. Gerekli birim kapasitesini ve ek alanı belirlemek için temsili bir iş yükünde iz başına blok baytını ve WAL, blok birleştirme ve silinmeyi bekleyen blokların en yüksek alan kullanımını ölçün.
+
+Dağıtım ayrıntılarındaki `Request Tracing` sekmesi başlangıçta son 24 saati arar. İzleri görüntülemek için kuruluş sahibi rolü veya platform yöneticisi yetkisi gerekir. GPUStack, dağıtım metrikleriyle aynı model görünürlüğü kurallarını uygular. Sonuçlar arasında gezinin veya İstek Kimliğini ya da İz Kimliğini GPUStack veya Tempo'da göründüğü biçimde yapıştırın. Günlük aktarımı yapılandırılmışsa istek ayrıntılarındaki İstek Kimliğini kopyalayıp günlük arka ucunuzda arayın. Harici Tempo için sorgu uç noktasını `GPUSTACK_TRACE_QUERY_URL` veya `tracing.queryURL` ile ayarlayın.
+
+Harici Tempo kullanırken her GPUStack kurulumu için ayrı bir Tempo kiracısı veya ayrı bir Tempo örneği gerekir. Bir kuruluma ait tüm iz yazma ve sorgulama işlemlerini aynı kiracıya yönlendirin. Model kimlikleri yalnızca ilgili GPUStack kurulumu içinde benzersizdir. Kiracı paylaşılırsa kullanıcılar başka bir kurulumda aynı model kimliğine ait istekleri görebilir.
+
+Günlük aktarımı etkin olduğunda Sunucu ve Worker'lar kapsayıcı konsoluna tek bir JSON akışı yazar. Alloy bu akışı desteklenen motor günlüğü biçimleriyle birlikte okur. Atılan kayıtları kontrol etmek için Alloy'un `otelcol_processor_filter_logs_filtered_total` metriğine `engine_format` veya `higress_format` bileşeniyle bakın. Motor filtresi, tanınan bir günlük öneki olmayan bağımsız düz metin satırlarını eler.
+
+Standart vLLM ve SGLang başlatmalarında GPUStack, etkinleştirilen günlük aktarımını (`vLLM >= 0.10.1`, `SGLang >= 0.5.9`) ve yönetilen runner görüntülerinde iz aktarımını (`vLLM >= 0.17.0`, `SGLang >= 0.5.12`) otomatik olarak yapılandırır. Yönetilen PD Router tarifleri, destekledikleri varsayılan gözlemlenebilirlik ayarlarını uygular. Eski veya özel görüntüler mevcut başlatma davranışını korur ve açıkça belirtilen telemetri ayarlarıyla çalışmaya devam eder; açık ayarlar her zaman önceliklidir.
+
+Tek bir dağıtımın motorları ve yönetilen PD Router için otomatik izlemeyi kapatmak üzere dağıtımın ortam değişkenlerine `GPUSTACK_DISABLE_ENGINE_TRACING=1` ekleyip örnekleri yeniden başlatın. Ağ geçidi ve Worker genel izleme ayarlarını kullanmaya devam eder. Değişkeni kaldırdığınızda bir sonraki başlatmada otomatik izleme geri gelir.
+
+Her izleme bileşeni span'leri doğrudan seçilen alıcıya gönderir. Günlük aktaran bileşenler günlük uç noktasına ulaşabilmelidir. İz aktaran Sunucu, Worker'lar, ağ geçitleri ve çıkarım kapsayıcıları iz uç noktasına ulaşabilmelidir. Alım bağlantısı şifresiz gRPC kullanır, bu nedenle güvenilen bir ağdaki adresi kullanın. Harici bir alıcıya geçmek veya izlemeyi devre dışı bırakmak yerleşik Tempo'yu durdurur.
+
+### Docker'ı Yapılandırma { #configure-docker }
+
+1. Günlük aktarımını etkinleştirmek için sunucuda ve günlük aktaran her ayrı çalışanda `GPUSTACK_LOG_OTLP_ENDPOINT=http://<collector-host>:4318/v1/logs` değerini ayarlayın. `/var/run/docker.sock:/var/run/docker.sock` soketini bağlayın ve `docker logs` komutunu destekleyen bir günlük sürücüsü kullanın.
+2. İzleri harici bir alıcıya aktarmak için sunucuda ve her ayrı çalışanda `GPUSTACK_TRACE_OTLP_ENDPOINT=<collector-host>:4317` değerini ayarlayın. Uzak çalışanlarla yerleşik Tempo'yu kullanmak için [Mevcut Docker Çalışanlarında İzlemeyi Etkinleştirme](../upgrade/cluster.md#enable-tracing-on-existing-docker-workers) bölümüne bakın.
+3. `<collector-host>` yerine bu konteynerlerin erişebildiği bir ad veya adres yazın. Değişkenleri `docker run -e` ile ya da Compose dosyanızdaki `environment` altında iletin, ardından konteynerleri yeniden oluşturun.
+
+Docker, Tempo ve Alloy'u GPUStack kapsayıcısında çalıştırır. Tempo, WAL ve blokları `<data_dir>/tempo` altında saklar ve varsayılan olarak hem sorguları hem OTLP alımını yalnızca loopback (`127.0.0.1`) üzerinden dinler. Ayrı Docker Worker'ları, `4317` portunu açmadan yerel Worker ve motor span'lerini Sunucu'nun kimlik doğrulamalı iz alım API'si üzerinden otomatik olarak iletir. İz dosyaları sunucu veri biriminin yaşam döngüsünü izler. Blok saklama süresini değiştirmek için Sunucu'da `GPUSTACK_BUILTIN_TEMPO_RETENTION` değerini ayarlayıp kapsayıcıyı yeniden oluşturun. Bunun yerine güvenilen bir ağdaki uzak Worker'lardan doğrudan OTLP span'leri kabul etmek için Sunucu'da `GPUSTACK_BUILTIN_TEMPO_OTLP_LISTEN_ADDRESS` değerini ayarlayın.
+
+### Helm'i Yapılandırma { #configure-helm }
+
+1. Her GPUStack sürümünün Helm values dosyasında alıcı uç noktalarını yapılandırın. Günlük aktarımını etkinleştirmek için `logging.endpoint`, harici iz alıcısı kullanmak için `tracing.endpoint` değerini ayarlayın. Yalnızca çalışan içeren sürümlerde `tracing.endpoint` değerini ayarlayarak sunucunun alıcısını kullanabilirsiniz.
+
+   ```yaml
+   logging:
+     endpoint: "http://<collector-host>:4318/v1/logs"
+   tracing:
+     endpoint: "<collector-host>:4317"
+   ```
+
+2. `<collector-host>` yerine alıcı adresini yazın ve Helm sürümünü yükseltin. Collector başka bir ad alanındaysa ad alanını içeren bir Service DNS adı kullanın.
+
+Yerleşik Higress ağ geçidi varsayılan olarak JSON biçiminde erişim günlüğü yazar. Biçimi değiştirmek için Helm values dosyasında `higress-core.meshConfig.accessLogEncoding` ve `higress-core.meshConfig.accessLogFormat` değerlerini ayarlayın.
+
+Tempo ve Alloy imajları, varsayılan değeri `docker.io` olan `global.hub` ayarını kullanır. Özel bir kayıt defterine yansıtırken `grafana/tempo` ve `grafana/alloy` depo yollarını koruyun.
+
+Chart, Tempo'yu Sunucu Pod'larından ayrı çalıştırır ve varsayılan olarak `/var/tempo` yoluna bir `emptyDir` bağlar. Tempo Pod'u değiştirildiğinde bu birimde saklanan izler kaybolur. Pod değişimlerinde izleri korumak için `tracing.tempo.existingClaim` değerini sürümün ad alanındaki mevcut bir PVC'ye ayarlayın. Birim, `10001` UID'si veya grubu tarafından yazılabilir olmalıdır. Blok saklama süresini değiştirmek için `tracing.tempo.retention` değerini ayarlayın ve sürümü yükseltin. Saklama süresi boş veya geçersizse `168h` kullanılır.
+
+Tek Sunuculu sürümler dahil tüm Sunucu Pod'ları, karşılıklı TLS ile `https://<release>-tempo.<namespace>.svc.<cluster-domain>:3200` adresindeki yerleşik Tempo'yu sorgular. Chart varsayılan olarak sorgu için bir TLS Secret oluşturur. Worker'lar ve çıkarım motorları izleri Service'in OTLP/gRPC `4317` portuna gönderir.
+
+GitOps dağıtımlarında, Sunucu sürümünün ad alanında bir Secret oluşturun ve adını `tracing.tempo.queryTLSSecretName` olarak ayarlayın. `ca.crt`, `server.crt`, `server.key`, `client.crt` ve `client.key` dosyalarını ekleyin. Sunucu sertifikası `<release>-tempo.<namespace>.svc.<cluster-domain>` adını kapsamalıdır. Sunucu ve istemci sertifikalarını yenilerken aynı CA'yı kullanın. Tempo ve Sunucu Pod'larını yenilenen sertifikalarla yeniden başlatmak için yeni bir Secret oluşturun ve Helm değerlerindeki adını güncelleyin.
+
+İz aktarım uç noktasını değiştirdikten sonra çalışan model örneklerini yeniden başlatın veya yeniden dağıtın.
+
+### Aktarılan Günlükleri Maskeleme { #redact-exported-logs }
+
+Alloy günlükleri aktarmadan önce kayıt gövdesindeki, istisna yığın izindeki ve `path` alanındaki eşleşmeleri `***` ile değiştirebilir. Boş olmayan RE2 düzenli ifadelerinden oluşan bir liste kullanın. Boş liste maskelemeyi devre dışı bırakır. İstek, iz ve span kimlikleri kayıtları ilişkilendirmek için kullanılmaya devam edilebilir.
+
+Docker için günlük aktaran her konteynere `GPUSTACK_LOG_REDACT_PATTERNS` değişkenini bir JSON dize dizisi olarak iletin. Bu örnek e-posta adreslerini ve Çin ana karasındaki cep telefonu numaralarını maskeler.
+
+```bash
+GPUSTACK_LOG_REDACT_PATTERNS='["(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+[.][A-Z]{2,}","\\b1[3-9][0-9]{9}\\b"]'
+```
+
+Helm için günlük aktaran her sürümde eşdeğer YAML listesini ayarlayın.
+
+```yaml
+logging:
+  redactPatterns:
+    - '(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+[.][A-Z]{2,}'
+    - '\b1[3-9][0-9]{9}\b'
+```
+
+Kuralları uygulamak için Docker konteynerlerini yeniden oluşturun veya Helm sürümünü yükseltin. Günlük sisteminizde aktarılan kayıtları `request_id` ile kontrol edin. Kurallar GPUStack tarafından yönetilen Alloy'un yeni aktardığı kayıtlara uygulanır. Özgün kayıtlara `docker logs`, `kubectl logs` veya çalışma zamanının günlük dosyalarından erişebilirsiniz. Daha önce aktarılmış kayıtlar ve izler bu kuralların kapsamı dışındadır. Geçersiz kurallar Alloy'un günlük aktarımını durdurabilir. Bu durumda GPUStack isteklere hizmet vermeyi sürdürür.
+
+### Bir İsteği Bulma { #look-up-a-request }
+
+1. Çalışan bir sohbet modeline istek gönderin ve yanıt başlıklarını saklayın. `<gpustack-host>`, `<api-key>` ve `<model-name>` yerine dağıtımınızın değerlerini yazın. Çıkarım izinleri için [API Anahtarı Yönetimi](api-key-management.md) bölümüne bakın.
+
+   ```bash
+   curl --silent --show-error --no-buffer \
+     --dump-header response-headers.txt \
+     'http://<gpustack-host>/v1/chat/completions' \
+     --header 'Authorization: Bearer <api-key>' \
+     --header 'Content-Type: application/json' \
+     --data '{"model":"<model-name>","messages":[{"role":"user","content":"Reply with one word."}],"max_tokens":8,"stream":true}'
+
+   grep -i '^X-GPUStack-Request-Id:' response-headers.txt
+   ```
+
+2. Günlük sisteminizde zaman aralığını istek zamanını kapsayacak biçimde ayarlayın ve `request_id` günlük özniteliğiyle filtreleyin. `higress`, `gpustack.server` veya `gpustack.engine` gibi bir kaynak seçmek için `service.name` OTLP kaynak özniteliğini kullanın. Varsa `worker_id`, `model_instance_id` ve `role` alanlarıyla sonuçları daraltabilirsiniz.
+3. Bir günlük kaydı OTLP iz kimliği içeriyorsa iz sisteminizde o kimlikle izi bulun. İzleme etkinse günlük aktarımı kapalı olsa bile platform istek kimliğini `gpustack.request_id` span özniteliğiyle arayabilirsiniz.
+
+### Loki ve Grafana Örneği { #example-with-loki-and-grafana }
+
+1. [OTLP alımı ve yapılandırılmış meta verileri etkin](https://grafana.com/docs/loki/latest/send-data/otel/) bir Loki dağıtımında `GPUSTACK_LOG_OTLP_ENDPOINT` veya `logging.endpoint` değerini `http://<loki-host>:3100/otlp/v1/logs` gibi tam alım URL'si olarak ayarlayın. İzler için `GPUSTACK_TRACE_OTLP_ENDPOINT` veya `tracing.endpoint` değerini span gönderen bileşenlerin erişebileceği Tempo OTLP/gRPC adresi olarak ayarlayın. Grafana veri kaynaklarını Loki ve Tempo'nun HTTP sorgu URL'leriyle yapılandırın.
+2. Grafana'da `Explore` bölümünü açıp Loki'yi seçin, isteğin zaman aralığını ayarlayın ve `<request-id>` yerine `X-GPUStack-Request-Id` yanıt başlığının değerini yazın. Loki'nin varsayılan OTLP eşlemesi, `service.name` değerini `service_name` akış etiketine dönüştürür ve `request_id` değerini yapılandırılmış meta veri olarak kaydeder.
+
+   ```logql
+   {service_name=~"higress|gpustack[.](server|worker|engine)"} | request_id="<request-id>"
+   ```
+
+   Sonuçları daraltmak için bu alanları taşıyan kayıtlarda `| worker_id="<worker-id>"` veya `| model_instance_id="<instance-id>"` ifadesini ekleyin.
+3. Bir sonuç `trace_id` içeriyorsa bu değeri Tempo veri kaynağının `TraceQL` sorgu alanına kopyalayın. İzleri doğrudan günlük sonuçlarından açmak için Loki'de `^trace_id$` ile eşleşen `Label` türünde bir [türetilmiş alan](https://grafana.com/docs/grafana/latest/datasources/loki/configure/#derived-fields) yapılandırın. Tempo veri kaynağına iç bağlantı ekleyin ve sorgu olarak `${__value.raw}` kullanın.
+
+Veri saklama ve erişim ayarlarını harici platformda yönetin. Kiracı kullanıcıları verileri sorgulayabiliyorsa kiracı yalıtımını o platformda uygulayın.
+
+!!! tip "PD motor günlüklerini bulma"
+
+    SGLang Mooncake için her iki motorun günlüklerini `request_id` ile bulun ve gönderim denemelerini `pd_attempt_id` ile ayırt edin. vLLM NIXL için giriş kaydını `request_id` ile bulun, ardından buradaki `pd_coordinator_id` değerini iki motorun günlüklerinde arayın. Giriş kaydında bu alan yoksa isteğin zamanı ve model örneğiyle Prefill günlüklerini daraltın ve doğruladığınız kayıttaki `pd_coordinator_id` değerini kopyalayın.
 
 ## Eski Oluşturma Kurulumlarından Geçiş { #migration-from-older-compose-setups }
 

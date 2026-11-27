@@ -106,6 +106,24 @@ GPUStack поддерживает различные переменные сре
 | `GPUSTACK_HIGRESS_EXT_AUTH_TIMEOUT_MS`                | Тайм-аут вызова аутентификации шлюза в миллисекундах. | `gateway_plugin.gpustack-ext-auth.config.authz.timeout`    | `30000`                              | Сервер |
 | `GPUSTACK_GATEWAY_AI_STATISTICS_PLUGIN_CONTENT_TYPES` | Типы контента, разделенные запятыми, с учетом использования токенов. | `gateway_plugin.ai-statistics.config.enable_content_types` | `application/json,text/event-stream` | Сервер |
 
+### Настройка наблюдаемости инференса { #inference-observability-configuration }
+
+| Переменная | Описание | По умолчанию | Область |
+| --- | --- | --- | --- |
+| `GPUSTACK_DISABLE_TRACING` | Отключить управляемый GPUStack экспорт трассировок и встроенный Tempo. | `false` | Сервер & Воркер |
+| `GPUSTACK_TRACE_OTLP_ENDPOINT` | Внешний адрес OTLP/gRPC в формате `host:port` для экспорта трассировок. При его указании он заменяет встроенный приёмник Tempo по умолчанию. | — | Сервер & Воркер |
+| `GPUSTACK_TRACE_ADVERTISE_ENDPOINT` | Адрес OTLP/gRPC в формате `host:port`, который включается в новые команды регистрации воркеров. Укажите его, если адрес приёма по умолчанию недоступен воркерам. | — | Сервер |
+| `GPUSTACK_TRACE_QUERY_URL` | Базовый URL HTTP(S) Tempo для поиска трассировок из сведений о развёртывании. | — | Сервер |
+| `GPUSTACK_LOG_OTLP_ENDPOINT` | Полный URL приёма журналов OTLP/HTTP, например `http://<collector-host>:4318/v1/logs`. Указание адреса включает экспорт структурированных журналов. | — | Сервер & Воркер |
+| `GPUSTACK_LOG_REDACT_PATTERNS` | Массив JSON непустых выражений RE2 для маскирования совпадений в экспортируемых журналах. См. [Маскирование экспортируемых журналов](user-guide/observability.md#redact-exported-logs). | `[]` | Сервер & Воркер |
+
+### Настройка хранилища трассировок { #trace-storage-configuration }
+
+| Переменная | Описание | По умолчанию | Область |
+| --- | --- | --- | --- |
+| `GPUSTACK_BUILTIN_TEMPO_OTLP_LISTEN_ADDRESS` | IP-адрес, на котором встроенный Tempo в Docker принимает OTLP/gRPC. По умолчанию используется loopback; задайте доверенный приватный IP (или `0.0.0.0` за опубликованным приватным интерфейсом), чтобы принимать спаны от удалённых воркеров. | `127.0.0.1` | Сервер |
+| `GPUSTACK_BUILTIN_TEMPO_RETENTION` | Срок хранения блоков встроенного Tempo в Docker. Укажите положительную длительность Go, например `72h`. При недопустимом значении записывается предупреждение и используется `168h`. См. [Журналы и трассировки инференса](user-guide/observability.md#inference-logs-and-traces). | `168h` | Сервер |
+
 ### Конфигурация отслеживания использования { #usage-tracking-configuration }
 
 | Переменная | Описание | По умолчанию | Применяется к |

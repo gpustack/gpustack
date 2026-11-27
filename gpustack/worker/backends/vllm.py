@@ -19,6 +19,11 @@ from gpustack_runtime.deployer import (
 )
 from gpustack_runtime.deployer.__utils__ import compare_versions
 from gpustack_runtime.detector import ManufacturerEnum, manufacturer_to_backend
+from gpustack.observability.tracing import (
+    allows_managed_engine_tracing,
+    set_engine_trace_instance,
+    set_engine_trace_service_name,
+)
 from gpustack.schemas.models import (
     BackendEnum,
     ModelInstance,
@@ -76,6 +81,7 @@ from gpustack.worker.backends.base import (
     is_ascend,
     cal_distributed_parallelism_arguments,
     read_lora_max_rank,
+    version_at_least,
 )
 
 logger = logging.getLogger(__name__)
@@ -252,6 +258,7 @@ class VLLMServer(InferenceServer):
             ),
             entrypoint=command,
             deployment_metadata=deployment_metadata,
+            env=env,
         )
 
         try:
@@ -1515,6 +1522,8 @@ class VLLMServer(InferenceServer):
         is_distributed: bool,
         entrypoint: Optional[List[str]] = None,
         deployment_metadata: Optional[ModelInstanceDeploymentMetadata] = None,
+        *,
+        env: Optional[Dict[str, str]] = None,
     ) -> Tuple[List[str], List[str]]:
         """
         Build vLLM command arguments for container execution.
@@ -1529,8 +1538,8 @@ class VLLMServer(InferenceServer):
             port, is_distributed, entrypoint, deployment_metadata
         )
 
-        arguments: List[str] = [self._model_path]
-        arguments = self.build_versioned_command_args(arguments)
+        default_arguments: List[str] = [self._model_path]
+        arguments = self.build_versioned_command_args(default_arguments)
 
         arguments.extend(self._build_omni_arguments(ctx))
         arguments.extend(self._build_max_model_len_arguments(ctx))
@@ -1572,6 +1581,16 @@ class VLLMServer(InferenceServer):
 
         # Inject user-defined backend parameters
         user_backend_parameters = self._flatten_backend_param()
+        if (
+            env is not None
+            and entrypoint == ["vllm", "serve"]
+            and arguments is default_arguments
+            and not self._model.run_command
+            and not ctx.is_omni
+        ):
+            arguments.extend(
+                self._get_observability_arguments(user_backend_parameters, env)
+            )
         arguments.extend(user_backend_parameters)
 
         extend_args_no_exist(
@@ -1596,6 +1615,64 @@ class VLLMServer(InferenceServer):
             arguments, user_backend_parameters, entrypoint
         )
         return arguments, injected
+
+    def _get_observability_arguments(
+        self, user_args: List[str], env: Dict[str, str]
+    ) -> List[str]:
+        config = self._config
+        trace_endpoint = self._engine_trace_endpoint()
+        if not (config.log_otlp_endpoint or trace_endpoint) or env.get(
+            "PYPI_PACKAGES_INSTALL"
+        ):
+            return []
+
+        options = {
+            argument.partition("=")[0]
+            for argument in normalize_vllm_parameters(user_args, tokenized=True)
+        }
+        if "--config" in options:
+            return []
+
+        backend_version = self._model.backend_version
+        arguments: List[str] = []
+        # --enable-log-requests was introduced in vLLM 0.10.1.
+        if (
+            config.log_otlp_endpoint
+            and version_at_least(backend_version, "0.10.1")
+            and not env.get("VLLM_LOGGING_CONFIG_PATH")
+            and options.isdisjoint(
+                (
+                    "--enable-log-requests",
+                    "--no-enable-log-requests",
+                    "--disable-log-requests",
+                    "--no-disable-log-requests",
+                    "--enable-log-outputs",
+                    "--max-log-len",
+                )
+            )
+        ):
+            # Keep prompt text and token IDs empty even at DEBUG.
+            arguments.extend(["--enable-log-requests", "--max-log-len", "0"])
+        # vLLM bundled OpenTelemetry dependencies in default builds starting in 0.17.0.
+        # Restrict auto-injection to managed runner images so custom images without
+        # OTel packages do not fail at startup.
+        if (
+            trace_endpoint
+            and getattr(self, "_resolved_runner_image", False)
+            and version_at_least(backend_version, "0.17.0")
+            and "--otlp-traces-endpoint" not in options
+            and allows_managed_engine_tracing(env)
+        ):
+            arguments.extend(["--otlp-traces-endpoint", trace_endpoint])
+            set_engine_trace_service_name(env, "vllm", self._model_instance.role)
+            set_engine_trace_instance(
+                env,
+                self._model_instance.id,
+                self._model_instance.name,
+                self._model_instance.model_id,
+                self._model_instance.role,
+            )
+        return arguments
 
     def _make_args_context(
         self,

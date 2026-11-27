@@ -23,6 +23,11 @@ from typing import TYPE_CHECKING, Dict, List, Mapping, NamedTuple, Optional, Seq
 
 from pydantic import BaseModel
 
+from gpustack.observability.tracing import (
+    allows_managed_engine_tracing,
+    set_engine_trace_instance,
+)
+from gpustack.schemas.models import PDModeEnum
 from gpustack.utils.command import (
     find_last_int_parameter,
     find_last_parameter,
@@ -47,6 +52,64 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from gpustack.schemas.models import ModelBase, ModelInstance
+
+
+# vllm-router exposes tracing in its Python binding rather than CLI flags; fall
+# back to the plain CLI if this helper entrypoint is unavailable.
+_VLLM_ROUTER_TRACE_SCRIPT = """\
+import os
+import sys
+
+try:
+    from vllm_router.launch_router import launch_router, parse_router_args
+except ImportError as exc:
+    if exc.name in (None, "vllm_router", "vllm_router.launch_router"):
+        os.execvp("vllm-router", ["vllm-router", *sys.argv[2:]])
+    raise
+
+args = parse_router_args(sys.argv[2:])
+args.enable_trace = True
+args.otlp_traces_endpoint = sys.argv[1]
+launch_router(args)
+"""
+
+
+def apply_router_observability(
+    mode: PDModeEnum,
+    args: List[str],
+    env: Dict[str, str],
+    *,
+    log_enabled: bool,
+    trace_endpoint: Optional[str],
+    instance: "ModelInstance",
+) -> List[str]:
+    """Apply observability defaults to the final launch of a stock recipe Router."""
+    if env.get("PYPI_PACKAGES_INSTALL"):
+        return args
+
+    options = {arg.partition("=")[0] for arg in args[1:]}
+    if (
+        mode == PDModeEnum.SGLANG_MOONCAKE
+        and log_enabled
+        and args[:3] == ["python3", "-m", "sglang_router.launch_router"]
+    ):
+        if "--log-level" not in options:
+            # The dispatch event is DEBUG while tracing is disabled.
+            env.setdefault("RUST_LOG", "smg=info,smg::observability::events=debug")
+        return args if "--json-log" in options else [*args, "--json-log"]
+
+    if (
+        mode == PDModeEnum.VLLM_NIXL
+        and trace_endpoint
+        and args[:1] == ["vllm-router"]
+        and options.isdisjoint(("--enable-trace", "--otlp-traces-endpoint"))
+        and allows_managed_engine_tracing(env)
+    ):
+        set_engine_trace_instance(
+            env, instance.id, instance.name, instance.model_id, "router"
+        )
+        return ["python3", "-c", _VLLM_ROUTER_TRACE_SCRIPT, trace_endpoint, *args[1:]]
+    return args
 
 
 class PeerAddress(NamedTuple):

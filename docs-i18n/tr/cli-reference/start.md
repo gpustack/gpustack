@@ -55,6 +55,9 @@ gpustack start [OPTIONS]
 | `--trusted-proxy-cidrs` değer               | (empty)                                | Ağ geçidinin önünde dağıtılan proxy'lerin CIDR ağları (birden çok ağ için bayrağı yineleyin). İstemci IP çözümlemesi `X-Forwarded-For` listesini bu proxy'ler üzerinden sağdan sola tarar; ayarlanmadığında yalnızca ağ geçidinin kendi gözlemlediği adres kullanılır, böylece istemcinin gönderdiği yönlendirme başlıkları kaynak adresi taklit edemez. Yalnızca öndeki proxy `X-Forwarded-For` başlığını kendisi ekliyorsa alt ağı belirtin. |
 | `--service-discovery-name` değer            | (boş)                                | DNS'teki servis keşfi servisinin adı. Yalnızca servis keşfi kullanılan Kubernetes dağıtımlarında geçerlidir. |
 | `--namespace` değer                         | (boş)                                | GPUStack'in ağ geçidi yönlendirme kurallarını ve model örneklerini dağıtacağı Kubernetes ad alanı. |
+| `--disable-tracing`                         | `False`                              | GPUStack tarafından yönetilen iz dışa aktarımını ve gömülü Tempo'yu devre dışı bırakır. |
+| `--trace-otlp-endpoint` değer               | (boş)                                | İzleri harici bir alıcıya aktarmak için OTLP/gRPC `host:port` adresi. Ayarlandığında gömülü Tempo'yu geçersiz kılar. |
+| `--log-otlp-endpoint` değer                 | (boş)                                | Yapılandırılmış günlük toplama ve dışa aktarmayı etkinleştirmek için tam OTLP/HTTP günlük URL'si (ör. `http://<collector-host>:4318/v1/logs`). |
 
 ### Sunucu seçenekleri { #server-options }
 
@@ -120,6 +123,7 @@ gpustack start [OPTIONS]
 | `--saml-sp-attribute-prefix` değer               | (boş)                                          | --external-auth-\* ile belirtilen öznitelikleri almak için SAML servis sağlayıcısı öznitelik öneki. |
 | `--gateway-concurrency` değer                    | `16`                                             | Yerleşik ağ geçidinin eş zamanlı bağlantı sayısı. |
 | `--disable-builtin-observability`                | `False`                                          | Yerleşik Grafana ve Prometheus servislerini devre dışı bırakır. |
+| `--trace-query-url` value | (boş) | Dağıtım ayrıntılarından Tempo'yu sorgulamak için HTTP(S) temel URL'si. |
 | `--builtin-prometheus-port` değer                | `19090`                                          | Yerleşik Prometheus servisinin portu. |
 | `--builtin-grafana-port` değer                   | `13000`                                          | Yerleşik Grafana servisinin portu. |
 | `--prometheus-url` değer                         | (boş)                                          | Sorgulanacak harici Prometheus'un temel URL'si. Ayarlanmazsa etkin olan yerleşik servis kullanılır. Gözlemlenebilirliği kendi yığınına devreden bir dağıtımda metriklere bağlı özellikleri (model ve PD panoları, bant genişliği öz denetimi) çalışır tutmak için ayarlayın. |
@@ -146,6 +150,7 @@ gpustack start [OPTIONS]
 | `--disable-worker-metrics`               | `False`                                | Metrikleri devre dışı bırakır. |
 | `--worker-metrics-port` değer            | `10151`                                | Metriklerin yayımlanacağı port. |
 | `--worker-port` değer                    | `10150`                                | Worker'ın bağlanacağı port. Tüm worker'larda aynı değeri kullanın. |
+| `--worker-trace-proxy-port` değer | (otomatik) | Worker OTLP izleme vekilinin geri döngü adresinde dinlediği port. Varsayılan olarak Worker otomatik atanan portu kaydeder ve yeniden başlatıldığında aynı portu kullanır. (`GPUSTACK_WORKER_TRACE_PROXY_PORT`) |
 | `--service-port-range` değer             | `40000-40063`                          | Çıkarım servislerinin port aralığı, 'N1-N2' biçiminde bir dizeyle belirtilir. Her iki uç dahildir. |
 | `--ray-port-range` değer                 | `41000-41999`                          | Ray servislerinin (vLLM dağıtık dağıtımında kullanılır) port aralığı, 'N1-N2' biçiminde bir dizeyle belirtilir. Her iki uç dahildir. |
 | `--log-dir` değer                        | (boş)                                | Günlüklerin saklanacağı dizin. |

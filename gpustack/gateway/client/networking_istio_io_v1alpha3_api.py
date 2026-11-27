@@ -1,15 +1,25 @@
+from copy import deepcopy
 from enum import Enum
+from pathlib import Path
+from urllib.parse import urlsplit
 from kubernetes_asyncio import client
 from kubernetes_asyncio.client import V1ObjectMeta
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from pydantic import BaseModel, Field
 
+from gpustack.utils.network import is_ipaddress
 
 # --- McpBridge Data Structures (Pydantic) ---
 
 GROUP = "networking.istio.io"
 VERSION = "v1alpha3"
 PLURAL = "envoyfilters"
+HIGRESS_DEFAULT_CONFIG = Path("/etc/gpustack/data/defaultConfig")
+HIGRESS_CONFIGMAP = "configmaps/higress-config.yaml"
+
+_HCM = "envoy.filters.network.http_connection_manager"
+_ROUTER = "envoy.filters.http.router"
+_CLUSTER = "gpustack-otlp-traces"
 
 
 class ApplyToStringEnum(str, Enum):
@@ -340,3 +350,180 @@ def get_ingress_fallback_envoyfilter(
         ),
     )
     return envoyfilter
+
+
+def configure_higress_access_log_context(
+    mesh: dict,
+    defaults: dict,
+    *,
+    trace_enabled: bool,
+    log_enabled: bool,
+) -> bool:
+    """Switch the bundled access-log format while preserving user formats."""
+    default_format = defaults["accessLogFormat"]
+    trace_format = default_format.replace(
+        '"trace_id":"%REQ(X-B3-TRACEID)%"',
+        '"traceparent":"%REQ(TRACEPARENT):55%"',
+    )
+    original = (defaults["accessLogEncoding"], default_format.strip())
+    json_default = ("JSON", default_format.strip())
+    traced = ("JSON", trace_format.strip())
+    if not isinstance(mesh, dict) or not isinstance(mesh.get("accessLogFormat"), str):
+        return False
+    current = (mesh.get("accessLogEncoding"), mesh["accessLogFormat"].strip())
+    if current not in (original, json_default, traced):
+        return False
+    encoding = "JSON" if trace_enabled or log_enabled else original[0]
+    access_format = trace_format if trace_enabled else default_format
+    if current == (encoding, access_format.strip()):
+        return False
+    mesh.update(accessLogEncoding=encoding, accessLogFormat=access_format)
+    return True
+
+
+def get_ingress_tracing_envoyfilter(
+    name: str, namespace: str, endpoint: Optional[str]
+) -> EnvoyFilter:
+    request_id_header = {
+        "header": {"key": "x-gpustack-request-id", "value": "%REQ(X-REQUEST-ID)%"},
+        "append_action": "ADD_IF_ABSENT",
+    }
+    hcm = {
+        "@type": (
+            "type.googleapis.com/envoy.extensions.filters.network."
+            "http_connection_manager.v3.HttpConnectionManager"
+        ),
+        # Local replies can leave the filter chain before the gateway plugin runs.
+        "local_reply_config": {
+            "mappers": [
+                {
+                    "filter": {"not_health_check_filter": {}},
+                    "headers_to_add": [deepcopy(request_id_header)],
+                }
+            ]
+        },
+    }
+    patches = []
+    if endpoint:
+        cluster, tracing = _ingress_trace_config(endpoint)
+        patches.append(
+            {
+                "applyTo": "CLUSTER",
+                "match": {"context": "GATEWAY"},
+                "patch": {"operation": "ADD", "value": cluster},
+            }
+        )
+        hcm["tracing"] = tracing
+
+    patches.append(
+        _merge_http_filter(
+            "NETWORK_FILTER", {"name": _HCM}, {"name": _HCM, "typed_config": hcm}
+        )
+    )
+    if endpoint:
+        patches.append(
+            _merge_http_filter(
+                "HTTP_FILTER",
+                {"name": _HCM, "subFilter": {"name": _ROUTER}},
+                {
+                    "name": _ROUTER,
+                    "typed_config": {
+                        "@type": (
+                            "type.googleapis.com/envoy.extensions.filters.http."
+                            "router.v3.Router"
+                        ),
+                        "start_child_span": True,
+                    },
+                },
+            )
+        )
+    patches.append(
+        {
+            "applyTo": "ROUTE_CONFIGURATION",
+            "match": {"context": "GATEWAY"},
+            "patch": {
+                "operation": "MERGE",
+                "value": {"response_headers_to_add": [request_id_header]},
+            },
+        }
+    )
+    return EnvoyFilter.model_validate(
+        {
+            "metadata": {"name": name, "namespace": namespace, "resourceVersion": "1"},
+            "spec": {"configPatches": patches},
+        }
+    )
+
+
+def _ingress_trace_config(endpoint: str) -> Tuple[dict, dict]:
+    address = urlsplit(f"//{endpoint}")
+    host = address.hostname
+    if is_ipaddress(host):
+        discovery = {"type": "STATIC"}
+    else:
+        discovery = {"type": "STRICT_DNS", "dns_lookup_family": "V4_PREFERRED"}
+
+    cluster = {
+        "name": _CLUSTER,
+        **discovery,
+        "connect_timeout": "1s",
+        "load_assignment": {
+            "cluster_name": _CLUSTER,
+            "endpoints": [
+                {
+                    "lb_endpoints": [
+                        {
+                            "endpoint": {
+                                "address": {
+                                    "socket_address": {
+                                        "address": host,
+                                        "port_value": address.port,
+                                    }
+                                }
+                            }
+                        }
+                    ]
+                }
+            ],
+        },
+        "typed_extension_protocol_options": {
+            "envoy.extensions.upstreams.http.v3.HttpProtocolOptions": {
+                "@type": (
+                    "type.googleapis.com/envoy.extensions.upstreams.http.v3."
+                    "HttpProtocolOptions"
+                ),
+                "explicit_http_config": {"http2_protocol_options": {}},
+            }
+        },
+    }
+    tracing = {
+        "random_sampling": {"value": 100},
+        # Envoy's default http.url tag includes the original path and query.
+        "max_path_tag_length": 0,
+        "custom_tags": [
+            {"tag": "gpustack.request_id", "request_header": {"name": "x-request-id"}}
+        ],
+        "provider": {
+            "name": "envoy.tracers.opentelemetry",
+            "typed_config": {
+                "@type": "type.googleapis.com/envoy.config.trace.v3.OpenTelemetryConfig",
+                "service_name": "gpustack.higress",
+                "grpc_service": {
+                    "envoy_grpc": {"cluster_name": _CLUSTER},
+                    "timeout": "3s",
+                },
+            },
+        },
+    }
+    return cluster, tracing
+
+
+def _merge_http_filter(apply_to: str, match: dict, value: dict) -> dict:
+    return {
+        "applyTo": apply_to,
+        "match": {
+            "context": "GATEWAY",
+            "listener": {"filterChain": {"filter": match}},
+        },
+        "patch": {"operation": "MERGE", "value": value},
+    }

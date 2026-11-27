@@ -1,12 +1,37 @@
+import argparse
 import json
 from pathlib import Path
+import subprocess
 
 from starlette.requests import Request
 import pytest
+from pydantic import ValidationError
 
-from gpustack.cmd.prerun import prepare_observability_config
+from gpustack.cmd.prerun import prepare_observability_config, setup_prerun_cmd
+from gpustack.cmd.start import parse_args, set_common_options, setup_start_cmd
 from gpustack.config.config import Config
 from gpustack.routes import prometheus as prometheus_routes
+
+
+@pytest.mark.parametrize("wanted_up", ["true", "false"])
+def test_tempo_finish_only_delays_restarts(monkeypatch, tmp_path, wanted_up):
+    svstat = tmp_path / "s6-svstat"
+    svstat.write_text(f'#!/bin/sh\n[ "$*" = "-o wantedup ." ] && echo {wanted_up}\n')
+    sleep = tmp_path / "sleep"
+    sleep.write_text('#!/bin/sh\necho "$1"\n')
+    svstat.chmod(0o755)
+    sleep.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+
+    finish = (
+        Path(__file__).resolve().parents[2]
+        / "pack/rootfs/etc/s6-overlay/s6-rc.d/tempo/finish"
+    )
+    result = subprocess.run(
+        [str(finish), "0", "0", "."], check=True, capture_output=True, text=True
+    )
+
+    assert result.stdout == ("5\n" if wanted_up == "true" else "")
 
 
 def test_config_uses_non_default_builtin_observability_ports(tmp_path):
@@ -58,6 +83,244 @@ def test_no_prometheus_at_all_is_a_first_class_answer(tmp_path):
     cfg = Config(data_dir=str(tmp_path / "data"), disable_builtin_observability=True)
 
     assert cfg.get_prometheus_url() is None
+
+
+@pytest.mark.parametrize(
+    ("environment", "options", "expected"),
+    [
+        ("docker", {}, "127.0.0.1:4317"),
+        ("docker", {"enable_worker": True}, "127.0.0.1:4317"),
+        (
+            "docker",
+            {"builtin_tempo_otlp_listen_address": "0.0.0.0"},
+            "127.0.0.1:4317",
+        ),
+        (
+            "docker",
+            {"builtin_tempo_otlp_listen_address": "::"},
+            "[::1]:4317",
+        ),
+        (
+            "docker",
+            {"builtin_tempo_otlp_listen_address": "10.0.0.5"},
+            "10.0.0.5:4317",
+        ),
+        (
+            "docker",
+            {"builtin_tempo_otlp_listen_address": "[fd00::5]"},
+            "[fd00::5]:4317",
+        ),
+        ("docker", {"trace_otlp_endpoint": "collector:4321"}, "collector:4321"),
+        (
+            "docker",
+            {"trace_otlp_endpoint": "collector:4321", "disable_tracing": True},
+            None,
+        ),
+        ("docker", {"server_url": "http://server"}, None),
+        ("kubernetes", {}, None),
+        (
+            "kubernetes",
+            {"trace_otlp_endpoint": "tempo.namespace:4317"},
+            "tempo.namespace:4317",
+        ),
+        ("host", {}, None),
+    ],
+)
+def test_effective_trace_endpoint(
+    tmp_path, monkeypatch, environment, options, expected
+):
+    monkeypatch.delenv("GPUSTACK_RUN_DIR", raising=False)
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+    if environment in {"docker", "kubernetes"}:
+        monkeypatch.setenv("GPUSTACK_RUN_DIR", str(tmp_path / "run"))
+    if environment == "kubernetes":
+        monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kube-api")
+    cfg = Config(
+        data_dir=str(tmp_path / "data"),
+        gateway_mode="disabled",
+        advertise_address="2001:db8::10",
+        token="registration-token",
+        **options,
+    )
+
+    assert cfg.effective_trace_otlp_endpoint == expected
+
+
+def test_effective_trace_endpoint_does_not_probe_advertise_address(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("GPUSTACK_RUN_DIR", str(tmp_path / "run"))
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+    cfg = Config(
+        data_dir=str(tmp_path / "data"),
+        gateway_mode="disabled",
+        token="registration-token",
+    )
+    monkeypatch.setattr(
+        Config,
+        "get_advertise_address",
+        lambda _self: (_ for _ in ()).throw(AssertionError("unexpected call")),
+    )
+
+    assert cfg.effective_trace_otlp_endpoint == "127.0.0.1:4317"
+    assert cfg.get_trace_ingest_url() == "http://127.0.0.1:4318/v1/traces"
+
+    worker_cfg = Config(
+        data_dir=str(tmp_path / "worker-data"),
+        server_url="http://server:80",
+        token="registration-token",
+    )
+    assert worker_cfg.effective_trace_otlp_endpoint is None
+    worker_cfg._local_trace_proxy_endpoint = "127.0.0.1:49152"
+    assert worker_cfg.effective_trace_otlp_endpoint == "127.0.0.1:49152"
+    worker_cfg.disable_tracing = True
+    assert worker_cfg.effective_trace_otlp_endpoint is None
+
+
+@pytest.mark.parametrize("value", ["not-an-ip", "127.0.0.1:4317", "0.0.0.0/0"])
+def test_builtin_tempo_otlp_listen_address_validation(tmp_path, value):
+    with pytest.raises(ValidationError, match="builtin_tempo_otlp_listen_address"):
+        Config(
+            data_dir=str(tmp_path / "data"),
+            builtin_tempo_otlp_listen_address=value,
+        )
+
+
+@pytest.mark.parametrize("field", ["trace_otlp_endpoint", "trace_advertise_endpoint"])
+@pytest.mark.parametrize(
+    "value",
+    ['a$(command):4317', 'https://collector:4317', '[1:1]:4317', 'collector:65536'],
+)
+def test_trace_endpoint_validation(tmp_path, field, value):
+    with pytest.raises(ValidationError, match=field):
+        Config(data_dir=str(tmp_path / "data"), **{field: value})
+
+
+def _parse_cli(subcommand: str, argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command")
+    setup_start_cmd(subparsers)
+    setup_prerun_cmd(subparsers)
+    return parser.parse_args([subcommand, *argv])
+
+
+def test_worker_trace_proxy_port_uses_startup_configuration(monkeypatch, tmp_path):
+    monkeypatch.setenv("GPUSTACK_RUN_DIR", str(tmp_path / "run"))
+    config_path = tmp_path / "worker.yaml"
+    config_path.write_text("worker_trace_proxy_port: 45001\n")
+    args = ["--data-dir", str(tmp_path), "--config-file", str(config_path)]
+    monkeypatch.delenv("GPUSTACK_WORKER_TRACE_PROXY_PORT", raising=False)
+    assert parse_args(_parse_cli("start", args)).worker_trace_proxy_port == 45001
+    monkeypatch.setenv("GPUSTACK_WORKER_TRACE_PROXY_PORT", "45002")
+    assert parse_args(_parse_cli("start", args)).worker_trace_proxy_port == 45002
+    args.extend(["--worker-trace-proxy-port", "45003"])
+    assert parse_args(_parse_cli("start", args)).worker_trace_proxy_port == 45003
+
+
+@pytest.mark.parametrize("port", [0, 65536])
+def test_worker_trace_proxy_rejects_invalid_port(tmp_path, port):
+    with pytest.raises(ValidationError, match="worker_trace_proxy_port"):
+        Config(data_dir=str(tmp_path), worker_trace_proxy_port=port)
+
+
+def test_trace_query_settings_use_server_cli_and_disable_with_tracing(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("GPUSTACK_RUN_DIR", str(tmp_path / "run"))
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+    builtin = Config(data_dir=str(tmp_path / "builtin"), builtin_tempo_http_port=3320)
+    assert builtin.get_trace_query_url() == "http://127.0.0.1:3320"
+
+    cfg = parse_args(
+        _parse_cli(
+            "start",
+            [
+                "--data-dir",
+                str(tmp_path / "configured"),
+                "--gateway-mode",
+                "disabled",
+                "--trace-otlp-endpoint",
+                "collector:4317",
+                "--trace-query-url",
+                "https://tempo.example/tempo/",
+            ],
+        )
+    )
+    assert cfg.get_trace_query_url() == "https://tempo.example/tempo"
+    cfg.disable_tracing = True
+    assert cfg.get_trace_query_url() is None
+
+
+@pytest.mark.parametrize("subcommand", ["start", "prerun"])
+@pytest.mark.parametrize(
+    ("flag", "attr", "env_name", "flag_value", "env_value"),
+    [
+        (
+            "--trace-otlp-endpoint",
+            "trace_otlp_endpoint",
+            "GPUSTACK_TRACE_OTLP_ENDPOINT",
+            "collector.cli:4317",
+            "collector.env:4317",
+        ),
+        (
+            "--log-otlp-endpoint",
+            "log_otlp_endpoint",
+            "GPUSTACK_LOG_OTLP_ENDPOINT",
+            "http://collector.cli:4318/v1/logs",
+            "http://collector.env:4318/v1/logs",
+        ),
+    ],
+)
+def test_otlp_endpoint_cli_flags_and_env_precedence(
+    monkeypatch, subcommand, flag, attr, env_name, flag_value, env_value
+):
+    monkeypatch.delenv(env_name, raising=False)
+    assert getattr(_parse_cli(subcommand, []), attr) is None
+    assert getattr(_parse_cli(subcommand, [flag, flag_value]), attr) == flag_value
+
+    monkeypatch.setenv(env_name, env_value)
+    assert getattr(_parse_cli(subcommand, []), attr) == env_value
+    assert getattr(_parse_cli(subcommand, [flag, flag_value]), attr) == flag_value
+
+
+def test_otlp_endpoint_cli_flags_reach_config_and_preserve_yaml(tmp_path, monkeypatch):
+    for name in (
+        "GPUSTACK_DISABLE_TRACING",
+        "GPUSTACK_TRACE_OTLP_ENDPOINT",
+        "GPUSTACK_LOG_OTLP_ENDPOINT",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("GPUSTACK_RUN_DIR", str(tmp_path / "run"))
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+
+    cfg = parse_args(
+        _parse_cli(
+            "start",
+            [
+                "--data-dir",
+                str(tmp_path / "data"),
+                "--gateway-mode",
+                "disabled",
+                "--trace-otlp-endpoint",
+                "collector.example:4317",
+                "--log-otlp-endpoint",
+                "http://collector.example:4318/v1/logs",
+            ],
+        )
+    )
+    assert cfg.trace_otlp_endpoint == "collector.example:4317"
+    assert cfg.effective_trace_otlp_endpoint == "collector.example:4317"
+    assert cfg.log_otlp_endpoint == "http://collector.example:4318/v1/logs"
+
+    yaml_data = {
+        "data_dir": str(tmp_path / "yaml-data"),
+        "trace_otlp_endpoint": "yaml-collector:4317",
+        "log_otlp_endpoint": "http://yaml-collector:4318/v1/logs",
+    }
+    set_common_options(_parse_cli("start", []), yaml_data)
+    yaml_cfg = Config(**yaml_data)
+    assert yaml_cfg.trace_otlp_endpoint == "yaml-collector:4317"
+    assert yaml_cfg.log_otlp_endpoint == "http://yaml-collector:4318/v1/logs"
 
 
 def test_incluster_gateway_scrape_job_uses_pod_discovery(tmp_path, monkeypatch):
@@ -117,6 +380,8 @@ def test_incluster_gateway_scrape_job_uses_pod_discovery(tmp_path, monkeypatch):
 
 
 def test_prepare_prometheus_config_writes_observability_env(tmp_path, monkeypatch):
+    import yaml
+
     cfg = Config(
         data_dir=str(tmp_path / "data"),
         builtin_prometheus_port=19100,
@@ -135,15 +400,16 @@ def test_prepare_prometheus_config_writes_observability_env(tmp_path, monkeypatc
 
     env_text = observability_config_path.read_text()
     prom_text = prometheus_config.read_text()
-    datasource_text = (
-        grafana_provisioning_dir / "datasources" / "datasource.yaml"
-    ).read_text()
+    datasource = yaml.safe_load(
+        (grafana_provisioning_dir / "datasources" / "datasource.yaml").read_text()
+    )["datasources"][0]
 
     assert "PROMETHEUS_PORT=19100" in env_text
     assert "GF_SERVER_HTTP_PORT=13100" in env_text
     assert f"PROMETHEUS_DATA_DIR={tmp_path / 'data' / 'prometheus'}" in env_text
     assert "127.0.0.1:10161/metrics/targets" in prom_text
-    assert "url: http://127.0.0.1:19100/prometheus" in datasource_text
+    assert datasource["url"] == "http://127.0.0.1:19100/prometheus"
+    assert datasource["orgId"] == 1
 
 
 @pytest.mark.asyncio

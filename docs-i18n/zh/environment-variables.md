@@ -109,6 +109,24 @@ TLS 协议版本配置会写入 `GPUSTACK_GATEWAY_MIRROR_INGRESS_NAME` 指定的
 | `GPUSTACK_HIGRESS_EXT_AUTH_TIMEOUT_MS`                | 网关身份认证调用超时时间，单位为毫秒。    | `gateway_plugin.gpustack-ext-auth.config.authz.timeout`    | `30000`                              | Server     |
 | `GPUSTACK_GATEWAY_AI_STATISTICS_PLUGIN_CONTENT_TYPES` | 纳入 token 用量计量的内容类型，以逗号分隔。   | `gateway_plugin.ai-statistics.config.enable_content_types` | `application/json,text/event-stream` | Server     |
 
+### 推理可观测性配置 { #inference-observability-configuration }
+
+| 变量 | 描述 | 默认值 | 作用范围 |
+| --- | --- | --- | --- |
+| `GPUSTACK_DISABLE_TRACING` | 禁用 GPUStack 管理的追踪上报和内置 Tempo。 | `false` | Server & Worker |
+| `GPUSTACK_TRACE_OTLP_ENDPOINT` | 外部追踪接收端的 OTLP/gRPC `host:port`。配置后替代默认的内置 Tempo 接收端。 | — | Server & Worker |
+| `GPUSTACK_TRACE_ADVERTISE_ENDPOINT` | 新生成的 Worker 注册命令中使用的 OTLP/gRPC `host:port`。当 Worker 无法访问默认写入地址时请设置此变量。 | — | Server |
+| `GPUSTACK_TRACE_QUERY_URL` | 部署详情查询 Trace 使用的 Tempo HTTP(S) 基础 URL。 | — | Server |
+| `GPUSTACK_LOG_OTLP_ENDPOINT` | 完整的 OTLP/HTTP 日志写入 URL，例如 `http://<collector-host>:4318/v1/logs`。设置后启用结构化日志上报。 | — | Server & Worker |
+| `GPUSTACK_LOG_REDACT_PATTERNS` | 由非空 RE2 正则表达式组成的 JSON 数组，用于掩码上报日志中的匹配内容。参见[对上报日志脱敏](user-guide/observability.md#redact-exported-logs)。 | `[]` | Server & Worker |
+
+### 追踪存储配置 { #trace-storage-configuration }
+
+| 变量 | 描述 | 默认值 | 作用范围 |
+| --- | --- | --- | --- |
+| `GPUSTACK_BUILTIN_TEMPO_OTLP_LISTEN_ADDRESS` | Docker 内置 Tempo 的 OTLP/gRPC 接收端监听 IP 地址。默认仅监听回环地址；如需接收远程 Worker 的 Span，请设为可信私网 IP（或在已发布私网端口的桥接网络中设为 `0.0.0.0`）。 | `127.0.0.1` | Server |
+| `GPUSTACK_BUILTIN_TEMPO_RETENTION` | Docker 内置 Tempo 的块保留时间。请使用正数的 Go 时长，例如 `72h`。值无效时会记录警告并采用 `168h`。参见[推理日志和追踪](user-guide/observability.md#inference-logs-and-traces)。 | `168h` | Server |
+
 ### 用量跟踪配置 { #usage-tracking-configuration }
 
 | 变量                                           | 说明                                                                                                                                                                                                                                        | 默认值      | 适用对象 |

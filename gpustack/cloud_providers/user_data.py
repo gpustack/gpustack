@@ -19,6 +19,9 @@ write_files:
       {{ k }}: {{ v }}
       {%- endif %}
       {%- endfor %}
+      {%- if trace_config %}
+      {{ trace_config | indent(6) }}
+      {%- endif %}
 
   - path: /opt/gpustack-run-worker.sh
     permissions: '0755'
@@ -95,6 +98,8 @@ class UserDataTemplate:
         image_name: str,
         worker_name: str,
         secret_configs: Dict[str, Any] = {},
+        *,
+        trace_otlp_endpoint: Optional[str] = None,
     ):
         self.server_url = server_url
         self.token = token
@@ -104,6 +109,11 @@ class UserDataTemplate:
         self.worker_name = worker_name
         self.distribution = None
         self.secret_configs = secret_configs
+        trace_config = (
+            yaml.safe_dump({"trace_otlp_endpoint": trace_otlp_endpoint}).rstrip()
+            if trace_otlp_endpoint
+            else ""
+        )
         template = jinja2.Environment().from_string(default_user_data_template_jinja)
         self._data = yaml.safe_load(
             template.render(
@@ -112,6 +122,7 @@ class UserDataTemplate:
                 image_name=self.image_name,
                 secret_configs=self.secret_configs,
                 worker_name=self.worker_name,
+                trace_config=trace_config,
             )
         )
         self.distribution = "ubuntu"

@@ -8,6 +8,8 @@ the same first-login retrieval guide regardless of round-robin routing.
 */ -}}
 {{- $bootstrapPinned := and .Values.server.bootstrapPasswordSecret.enabled .Values.server.bootstrapPasswordSecret.password -}}
 {{- $bootstrapFile := and .Values.server.bootstrapPasswordSecret.enabled (not .Values.server.bootstrapPasswordSecret.password) -}}
+{{- $builtinTempoQuery := and (include "gpustack.builtinTempoEnabled" .) (not .Values.tracing.queryURL) -}}
+{{- $tempoTLSDir := "/etc/gpustack/tempo-query-tls" -}}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -25,6 +27,10 @@ spec:
     metadata:
       labels:
         app: {{ .Release.Name }}-server
+        {{- if .Values.logging.endpoint }}
+        gpustack.ai/log-release: {{ .Release.Name | quote }}
+        gpustack.ai/log-source: application
+        {{- end }}
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/port: "{{ .Values.server.metricsPort }}"
@@ -86,6 +92,24 @@ spec:
                   name: {{ .Release.Name }}-server-bootstrap-password
                   key: password
             {{- end }}
+            {{- with (include "gpustack.observabilityEnv" . | trim) }}
+            {{- . | nindent 12 }}
+            {{- end }}
+            {{- if .Values.tracing.enabled }}
+            {{- if .Values.tracing.queryURL }}
+            - name: GPUSTACK_TRACE_QUERY_URL
+              value: {{ .Values.tracing.queryURL | quote }}
+            {{- else if $builtinTempoQuery }}
+            - name: GPUSTACK_TRACE_QUERY_URL
+              value: {{ printf "https://%s:3200" (include "gpustack.tempoHost" .) | quote }}
+            - name: GPUSTACK_TRACE_QUERY_TLS_DIR
+              value: {{ $tempoTLSDir | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if and .Values.tracing.enabled .Values.tracing.advertiseEndpoint }}
+            - name: GPUSTACK_TRACE_ADVERTISE_ENDPOINT
+              value: {{ .Values.tracing.advertiseEndpoint | quote }}
+            {{- end }}
           envFrom:
             {{- if .Values.worker.enabled }}
             - secretRef:
@@ -131,6 +155,11 @@ spec:
           volumeMounts:
             - mountPath: /var/lib/gpustack
               name: gpustack-data-dir
+            {{- if $builtinTempoQuery }}
+            - name: tempo-query-tls
+              mountPath: {{ $tempoTLSDir | quote }}
+              readOnly: true
+            {{- end }}
             {{- if $bootstrapFile }}
             # Machine-generated shared initial admin password, mounted so every
             # replica shows the same first-login retrieval guide regardless of
@@ -167,8 +196,21 @@ spec:
                   app: {{ .Release.Name }}-server
       {{- end }}
       {{- end }}
-      {{- if or $bootstrapFile .Values.server.dataVolume.hostPath .Values.server.extraVolumes }}
+      {{- if or $bootstrapFile $builtinTempoQuery .Values.server.dataVolume.hostPath .Values.server.extraVolumes }}
       volumes:
+        {{- if $builtinTempoQuery }}
+        - name: tempo-query-tls
+          secret:
+            secretName: {{ include "gpustack.tempoQueryTLSSecretName" . | quote }}
+            defaultMode: 0400
+            items:
+              - key: ca.crt
+                path: ca.crt
+              - key: client.crt
+                path: client.crt
+              - key: client.key
+                path: client.key
+        {{- end }}
         {{- if $bootstrapFile }}
         - name: bootstrap-password
           secret:

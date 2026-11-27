@@ -106,6 +106,24 @@ Bir ağ geçidi eklentisinin **inside** yapılandırmasıyla sonuçlanan ayarlar
 | `GPUSTACK_HIGRESS_EXT_AUTH_TIMEOUT_MS`                | Ağ geçidi kimlik doğrulama çağrısı zaman aşımı, milisaniye cinsinden. | `gateway_plugin.gpustack-ext-auth.config.authz.timeout`    | `30000`                              | Sunucu |
 | `GPUSTACK_GATEWAY_AI_STATISTICS_PLUGIN_CONTENT_TYPES` | Belirteç kullanımı için ölçülen virgülle ayrılmış içerik türleri. | `gateway_plugin.ai-statistics.config.enable_content_types` | `application/json,text/event-stream` | Sunucu |
 
+### Çıkarım Gözlemlenebilirliği Yapılandırması { #inference-observability-configuration }
+
+| Değişken | Açıklama | Varsayılan | Kapsam |
+| --- | --- | --- | --- |
+| `GPUSTACK_DISABLE_TRACING` | GPUStack tarafından yönetilen iz aktarımını ve yerleşik Tempo'yu devre dışı bırakır. | `false` | Sunucu & Worker |
+| `GPUSTACK_TRACE_OTLP_ENDPOINT` | İzleri aktarmak için harici OTLP/gRPC `host:port` adresi. Ayarlandığında varsayılan yerleşik Tempo alıcısının yerine kullanılır. | — | Sunucu & Worker |
+| `GPUSTACK_TRACE_ADVERTISE_ENDPOINT` | Yeni Worker kayıt komutlarında duyurulan OTLP/gRPC `host:port` adresi. Worker'lar varsayılan alım adresine erişemiyorsa ayarlayın. | — | Sunucu |
+| `GPUSTACK_TRACE_QUERY_URL` | Dağıtım ayrıntılarından izleri sorgulamak için Tempo'nun HTTP(S) temel URL'si. | — | Sunucu |
+| `GPUSTACK_LOG_OTLP_ENDPOINT` | `http://<collector-host>:4318/v1/logs` gibi tam OTLP/HTTP günlük alım URL'si. Ayarlandığında yapılandırılmış günlük aktarımı etkinleşir. | — | Sunucu & Worker |
+| `GPUSTACK_LOG_REDACT_PATTERNS` | Aktarılan günlüklerde eşleşmeleri maskelemek için boş olmayan RE2 desenlerinden oluşan bir JSON dizisi. Bkz. [Aktarılan Günlükleri Maskeleme](user-guide/observability.md#redact-exported-logs). | `[]` | Sunucu & Worker |
+
+### İz Depolama Yapılandırması { #trace-storage-configuration }
+
+| Değişken | Açıklama | Varsayılan | Kapsam |
+| --- | --- | --- | --- |
+| `GPUSTACK_BUILTIN_TEMPO_OTLP_LISTEN_ADDRESS` | Docker'daki yerleşik Tempo OTLP/gRPC alıcısının bağlandığı IP adresi. Varsayılan olarak loopback'tir; uzak Worker'lardan span kabul etmek için güvenilen bir özel IP (veya yayımlanan özel arayüz arkasında `0.0.0.0`) ayarlayın. | `127.0.0.1` | Sunucu |
+| `GPUSTACK_BUILTIN_TEMPO_RETENTION` | Docker'daki yerleşik Tempo için blok saklama süresi. `72h` gibi pozitif bir Go süresi girin. Geçersiz değer bir uyarı kaydeder ve `168h` değerine döner. Bkz. [Çıkarım Günlükleri ve İzleri](user-guide/observability.md#inference-logs-and-traces). | `168h` | Sunucu |
+
 ### Kullanım Takibi Yapılandırması { #usage-tracking-configuration }
 
 | Değişken | Açıklama | Varsayılan | Şunlar için geçerlidir: |

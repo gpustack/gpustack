@@ -17,6 +17,11 @@ from gpustack.utils.envs import get_gpustack_env
 # The higress version should be sync with HIGRESS_VERSION in pack/Dockerfile.
 higress_version = "2.1.9"
 
+# Keep in sync with ALLOY_VERSION / TEMPO_VERSION in pack/Dockerfile and
+# charts/gpustack-chart/templates/{alloy,tempo}.yaml.
+alloy_version = "v1.22.0"
+tempo_version = "2.10.10"
+
 ssh_server_version = "v1.4.0"
 kueue_version = "v0.18.11"
 node_feature_discovery_version = "v0.19.0-gpustack1"
@@ -43,6 +48,8 @@ append_images(
     f"gpustack/mirrored-higress-higress:{higress_version}",
     f"gpustack/mirrored-higress-pilot:{higress_version}",
     f"gpustack/mirrored-higress-gateway:{higress_version}",
+    f"grafana/alloy:{alloy_version}",
+    f"grafana/tempo:{tempo_version}",
     # GPUStack Operator and its workload dependencies.
     # Includes SSH instances, Kueue, node discovery, and CSI storage.
     # Optional workloads use Topograph, Mooncake, model delivery, routers,

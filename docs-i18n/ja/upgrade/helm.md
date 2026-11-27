@@ -20,6 +20,12 @@ Kubernetes ベースの GPUStack は、`helm upgrade` でアップグレード�
 
     外部データベース（`server.externalDatabaseURL`）を使用する場合は、そのデータベースプロバイダーのバックアップ手順に従ってください。
 
+## Helm アップグレード時のトレースストレージ { #trace-storage-on-helm-upgrades }
+
+組み込み Tempo は独立したワークロードで実行されます。サーバー Pod 内で Tempo が稼働していたリリースをアップグレードすると、新しい Tempo ワークロードは独自のボリュームを使用します。Helm は、サーバーのデータボリュームにある既存の `<data_dir>/tempo` ファイルをそのまま残します。過去のトレースを保持する必要がある場合は、そのファイルを別途バックアップしてください。
+
+新しい Tempo Pod はデフォルトで `emptyDir` を使い、Pod の置き換えごとに空のトレースストレージで起動します。以降の Pod の置き換えでトレースを保持するには、アップグレード前に `tracing.tempo.existingClaim` に既存の PVC を指定します。[Helm の設定](../user-guide/observability.md#configure-helm)を参照してください。
+
 ## リリースのアップグレード { #upgrade-the-release }
 
 既知の再現可能なリリースにアップグレードするため、必ず `--version <chart-version>` で対象バージョンを固定します（チャートのバージョンは GPUStack のリリースに対応し、例として `2.2.0` があります）。また、インストール時と同じ `-f values.yaml` や `--set` フラグを指定するか、`--reuse-values` で以前の設定値を再利用します。リリース名はインストール時に従ったドキュメントによって異なります（旧ドキュメントでは `gpustack`、現在のドキュメントでは `gpustack-server`）。そのため、下記のコマンドは名前空間内の StatefulSet の `meta.helm.sh/release-name` アノテーションから自動的に導出し（GPUStack クラスター経由で登録されたワーカー専用リリースは StatefulSet を所有しないためパターンで除外されます）、一致するリリースがちょうど 1 つである場合にのみアップグレードを実行します。

@@ -14,6 +14,7 @@ from typing import (
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse, JSONResponse
 from starlette.background import BackgroundTask
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from gpustack.api.auth import worker_proxy_auth
 from gpustack.api.exceptions import (
@@ -23,6 +24,14 @@ from gpustack.api.exceptions import (
     ErrorResponse,
 )
 from gpustack import envs
+from gpustack.observability.tracing import (
+    PUBLIC_INFERENCE_PATHS,
+    current_inference_span,
+    inject_trace_context,
+    set_span_error,
+    trace_inference_http,
+    trace_log_fields,
+)
 from gpustack.utils.network import use_proxy_env_for_url
 from gpustack.utils.stall import stall_error_sse
 from gpustack.gateway.utils import router_header_key
@@ -64,6 +73,41 @@ def _is_event_stream(content_type: Optional[str]) -> bool:
     return _EVENT_STREAM_CONTENT_TYPE in (content_type or "").lower()
 
 
+class WorkerProxyTracingMiddleware:
+    """Trace resolved inference across Worker auth and response relay."""
+
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if (
+            scope["type"] != "http"
+            or scope["method"] != "POST"
+            or not scope["path"].startswith(("/v1/", "/proxy/v1/"))
+        ):
+            await self.app(scope, receive, send)
+            return
+        tracer = getattr(scope["app"].state, "inference_tracer", None)
+        state = scope.get("state", {})
+        endpoint = state.get("model_instance_endpoint")
+        if tracer is None or endpoint is None:
+            await self.app(scope, receive, send)
+            return
+        await trace_inference_http(
+            self.app,
+            scope,
+            receive,
+            send,
+            tracer,
+            "POST inference proxy",
+            {
+                "http.request.method": "POST",
+                "gpustack.model_id": endpoint.model_id,
+                "gpustack.model_instance_id": endpoint.instance_id,
+            },
+        )
+
+
 async def _read_first_chunk(
     body_iter: AsyncIterator[bytes], timeout: Optional[float]
 ) -> Optional[bytes]:
@@ -89,6 +133,8 @@ async def _stream_body(
     body_iter: AsyncIterator[bytes],
     first_chunk: Optional[bytes],
     idle_timeout: Optional[float],
+    *,
+    log_context: Optional[dict] = None,
 ) -> AsyncIterator[bytes]:
     """Stream the response body, bounding the gap between chunks.
 
@@ -115,9 +161,12 @@ async def _stream_body(
         except StopAsyncIteration:
             return
         except (asyncio.TimeoutError, TimeoutError):
+            set_span_error(current_inference_span(), "timeout")
             logger.error(
-                f"Upstream stopped sending data for {idle_timeout}s mid-stream, "
-                "terminating the response with an error event"
+                "Upstream stopped sending data for %ss mid-stream, "
+                "terminating the response with an error event",
+                idle_timeout,
+                extra={**(log_context or {}), **trace_log_fields()},
             )
             yield stall_error_sse()
             return
@@ -227,6 +276,27 @@ async def proxy(path: str, request: Request):  # noqa: C901
             url = f"{url}?{request.url.query}"
         headers = dict(request.headers)
         headers.pop("host", None)
+        span = current_inference_span()
+        inject_trace_context(headers, span)
+        target_instance_id = getattr(request.state, "x_target_instance_id", None)
+        request_id = request.headers.get("x-request-id") or None
+        if request_id:
+            span.set_attribute("gpustack.request_id", request_id)
+        log_context = {
+            "request_id": request_id,
+            "model_instance_id": target_instance_id,
+        }
+        if span.is_recording() and target_instance_id:
+            span.set_attribute("gpustack.model_instance_id", int(target_instance_id))
+            endpoint = getattr(request.state, "model_instance_endpoint", None)
+            if endpoint is not None:
+                span.set_attribute("gpustack.model_id", endpoint.model_id)
+                if endpoint.instance_name:
+                    span.set_attribute(
+                        "gpustack.model_instance_name", endpoint.instance_name
+                    )
+            if f"/{path}" in PUBLIC_INFERENCE_PATHS:
+                span.set_attribute("http.route", f"/{path}")
         # Read the header while popping it: aiohttp sets its own framing, and
         # checking after the pop would never see a chunked upload.
         transfer_encoding = headers.pop("transfer-encoding", "")
@@ -326,7 +396,6 @@ async def proxy(path: str, request: Request):  # noqa: C901
         # Recorded here rather than off the status code alone because an SSE 200
         # arrives before prefill, which would let a wedged instance report
         # itself healthy.
-        target_instance_id = getattr(request.state, "x_target_instance_id", None)
         if resp.status < 400 and target_instance_id:
             record_fn = getattr(request.app.state, "record_successful_inference", None)
             if record_fn:
@@ -338,6 +407,7 @@ async def proxy(path: str, request: Request):  # noqa: C901
                     body_iter,
                     first_chunk,
                     envs.PROXY_STREAM_IDLE_TIMEOUT if streaming else None,
+                    log_context=log_context,
                 ):
                     yield chunk
             finally:

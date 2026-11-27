@@ -61,6 +61,7 @@ def test_cluster_yaml_keeps_default_out_of_worker_startup(provider, monkeypatch)
         server_external_url=None,
         system_default_container_registry=None,
         container_namespace=None,
+        effective_trace_otlp_endpoint=None,
     )
     monkeypatch.setattr(clusters, "get_global_config", lambda: config)
     monkeypatch.setattr(clusters, "get_cluster_image_name", lambda *_: "image")

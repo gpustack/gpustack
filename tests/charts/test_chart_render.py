@@ -11,9 +11,11 @@ fetched, so neither a machine without helm nor an outage at somebody else's
 chart repository turns this suite red.
 """
 
+import json
 import pathlib
 import shutil
 import subprocess
+import sys
 from copy import deepcopy
 from functools import lru_cache
 
@@ -21,6 +23,9 @@ import pytest
 import yaml
 
 from gpustack import __operator_version__
+from gpustack.gateway.client.networking_istio_io_v1alpha3_api import (
+    get_ingress_tracing_envoyfilter,
+)
 
 HELM = shutil.which("helm")
 SAFE_YAML_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
@@ -58,42 +63,45 @@ def pinned_operator_version() -> tuple[int, ...]:
 
 
 @pytest.fixture(scope="module", autouse=True)
-def chart_dependencies():
-    """Vendor the chart's dependencies, which every render needs.
+def chart_dependencies(tmp_path_factory):
+    """Prepare dependencies without modifying the checkout's vendored archive.
 
     `helm template` resolves dependencies while loading the chart — before any
     value is read — so a missing `charts/` fails every render here regardless of
-    what the test asks for, including the ones whose sub-charts are conditioned
-    off. The directory is generated, not committed, so a fresh checkout and a CI
-    runner both start without it.
+    what the test asks for, including when its sub-charts are disabled.
 
     `dependency update` rather than `build`: the lock file is not tracked either,
     and `build` refuses a repository that was never `helm repo add`-ed, which is
     the normal state of a runner.
     """
-    chart = yaml.safe_load((CHART_DIR / "Chart.yaml").read_text())
+    render_path = tmp_path_factory.mktemp("helm-chart") / CHART_DIR.name
+    shutil.copytree(CHART_DIR, render_path)
+    chart = yaml.safe_load((render_path / "Chart.yaml").read_text())
     wanted = [d["name"] for d in chart.get("dependencies") or []]
-    vendored = {path.name for path in (CHART_DIR / "charts").glob("*")}
+    vendored = {path.name for path in (render_path / "charts").glob("*")}
     missing = [
         name for name in wanted if not any(entry.startswith(name) for entry in vendored)
     ]
-    if not missing:
-        return
-
-    result = subprocess.run(
-        [HELM, "dependency", "update", CHART],
-        capture_output=True,
-        text=True,
-        timeout=600,
-    )
-    if result.returncode != 0:
-        # Last line, not the whole log: `dependency update` narrates every repo
-        # it refreshes before saying what went wrong.
-        detail = (result.stderr.strip() or result.stdout.strip()).splitlines()
-        pytest.skip(
-            f"chart dependencies unavailable ({', '.join(missing)}): "
-            f"{detail[-1] if detail else 'helm dependency update failed'}"
-        )
+    if missing:
+        try:
+            result = subprocess.run(
+                [HELM, "dependency", "update", str(render_path)],
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
+        except subprocess.TimeoutExpired:
+            pytest.skip(f"chart dependency download timed out ({', '.join(missing)})")
+        if result.returncode != 0:
+            # Last line, not the whole log: `dependency update` narrates each repo.
+            detail = (result.stderr.strip() or result.stdout.strip()).splitlines()
+            pytest.skip(
+                f"chart dependencies unavailable ({', '.join(missing)}): "
+                f"{detail[-1] if detail else 'helm dependency update failed'}"
+            )
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(sys.modules[__name__], "CHART", str(render_path))
+        yield
 
 
 # Every render has to name the gpustack image: `image.tag` is deliberately
@@ -168,6 +176,718 @@ def container_env(docs: list[dict], kind: str, name: str) -> dict[str, str]:
                 if "value" in e
             }
     pytest.fail(f"{kind}/{name} not rendered")
+
+
+@pytest.mark.parametrize("trace_mode", ["builtin", "external", "disabled"])
+@pytest.mark.parametrize("logs", [False, True])
+def test_observability_endpoints_reach_server_and_workers(logs, trace_mode):
+    log_endpoint = "https://logs.test:4318/v1/logs"
+    external_endpoint = "collector.monitoring.svc:4317"
+    trace_endpoint = {
+        "builtin": "gpustack-tempo.inference.svc.tenant.test:4317",
+        "external": external_endpoint,
+        "disabled": None,
+    }[trace_mode]
+    docs = render(
+        "--namespace",
+        "inference",
+        "--set",
+        "worker.enabled=true,worker.gpuVendors={nvidia,amd},clusterDomain=tenant.test",
+        "--set",
+        f"tracing.enabled={str(trace_mode != 'disabled').lower()}",
+        "--set-string",
+        f"logging.endpoint={log_endpoint if logs else ''}",
+        "--set-string",
+        f"tracing.endpoint={external_endpoint if trace_mode != 'builtin' else ''}",
+        "--set-string",
+        f"tracing.queryURL={'https://tempo.example' if trace_mode != 'builtin' else ''}",
+    )
+    for kind, name in (
+        ("StatefulSet", "gpustack-server"),
+        ("DaemonSet", "gpustack-worker"),
+        ("DaemonSet", "gpustack-worker-nvidia"),
+        ("DaemonSet", "gpustack-worker-amd"),
+    ):
+        env = container_env(docs, kind, name)
+        assert env.get("GPUSTACK_LOG_OTLP_ENDPOINT") == (log_endpoint if logs else None)
+        assert env.get("GPUSTACK_TRACE_OTLP_ENDPOINT") == trace_endpoint
+        assert env.get("GPUSTACK_DISABLE_TRACING") == (
+            "true" if trace_mode == "disabled" else None
+        )
+    server = container_env(docs, "StatefulSet", "gpustack-server")
+    assert (
+        server.get("GPUSTACK_TRACE_QUERY_URL")
+        == {
+            "builtin": "https://gpustack-tempo.inference.svc.tenant.test:3200",
+            "external": "https://tempo.example",
+            "disabled": None,
+        }[trace_mode]
+    )
+    assert server.get("GPUSTACK_TRACE_QUERY_TLS_DIR") == (
+        "/etc/gpustack/tempo-query-tls" if trace_mode == "builtin" else None
+    )
+    for kind in ("Deployment", "Service", "ConfigMap"):
+        assert ("gpustack-tempo" in names(docs, kind)) is (trace_mode == "builtin")
+    assert ("gpustack-tempo-query-tls" in names(docs, "Secret")) is (
+        trace_mode == "builtin"
+    )
+    for kind in ("Deployment", "ConfigMap"):
+        assert ("gpustack-alloy" in names(docs, kind)) is logs
+    assert "gpustack-higress-log-collector" not in names(docs, "DaemonSet")
+    assert ("gpustack-otel-tracing" in names(docs, "EnvoyFilter")) is (
+        logs or trace_mode != "disabled"
+    )
+
+
+@pytest.mark.parametrize("replicas", [1, 2])
+@pytest.mark.parametrize("claim_name", ["", "trace-data"])
+def test_bundled_tempo_uses_a_dedicated_workload_and_storage(replicas, claim_name):
+    docs = render(
+        "--namespace",
+        "inference",
+        "--set",
+        f"server.replicas={replicas},tracing.tempo.retention=12h,"
+        "tracing.advertiseEndpoint=trace.example:4317,server.dataVolume.hostPath=/srv/gpustack",
+        "--set-string",
+        "server.externalDatabaseURL=postgresql://database.example/db",
+        "--set-string",
+        f"tracing.tempo.existingClaim={claim_name}",
+    )
+    tempo = {
+        doc["kind"]: doc for doc in docs if doc["metadata"]["name"] == "gpustack-tempo"
+    }
+    assert set(tempo) == {"Service", "Deployment", "ConfigMap"}
+    config = yaml.safe_load(tempo["ConfigMap"]["data"]["config.yaml"])
+    assert config["compactor"]["compaction"] == {"block_retention": "12h"}
+    assert config["storage"]["trace"]["wal"]["path"] == "/var/tempo/wal"
+    assert config["storage"]["trace"]["local"]["path"] == "/var/tempo/blocks"
+    assert config["server"]["http_listen_port"] == 3200
+    tls_dir = "/etc/gpustack/tempo-query-tls"
+    assert config["server"]["http_tls_config"] == {
+        "cert_file": f"{tls_dir}/server.crt",
+        "key_file": f"{tls_dir}/server.key",
+        "client_ca_file": f"{tls_dir}/ca.crt",
+        "client_auth_type": "RequireAndVerifyClientCert",
+    }
+    assert config["internal_server"] == {"enable": True, "http_listen_port": 3201}
+    service = tempo["Service"]["spec"]
+    deployment = tempo["Deployment"]["spec"]
+    template = deployment["template"]
+    assert deployment["replicas"] == 1
+    assert deployment["strategy"] == {"type": "Recreate"}
+    assert service["type"] == "ClusterIP"
+    assert service["selector"] == deployment["selector"]["matchLabels"]
+    assert (
+        service["selector"]
+        == template["metadata"]["labels"]
+        == {"app": "gpustack-tempo"}
+    )
+    assert [(p["name"], p["port"], p["targetPort"]) for p in service["ports"]] == [
+        ("otlp-grpc", 4317, "otlp-grpc"),
+        ("https", 3200, "https"),
+    ]
+    pod = template["spec"]
+    assert pod["securityContext"] == {
+        "runAsNonRoot": True,
+        "runAsUser": 10001,
+        "runAsGroup": 10001,
+        "fsGroup": 10001,
+    }
+    (container,) = pod["containers"]
+    assert container["image"] == "docker.io/grafana/tempo:2.10.10"
+    assert "command" not in container
+    assert container["args"] == ["-config.file=/etc/tempo/config.yaml"]
+    assert container["readinessProbe"]["httpGet"] == {
+        "path": "/ready",
+        "port": "readiness",
+    }
+    assert {p["name"]: p["containerPort"] for p in container["ports"]} == {
+        "otlp-grpc": 4317,
+        "https": 3200,
+        "readiness": 3201,
+    }
+    mounts = {v["name"]: v for v in container["volumeMounts"]}
+    volumes = {v["name"]: v for v in pod["volumes"]}
+    assert mounts["tempo-config"]["mountPath"] == "/etc/tempo"
+    assert volumes["tempo-config"]["configMap"] == {"name": "gpustack-tempo"}
+    assert mounts["tempo-data"]["mountPath"] == "/var/tempo"
+    assert volumes["tempo-data"] == {
+        "name": "tempo-data",
+        **(
+            {"persistentVolumeClaim": {"claimName": claim_name}}
+            if claim_name
+            else {"emptyDir": {}}
+        ),
+    }
+    assert not names(docs, "PersistentVolumeClaim")
+    assert mounts["tempo-query-tls"]["mountPath"] == tls_dir
+    assert {item["key"] for item in volumes["tempo-query-tls"]["secret"]["items"]} == {
+        "ca.crt",
+        "server.crt",
+        "server.key",
+    }
+
+    tls_secret = next(
+        doc
+        for doc in docs
+        if doc["kind"] == "Secret"
+        and doc["metadata"]["name"] == "gpustack-tempo-query-tls"
+    )
+    assert tls_secret["metadata"]["namespace"] == "inference"
+    assert set(tls_secret["data"]) == {
+        "ca.crt",
+        "server.crt",
+        "server.key",
+        "client.crt",
+        "client.key",
+    }
+    server_workload = next(
+        doc
+        for doc in docs
+        if doc["kind"] == "StatefulSet" and doc["metadata"]["name"] == "gpustack-server"
+    )
+    assert server_workload["spec"]["replicas"] == replicas
+    server_pod = server_workload["spec"]["template"]["spec"]
+    (server_container,) = server_pod["containers"]
+    assert {"mountPath": tls_dir, "name": "tempo-query-tls", "readOnly": True} in (
+        server_container["volumeMounts"]
+    )
+    server_tls = next(
+        v["secret"] for v in server_pod["volumes"] if v["name"] == "tempo-query-tls"
+    )
+    assert (
+        server_tls["secretName"] == volumes["tempo-query-tls"]["secret"]["secretName"]
+    )
+    assert {item["key"] for item in server_tls["items"]} == {
+        "ca.crt",
+        "client.crt",
+        "client.key",
+    }
+    server = container_env(docs, "StatefulSet", "gpustack-server")
+    assert not any(name.startswith("GPUSTACK_BUILTIN_TEMPO_") for name in server)
+    assert server["GPUSTACK_TRACE_ADVERTISE_ENDPOINT"] == "trace.example:4317"
+    assert (
+        server["GPUSTACK_TRACE_OTLP_ENDPOINT"]
+        == "gpustack-tempo.inference.svc.cluster.local:4317"
+    )
+    assert (
+        server["GPUSTACK_TRACE_QUERY_URL"]
+        == "https://gpustack-tempo.inference.svc.cluster.local:3200"
+    )
+    assert server["GPUSTACK_TRACE_QUERY_TLS_DIR"] == tls_dir
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("", "168h"),
+        ("7days", "168h"),
+        ("-1h", "168h"),
+        ("0s", "168h"),
+        (".1ns", "168h"),
+        ("9223372036854775808ns", "168h"),
+        ("+1h30.5m", "+1h30.5m"),
+        ("1ns", "1ns"),
+        ("9223372036854775807ns", "9223372036854775807ns"),
+    ],
+)
+def test_bundled_tempo_retention_requires_a_positive_go_duration(value, expected):
+    docs = render("--set-string", f"tracing.tempo.retention={value}")
+    config = next(
+        yaml.safe_load(doc["data"]["config.yaml"])
+        for doc in docs
+        if doc["kind"] == "ConfigMap" and doc["metadata"]["name"] == "gpustack-tempo"
+    )
+    assert config["compactor"]["compaction"]["block_retention"] == expected
+
+
+def test_bundled_tempo_can_mount_an_existing_query_tls_secret():
+    name = "tempo-tls"
+    docs = render("--set-string", f"tracing.tempo.queryTLSSecretName={name}")
+    assert name not in names(docs, "Secret")
+    assert "gpustack-tempo-query-tls" not in names(docs, "Secret")
+    mounts = {
+        doc["kind"]: next(
+            v["secret"]
+            for v in doc["spec"]["template"]["spec"]["volumes"]
+            if v["name"] == "tempo-query-tls"
+        )
+        for doc in docs
+        if (doc["kind"], doc["metadata"]["name"])
+        in {("StatefulSet", "gpustack-server"), ("Deployment", "gpustack-tempo")}
+    }
+    assert {kind: secret["secretName"] for kind, secret in mounts.items()} == {
+        "Deployment": name,
+        "StatefulSet": name,
+    }
+
+
+def test_external_query_url_does_not_use_the_bundled_tempo_client_credentials():
+    docs = render("--set-string", "tracing.queryURL=https://tempo.example")
+    server = container_env(docs, "StatefulSet", "gpustack-server")
+    assert server["GPUSTACK_TRACE_QUERY_URL"] == "https://tempo.example"
+    assert "GPUSTACK_TRACE_QUERY_TLS_DIR" not in server
+    assert "gpustack-tempo-query-tls" in names(docs, "Secret")
+    tempo = next(
+        doc
+        for doc in docs
+        if doc["kind"] == "Deployment" and doc["metadata"]["name"] == "gpustack-tempo"
+    )
+    assert "tempo-query-tls" in {
+        vol["name"] for vol in tempo["spec"]["template"]["spec"]["volumes"]
+    }
+
+
+@pytest.mark.parametrize("auth_secret", ["", "logs-auth"])
+def test_logging_references_existing_secrets(auth_secret):
+    docs = render(
+        "--set",
+        f"logging.authorizationSecret.name={auth_secret},logging.caSecret.name=logs-ca",
+        "--set-string",
+        "logging.endpoint=https://collector:4318/v1/logs",
+    )
+    assert "logs-auth" not in names(docs, "Secret")
+    server = container_env(docs, "StatefulSet", "gpustack-server")
+    assert "GPUSTACK_LOG_OTLP_AUTHORIZATION" not in server
+    assert "GPUSTACK_LOG_OTLP_CA_FILE" not in server
+    alloy = next(
+        doc
+        for doc in docs
+        if doc["kind"] == "Deployment" and doc["metadata"]["name"] == "gpustack-alloy"
+    )
+    pod = alloy["spec"]["template"]["spec"]
+    env = {entry["name"]: entry for entry in pod["containers"][0]["env"]}
+    if auth_secret:
+        assert env["GPUSTACK_LOG_OTLP_AUTHORIZATION"]["valueFrom"]["secretKeyRef"] == {
+            "name": auth_secret,
+            "key": "authorization",
+        }
+    else:
+        assert "GPUSTACK_LOG_OTLP_AUTHORIZATION" not in env
+    ca = next(
+        volume["secret"]
+        for volume in pod["volumes"]
+        if volume["name"] == "gpustack-otel-ca"
+    )
+    assert ca == {
+        "secretName": "logs-ca",
+        "items": [{"key": "ca.crt", "path": "ca.crt"}],
+    }
+
+
+def test_bundled_alloy_uses_the_upstream_entrypoint_and_chart_pipeline():
+    docs = render(
+        "--set-string",
+        "logging.endpoint=http://collector:4318/v1/logs",
+        "--set-string",
+        "global.hub=mirror.example.com",
+    )
+    resources = {
+        doc["kind"]: doc for doc in docs if doc["metadata"]["name"] == "gpustack-alloy"
+    }
+    config = resources["ConfigMap"]["data"]
+    assert set(config) == {"common.alloy", "kubernetes.alloy"}
+    for name, contents in config.items():
+        assert contents == (CHART_DIR / "files" / "alloy" / name).read_text()
+    assert '/etc/gpustack/logging/common.alloy' in config["kubernetes.alloy"]
+    pod = resources["Deployment"]["spec"]["template"]["spec"]
+    (container,) = pod["containers"]
+    assert container["image"] == "mirror.example.com/grafana/alloy:v1.22.0"
+    assert "command" not in container
+    assert container["args"] == [
+        "run",
+        "--disable-reporting",
+        "--storage.path=/var/lib/alloy",
+        "/etc/gpustack/logging/kubernetes.alloy",
+    ]
+    assert pod["securityContext"] == {
+        "runAsUser": 473,
+        "runAsGroup": 473,
+        "fsGroup": 473,
+        "runAsNonRoot": True,
+    }
+    assert {"name": "alloy-state", "mountPath": "/var/lib/alloy"} in container[
+        "volumeMounts"
+    ]
+    assert {
+        "name": "alloy-config",
+        "mountPath": "/etc/gpustack/logging",
+        "readOnly": True,
+    } in container["volumeMounts"]
+    assert {"name": "alloy-config", "configMap": {"name": "gpustack-alloy"}} in pod[
+        "volumes"
+    ]
+    assert {"name": "alloy-state", "emptyDir": {}} in pod["volumes"]
+
+
+@pytest.mark.parametrize(
+    "patterns",
+    [[], [r"\b1[3-9][0-9]{9}\b", r'(?i)"email"\s*:', r"\Q$(POD_NAMESPACE)\E"]],
+)
+def test_logging_redaction_patterns_reach_alloy(patterns):
+    docs = render(
+        "--set-string",
+        "logging.endpoint=http://collector:4318/v1/logs",
+        "--set-json",
+        f"logging.redactPatterns={json.dumps(patterns)}",
+    )
+    alloy = container_env(docs, "Deployment", "gpustack-alloy")
+    value = alloy["GPUSTACK_LOG_REDACT_PATTERNS"]
+    assert "$(POD_NAMESPACE)" not in value
+    assert json.loads(value) == patterns
+
+
+@pytest.mark.parametrize("invalid", ["", 1, "[", r"(x)\1"])
+def test_logging_rejects_invalid_redaction_pattern(invalid):
+    error = render_error(
+        "--set-string",
+        "logging.endpoint=http://collector:4318/v1/logs",
+        "--set-json",
+        f"logging.redactPatterns={json.dumps(['valid', invalid])}",
+    )
+    assert "logging.redactPatterns[1] must be a non-empty RE2 expression" in error
+
+
+@pytest.mark.parametrize("pattern", ["foo|", "(?:)", "a*", r"\B"])
+def test_logging_rejects_redaction_patterns_that_match_the_empty_string(pattern):
+    patterns = [r"\btoken\b", pattern]
+    error = render_error(
+        "--set-string",
+        "logging.endpoint=http://collector:4318/v1/logs",
+        "--set-json",
+        f"logging.redactPatterns={json.dumps(patterns)}",
+    )
+    assert "logging.redactPatterns[1] must not match the empty string" in error
+
+
+def test_legacy_higress_log_collection_values_do_not_mount_host_logs():
+    docs = render(
+        "--is-upgrade",
+        "--set",
+        "logging.higress.mode=nodeCollector",
+        "--set-string",
+        "logging.endpoint=https://collector:4318/v1/logs",
+    )
+    obsolete = "gpustack-higress-log-collector"
+    assert obsolete not in names(docs, "DaemonSet")
+    assert obsolete not in names(docs, "ConfigMap")
+    for doc in docs:
+        if doc["kind"] in {"Deployment", "DaemonSet", "StatefulSet"}:
+            volumes = doc["spec"]["template"]["spec"].get("volumes", [])
+            assert all(
+                not volume.get("hostPath", {})
+                .get("path", "")
+                .startswith(("/var/log/pods", "/var/log/containers"))
+                for volume in volumes
+            )
+
+
+@pytest.mark.parametrize("kind", ["Deployment", "DaemonSet"])
+@pytest.mark.parametrize(
+    "logs,traces", [(False, False), (False, True), (True, False), (True, True)]
+)
+def test_bundled_higress_uses_stdout_and_shared_alloy(kind, logs, traces):
+    docs = render(
+        "--namespace",
+        "inference",
+        "--set",
+        f"higress-core.gateway.kind={kind},higress-core.gateway.name=edge",
+        "--set",
+        f"tracing.enabled={str(traces).lower()}",
+        "--set-string",
+        f"logging.endpoint={'https://otel:4318/v1/logs' if logs else ''}",
+    )
+    (gateway,) = (
+        doc for doc in docs if doc["kind"] == kind and doc["metadata"]["name"] == "edge"
+    )
+    template = gateway["spec"]["template"]
+    assert [entry["name"] for entry in template["spec"]["containers"]] == [
+        "higress-gateway"
+    ]
+    labels = template["metadata"]["labels"]
+    assert labels.get("gpustack.ai/log-source") == "higress"
+    assert "gpustack.ai/log-release" not in labels
+
+    (higress_config,) = (
+        doc for doc in docs if doc["metadata"]["name"] == "higress-config"
+    )
+    mesh = yaml.safe_load(higress_config["data"]["mesh"])
+    assert mesh["accessLogFile"] == "/dev/stdout"
+    assert mesh["accessLogEncoding"] == "JSON"
+    fields = json.loads(mesh["accessLogFormat"])
+    assert fields["trace_id"] == "%REQ(X-B3-TRACEID)%"
+    assert fields["traceparent"] == "%REQ(TRACEPARENT):55%"
+    assert fields["path"] == "%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%"
+    assert fields["request_id"] == "%REQ(X-REQUEST-ID)%"
+    assert "GPUSTACK_HELM_HIGRESS_LOG_FORMAT" not in container_env(
+        docs, "StatefulSet", "gpustack-server"
+    )
+    assert "gpustack-higress-file-log" not in names(docs, "EnvoyFilter")
+    assert ("gpustack-alloy" in names(docs, "Deployment")) is logs
+    if not logs:
+        return
+    alloy = next(
+        doc
+        for doc in docs
+        if doc["kind"] == "Deployment" and doc["metadata"]["name"] == "gpustack-alloy"
+    )
+    assert alloy["spec"]["replicas"] == 1
+    assert alloy["spec"]["strategy"]["type"] == "Recreate"
+    alloy_pod = alloy["spec"]["template"]["spec"]
+    assert alloy_pod["serviceAccountName"] == "gpustack-alloy"
+    assert (
+        container_env(docs, "Deployment", "gpustack-alloy")[
+            "GPUSTACK_LOG_HIGRESS_SELECTOR"
+        ]
+        == "edge;inference-edge"
+    )
+    assert all("hostPath" not in volume for volume in alloy_pod["volumes"])
+    role = next(
+        doc
+        for doc in docs
+        if doc["kind"] == "Role" and doc["metadata"]["name"] == "gpustack-alloy"
+    )
+    assert role["metadata"]["namespace"] == "inference"
+    assert {resource for rule in role["rules"] for resource in rule["resources"]} == {
+        "pods",
+        "pods/log",
+    }
+    assert "gpustack-alloy" not in names(docs, "ClusterRole")
+
+
+def test_bundled_higress_log_format_survives_worker_values_upgrade():
+    def get_mesh(docs):
+        return next(
+            doc["data"]["mesh"]
+            for doc in docs
+            if doc["metadata"]["name"] == "higress-config"
+        )
+
+    options = ("--set-string", "logging.endpoint=http://otel:4318/v1/logs")
+    before = get_mesh(render(*options))
+    after = get_mesh(render(*options, "--set-string", "worker.nodeSelector.zone=other"))
+    assert before == after
+    assert yaml.safe_load(after)["accessLogEncoding"] == "JSON"
+
+
+def test_existing_gateway_agent_can_disable_only_gateway_collection():
+    docs = render(
+        "--set",
+        "worker.enabled=true,logging.higress.enabled=false,"
+        "logging.endpoint=http://otel:4318/v1/logs",
+    )
+    assert "GPUSTACK_LOG_HIGRESS_SELECTOR" not in container_env(
+        docs, "Deployment", "gpustack-alloy"
+    )
+    assert "gpustack-alloy" in names(docs, "Deployment")
+    for kind, name in (
+        ("StatefulSet", "gpustack-server"),
+        ("DaemonSet", "gpustack-worker"),
+    ):
+        assert container_env(docs, kind, name)["GPUSTACK_LOG_POD_RELEASE"] == "gpustack"
+
+
+def test_bundled_higress_tracing_preserves_custom_stdout_format():
+    docs = render(
+        "--set",
+        "tracing.endpoint=otel:4317,logging.endpoint=http://otel:4318/v1/logs,"
+        "logging.higress.enabled=false,higress-core.meshConfig.accessLogEncoding=TEXT",
+        "--set-string",
+        "higress-core.meshConfig.accessLogFormat=%REQ(:METHOD)%",
+    )
+    higress_config = next(
+        doc for doc in docs if doc["metadata"]["name"] == "higress-config"
+    )
+    mesh = yaml.safe_load(higress_config["data"]["mesh"])
+    assert mesh["accessLogFormat"] == "%REQ(:METHOD)%"
+    assert mesh["accessLogEncoding"] == "TEXT"
+    assert "GPUSTACK_HELM_HIGRESS_LOG_FORMAT" not in container_env(
+        docs, "StatefulSet", "gpustack-server"
+    )
+
+
+@pytest.mark.parametrize(
+    "encoding,access_log_format",
+    [
+        ("JSON", '{"path":"%REQ(:PATH)%","request_id":"%REQ(X-REQUEST-ID)%"}'),
+        ("TEXT", '{"path":"%REQ(:PATH)%","request_id":"%REQ(X-REQUEST-ID)%"}'),
+        (
+            "TEXT",
+            '{"path":"%REQ(:PATH)%","request_id":"%REQ(X-REQUEST-ID)%",'
+            '"response_code":%RESPONSE_CODE%}',
+        ),
+    ],
+)
+def test_bundled_higress_log_collection_preserves_custom_format(
+    encoding, access_log_format
+):
+    docs = render(
+        "--set",
+        "logging.endpoint=http://otel:4318/v1/logs,"
+        f"higress-core.meshConfig.accessLogEncoding={encoding}",
+        "--set-literal",
+        f"higress-core.meshConfig.accessLogFormat={access_log_format}",
+    )
+    configmap = next(doc for doc in docs if doc["metadata"]["name"] == "higress-config")
+    mesh = yaml.safe_load(configmap["data"]["mesh"])
+    assert mesh["accessLogEncoding"] == encoding
+    assert mesh["accessLogFormat"] == access_log_format
+    assert "GPUSTACK_HELM_HIGRESS_LOG_FORMAT" not in container_env(
+        docs, "StatefulSet", "gpustack-server"
+    )
+
+
+@pytest.mark.parametrize(
+    "setting,containers",
+    [
+        ("higress-core.global.enableIstioAPI=false", {"higress-gateway"}),
+        ("higress-core.global.o11y.enabled=true", {"higress-gateway", "promtail"}),
+    ],
+)
+def test_higress_logs_keep_existing_gateway_pod_layout(setting, containers):
+    docs = render(
+        "--set",
+        f"{setting},logging.endpoint=http://otel:4318/v1/logs",
+    )
+    gateway = next(
+        doc
+        for doc in docs
+        if doc["kind"] == "Deployment" and doc["metadata"]["name"] == "higress-gateway"
+    )
+    pod = gateway["spec"]["template"]["spec"]
+    assert {container["name"] for container in pod["containers"]} == containers
+    assert "automountServiceAccountToken" not in pod
+    assert "gpustack-higress-file-log" not in names(docs, "EnvoyFilter")
+    assert (
+        container_env(docs, "StatefulSet", "gpustack-server")[
+            "GPUSTACK_LOG_OTLP_ENDPOINT"
+        ]
+        == "http://otel:4318/v1/logs"
+    )
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    ["collector.monitoring.svc:4317", "10.32.1.2:4317", "[fd00::7]:4317", None, ""],
+)
+def test_bundled_higress_tracing_matches_embedded_settings(endpoint):
+    setting = (
+        f"tracing.endpoint={endpoint}"
+        if endpoint is not None
+        else "logging.endpoint=http://collector:4318/v1/logs"
+    )
+    docs = render(
+        "--namespace",
+        "inference",
+        "--set",
+        f"higress-core.gateway.name=edge,tracing.enabled={str(endpoint is not None).lower()}",
+        "--set-string",
+        setting,
+    )
+    effective_endpoint = (
+        "gpustack-tempo.inference.svc.cluster.local:4317"
+        if endpoint == ""
+        else endpoint
+    )
+    expected = get_ingress_tracing_envoyfilter(
+        "gpustack-otel-tracing", "inference", effective_endpoint
+    )
+    tracing = next(
+        doc
+        for doc in docs
+        if doc["kind"] == "EnvoyFilter"
+        and doc["metadata"]["name"] == "gpustack-otel-tracing"
+    )
+    assert (
+        tracing["spec"]["configPatches"]
+        == expected.model_dump(by_alias=True, mode="json", exclude_none=True)["spec"][
+            "configPatches"
+        ]
+    )
+    gateway = next(
+        doc
+        for doc in docs
+        if doc["kind"] == "Deployment" and doc["metadata"]["name"] == "edge"
+    )
+    assert (
+        tracing["spec"]["workloadSelector"]["labels"]
+        == gateway["spec"]["selector"]["matchLabels"]
+    )
+
+
+def test_existing_gateway_and_worker_only_telemetry():
+    endpoint = "collector.monitoring.svc:4317"
+    settings = (
+        "--set-string",
+        "logging.endpoint=http://collector:4318/v1/logs",
+        "--set-string",
+        f"tracing.endpoint={endpoint}",
+    )
+    docs = render(
+        "--set", "higress-core.enabled=false,gateway.namespace=gateway", *settings
+    )
+    server = container_env(docs, "StatefulSet", "gpustack-server")
+    assert server["GPUSTACK_TRACE_OTLP_ENDPOINT"] == endpoint
+    assert server["GPUSTACK_GATEWAY_NAMESPACE"] == "gateway"
+    assert "gpustack-otel-tracing" not in names(docs, "EnvoyFilter")
+    assert "GPUSTACK_LOG_HIGRESS_SELECTOR" not in container_env(
+        docs, "Deployment", "gpustack-alloy"
+    )
+    assert "gpustack-higress-file-log" not in names(docs, "EnvoyFilter")
+    assert "gpustack-higress-collector" not in names(docs, "ConfigMap")
+    assert "gpustack-tempo" not in names(docs, "Service")
+    docs = render(*WORKER_ONLY, *SERVER_AND_TOKEN, *settings)
+    assert (
+        container_env(docs, "DaemonSet", "gpustack-worker")[
+            "GPUSTACK_TRACE_OTLP_ENDPOINT"
+        ]
+        == endpoint
+    )
+    assert "gpustack-otel-tracing" not in names(docs, "EnvoyFilter")
+    assert "gpustack-higress-log-collector" not in names(docs, "DaemonSet")
+    assert "gpustack-higress-file-log" not in names(docs, "EnvoyFilter")
+    assert "gpustack-higress-collector" not in names(docs, "ConfigMap")
+    assert "gpustack-tempo" not in names(docs, "Service")
+
+
+def test_worker_only_without_a_trace_endpoint_has_no_tempo():
+    docs = render(*WORKER_ONLY, *SERVER_AND_TOKEN)
+    worker = container_env(docs, "DaemonSet", "gpustack-worker")
+    assert "GPUSTACK_TRACE_OTLP_ENDPOINT" not in worker
+    for kind in ("Deployment", "Service", "ConfigMap"):
+        assert "gpustack-tempo" not in names(docs, kind)
+    assert "gpustack-tempo-query-tls" not in names(docs, "Secret")
+
+
+def test_builtin_tracing_does_not_require_the_higress_istio_api():
+    docs = render("--set", "higress-core.global.enableIstioAPI=false")
+    assert "gpustack-otel-tracing" not in names(docs, "EnvoyFilter")
+    assert "gpustack-tempo" in names(docs, "Service")
+    server = container_env(docs, "StatefulSet", "gpustack-server")
+    assert server["GPUSTACK_TRACE_OTLP_ENDPOINT"] == (
+        "gpustack-tempo.default.svc.cluster.local:4317"
+    )
+
+
+@pytest.mark.parametrize(
+    "settings,message",
+    [
+        (
+            "logging.endpoint=http://logs/v1/logs,logging.authorizationSecret.name=logs-auth",
+            "require an HTTPS",
+        ),
+        ("logging.endpoint=https://user:password@logs/v1/logs", "without credentials"),
+        ("tracing.endpoint=https://collector:4317", "OTLP/gRPC host:port"),
+        ("tracing.endpoint=collector:65536", "OTLP/gRPC host:port"),
+        ("tracing.advertiseEndpoint=collector:0", "tracing.advertiseEndpoint"),
+        (
+            "tracing.endpoint=collector:4317,higress-core.global.enableIstioAPI=false",
+            "global.enableIstioAPI",
+        ),
+    ],
+)
+def test_invalid_telemetry_settings_are_rejected(settings, message):
+    assert message in render_error("--set", settings)
 
 
 class TestServerOnly:
