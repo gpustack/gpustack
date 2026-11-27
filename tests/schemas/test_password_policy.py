@@ -18,6 +18,7 @@ from gpustack.schemas.users import (
     UserUpdate,
 )
 from gpustack.security import (
+    PASSWORD_MIN_LENGTH,
     PASSWORD_SPECIAL_CHARACTERS,
     generate_secure_password,
 )
@@ -26,9 +27,21 @@ PASSWORD_FIELD_NAMES = {"password", "new_password"}
 
 # A value that trips the first rule in the policy, whatever else changes.
 VIOLATING_PASSWORD = "a"
+TOO_SHORT = f"at least {PASSWORD_MIN_LENGTH} characters"
+
+# Every character class is present, so length is the only rule in play.
+MINIMUM_LENGTH_PASSWORD = ("Aa1!" + "x" * PASSWORD_MIN_LENGTH)[:PASSWORD_MIN_LENGTH]
 
 # DTOs whose password field doubles as "leave the password alone".
 OPTIONAL_PASSWORD_DTOS = [UserCreate, UserUpdate, UserSelfUpdate]
+
+# Every DTO that sets a password, with the field that carries it.
+PASSWORD_SETTING_DTOS = [
+    (UserCreate, "password"),
+    (UserUpdate, "password"),
+    (UserSelfUpdate, "password"),
+    (UpdatePassword, "new_password"),
+]
 
 
 def create_with(password):
@@ -52,14 +65,32 @@ def test_accepts_every_special_character_the_ui_offers(special):
     assert create_with(password).password == password
 
 
-def test_length_is_not_part_of_the_policy():
-    # The server is the authority and does not cap length; the UI's own 6-64
-    # bound is a client-side courtesy. NIST SP 800-63B asks for at least 64
-    # characters to be accepted, and argon2 hashes the whole string -- there is
-    # no bcrypt-style truncation to defend against.
-    short = "Aa1!"
+def build_with_password(dto, field, password):
+    return build(
+        dto, username="alice", current_password="whatever", **{field: password}
+    )
+
+
+@pytest.mark.parametrize("dto, field", PASSWORD_SETTING_DTOS)
+def test_rejects_a_password_shorter_than_the_minimum(dto, field):
+    # The minimum matches the UI's lower bound and is enforced on every write
+    # path, so a direct API call cannot set what the form would refuse.
+    with pytest.raises(ValidationError, match=TOO_SHORT):
+        build_with_password(dto, field, MINIMUM_LENGTH_PASSWORD[:-1])
+
+
+@pytest.mark.parametrize("dto, field", PASSWORD_SETTING_DTOS)
+def test_accepts_a_password_of_exactly_the_minimum_length(dto, field):
+    built = build_with_password(dto, field, MINIMUM_LENGTH_PASSWORD)
+    assert getattr(built, field) == MINIMUM_LENGTH_PASSWORD
+
+
+def test_length_has_no_upper_bound():
+    # The server is the authority and does not cap length; the UI's own upper
+    # bound of 64 is a client-side courtesy. NIST SP 800-63B asks for at least
+    # 64 characters to be accepted, and argon2 hashes the whole string -- there
+    # is no bcrypt-style truncation to defend against.
     long = "Aa1!" + "a" * 200
-    assert create_with(short).password == short
     assert create_with(long).password == long
 
 
@@ -95,7 +126,7 @@ def test_optional_password_dtos_enforce_the_policy(dto):
     # All three reach `set_password`, so the policy has to hold on every one:
     # a route that skips it becomes a way to set a password the create route
     # would refuse.
-    with pytest.raises(ValidationError, match="uppercase"):
+    with pytest.raises(ValidationError, match=TOO_SHORT):
         build(dto, username="alice", password=VIOLATING_PASSWORD)
 
 
@@ -108,14 +139,14 @@ def test_absent_password_leaves_the_password_alone(dto, absent):
 
 
 def test_update_password_enforces_the_policy():
-    with pytest.raises(ValidationError, match="uppercase"):
+    with pytest.raises(ValidationError, match=TOO_SHORT):
         UpdatePassword(current_password="whatever", new_password=VIOLATING_PASSWORD)
 
 
 def test_update_password_rejects_an_empty_new_password():
     # `new_password` is required and names the thing being set, so blank is a
     # violation here rather than "no change".
-    with pytest.raises(ValidationError, match="uppercase"):
+    with pytest.raises(ValidationError, match=TOO_SHORT):
         UpdatePassword(current_password="whatever", new_password="")
 
 
