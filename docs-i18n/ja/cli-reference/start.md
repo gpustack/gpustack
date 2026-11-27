@@ -154,7 +154,7 @@ gpustack start [OPTIONS]
 | `--enable-hf-xet`                        | `False`                                | ［非推奨］Hugging Face Xetを使用したモデルファイルのダウンロードを有効にします。 |
 | `--worker-ifname` 値                  | （空）                                | ワーカーノードのネットワークインターフェース名。デフォルトでは自動検出します。 |
 | `--kv-transfer-ifname` 値                      | （空）                                | 組み込みの vLLM NIXL と SGLang NIXL のデプロイで KV 転送に使用するインターフェースです。設定例には、Linux インターフェース `ens5f0`、RDMA HCA ポート `mlx5_2:1`、カンマ区切りのデバイス一覧 `ens5f0,ens6f0` があります。[KV 転送のインターフェース](../user-guide/pd-disaggregation.md#the-kv-transfer-interface)を参照してください。 |
-| `--proxy-mode` 値                     | （空）                                | モデルインスタンスへのアクセスに使用するプロキシーモード：`direct`、`worker`、`tunnel`（ワーカーがサーバーへ接続する方式。ファイアウォール/NAT配下のワーカー向け）。組み込みワーカーのデフォルトは`direct`、スタンドアロンワーカーは`worker`です。 |
+| `--proxy-mode` 値                     | （空）                                | モデルインスタンスへのアクセスに使用するプロキシーモード：`direct`、`worker`、`tunnel`（ワーカーがサーバーへ接続する方式。ファイアウォール/NAT配下のワーカー向け）。クラスタのワーカー設定をデフォルトとして使用し、設定がない場合は`worker`を使用します。 |
 | `--benchmark-image-repo` 値           | `gpustack/benchmark-runner`            | GPUStackベンチマークコンテナーのデフォルトのイメージリポジトリーを上書きします。`--image-repo`と異なり、この値はそのまま使用されるためタグを含めてください。<br/>イメージ`gpustack/benchmark-runner:<tag>`が`gpustack`名前空間の外（例：`awesome.com/amazing-group/amazing-subgroup/gpustack-ai/benchmark-runner:<tag>`）にある場合、まず`--system-default-container-registry=awesome.com/amazing-group/amazing-subgroup`で親の名前空間を含むレジストリーを指定し、次にこのフラグ（またはワーカーの設定キー`benchmark_image_repo`、環境変数`GPUSTACK_BENCHMARK_IMAGE_REPO`）を`gpustack-ai/benchmark-runner:<tag>`に設定してください。 |
 | `--benchmark-dir` 値                  | `<data-dir>/benchmarks`                | ベンチマーク結果を保存するディレクトリー。 |
 | `--benchmark-max-duration-seconds` 値 | （空）                                | ベンチマークがタイムアウトするまでの最大時間。空の場合は無効です。 |
@@ -284,5 +284,5 @@ system_reserved:
   ram: 2
   vram: 1
 enable_hf_transfer: false
-proxy_mode: worker
+proxy_mode: direct
 ```

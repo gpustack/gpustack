@@ -330,7 +330,7 @@ worker_metrics_port: 10151
 disable_worker_metrics: false
 service_port_range: "40000-40063"
 ray_port_range: "41000-41999"
-proxy_mode: worker
+proxy_mode: direct
 # ========= system reserved resources ===========
 system_reserved:
   ram: 0
@@ -358,7 +358,11 @@ To forward inference requests to the model instances on a worker, the server and
 - `worker` — Requests pass through the worker's built-in HTTP reverse proxy, which forwards them to the local inference process. The worker must still be reachable from the server, but only its worker port needs to be exposed.
 - `tunnel` — The worker keeps a single **outbound** WebSocket connection to the server, and the server reaches the worker only through that tunnel. Use this when the worker cannot accept inbound connections from the server.
 
-The default is `direct` for the embedded worker inside the server, and `worker` for standalone workers.
+The default is `direct` for a new cluster: its `Worker Configuration YAML` carries `proxy_mode: direct`, and every worker that registers picks it up unless it sets its own `--proxy-mode`. A worker that belongs to no cluster, or to a cluster with no default, falls back to its own setting, which is `worker`.
+
+`direct` requires the gateway to reach the worker's inference port range (`--service-port-range`, default `40000-40063`) and, for distributed vLLM, the Ray port range (`--ray-port-range`, default `41000-41999`). `worker` only needs the worker port, and `tunnel` needs no inbound port at all.
+
+Existing clusters keep the mode they were using after an upgrade, and the server logs a warning for clusters that still use `worker`. To switch one, set `proxy_mode: direct` in its `Worker Configuration YAML` once those ports are reachable.
 
 !!! note
 

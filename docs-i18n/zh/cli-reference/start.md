@@ -154,7 +154,7 @@ gpustack start [OPTIONS]
 | `--enable-hf-xet`                        | `False`                                | [已弃用] 启用 Hugging Face Xet 下载模型文件。                                                                                                                          |
 | `--worker-ifname` value                  | (empty)                                | Worker 节点的网络接口名称，默认自动检测。                                                                                                                         |
 | `--kv-transfer-ifname` value                      | (empty)                                | 内置 vLLM NIXL 和 SGLang NIXL 部署用于传输 KV 缓存的接口。示例包括 Linux 接口 `ens5f0`、RDMA HCA 端口 `mlx5_2:1`，以及以逗号分隔的设备列表 `ens5f0,ens6f0`。参见 [KV 传输接口](../user-guide/pd-disaggregation.md#the-kv-transfer-interface)。 |
-| `--proxy-mode` value                     | (empty)                                | 访问模型实例的代理模式：`direct`、`worker` 或 `tunnel`（Worker 主动连接 Server，适用于防火墙或 NAT 后的 Worker）。内置 Worker 默认为 `direct`，独立 Worker 默认为 `worker`。 |
+| `--proxy-mode` value                     | (empty)                                | 访问模型实例的代理模式：`direct`、`worker` 或 `tunnel`（Worker 主动连接 Server，适用于防火墙或 NAT 后的 Worker）。默认使用集群的 Worker 配置；未配置时使用 `worker`。 |
 | `--benchmark-image-repo` value           | `gpustack/benchmark-runner`            | 覆盖 GPUStack 基准测试容器的默认镜像仓库。与 `--image-repo` 不同，此值直接使用，因此需包含标签。<br/>如果镜像 `gpustack/benchmark-runner:<tag>` 位于 `gpustack` 命名空间之外，例如 `awesome.com/amazing-group/amazing-subgroup/gpustack-ai/benchmark-runner:<tag>`，请先将 `--system-default-container-registry=awesome.com/amazing-group/amazing-subgroup` 指向包含父命名空间的镜像仓库，再将此参数（或 Worker 的 `benchmark_image_repo` 配置键，或 `GPUSTACK_BENCHMARK_IMAGE_REPO` 环境变量）设置为 `gpustack-ai/benchmark-runner:<tag>`。 |
 | `--benchmark-dir` value                  | `<data-dir>/benchmarks`                | 基准测试结果存储目录。                                                                                                                                                        |
 | `--benchmark-max-duration-seconds` value | (empty)                                | 基准测试超时前的最长运行时间。为空时不限制。                                                                                                                            |
@@ -284,5 +284,5 @@ system_reserved:
   ram: 2
   vram: 1
 enable_hf_transfer: false
-proxy_mode: worker
+proxy_mode: direct
 ```
