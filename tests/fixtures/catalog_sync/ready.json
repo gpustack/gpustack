@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "candidates": [{
+    "target": "hf:publisher/example",
+    "status": "ready",
+    "reason": "The public checkpoint has an evidenced standard NVIDIA recipe.",
+    "hubs": {
+      "huggingface": {"status": "available", "repo_id": "publisher/example", "reason": "The official public repository contains the selected weights."},
+      "model_scope": {"status": "unverified", "repo_id": null, "reason": "No verified publisher mirror was found; no ModelScope entry is proposed."}
+    },
+    "ascend_910b": "The publisher has not documented a 910B recipe for this checkpoint.",
+    "entries": [{
+      "source": "huggingface",
+      "card": {
+        "name": "Example-7B",
+        "description": "An example language model for testing catalog maintenance.",
+        "home": "https://example.org/model",
+        "icon": "/static/catalog_icons/example.png",
+        "size": 7,
+        "categories": ["llm"],
+        "licenses": ["apache-2.0"],
+        "release_date": "2025-01-01",
+        "specs": [{
+          "mode": "standard", "quantization": "BF16",
+          "source": "huggingface", "huggingface_repo_id": "publisher/example",
+          "gpu_filters": {"vendor": "nvidia"},
+          "backend": "vLLM", "backend_version": "0.20.0",
+          "backend_parameters": ["--max-model-len=8192"]
+        }]
+      },
+      "parameter_method": "official",
+      "parameter_notes": "The publisher describes the checkpoint as 7B parameters.",
+      "evidence": {
+        "identity": [{"url": "https://example.org/model", "quote": "Example-7B has 7 billion parameters", "explanation": "The publisher identifies this checkpoint and parameter count."}],
+        "size": [{"url": "https://example.org/model", "quote": "Example-7B has 7 billion parameters", "explanation": "The publisher's stated total is used without recalculation."}],
+        "release_date": [{"url": "https://example.org/model", "quote": "Weights released on 2025-01-01", "explanation": "This date refers to the public checkpoint weights."}],
+        "licenses": [{"url": "https://example.org/model", "quote": "Weights use the apache-2.0 license", "explanation": "The publisher explicitly licenses these weights."}]
+      },
+      "specs": [{
+        "snapshot": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revision": "1234567890abcdef1234567890abcdef12345678",
+        "deployment": [{"url": "https://example.org/model", "quote": "vLLM 0.20.0 supports the standard NVIDIA recipe", "explanation": "This backend version supports the model architecture."}],
+        "quantization": [{"url": "https://example.org/model", "quote": "Weights are stored as BF16 safetensors", "explanation": "The checkpoint weights use BF16 without packed quantization."}],
+        "runner_image": "example.org/runner:vllm-cuda",
+        "hardware": "nvidia",
+        "compatibility": "Use the common NVIDIA BF16 recipe without additional compute capability restrictions."
+      }]
+    }]
+  }]
+}
