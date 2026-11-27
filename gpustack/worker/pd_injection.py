@@ -45,10 +45,6 @@ from gpustack.schemas.pd_modes import (
     PDPortSpec,
 )
 from gpustack.server.pd_mode_catalog import get_pd_mode
-from gpustack.validation.pd.parameters import (
-    selector_cards_per_replica,
-    selector_spans_workers,
-)
 from gpustack.validation.pd.roles import validate_managed_pd_topology
 from gpustack.utils.command import (
     find_int_parameter,
@@ -724,6 +720,39 @@ def _apply_kv_lease_env(mode: PDMode, env: Dict[str, str], where: str) -> None:
     env[lease.param] = str(value)
 
 
+def _selector_spans_workers(role) -> bool:
+    """Identify a peer selector that lists cards from multiple workers."""
+    selector = getattr(role, "gpu_selector", None)
+    gpu_ids = getattr(selector, "gpu_ids", None) if selector is not None else None
+    if not gpu_ids:
+        return False
+    # "worker_name:device:index" -- more than one worker name and the member is
+    # distributed, so the card count is not the world size.
+    return len({str(gpu_id).rsplit(":", 2)[0] for gpu_id in gpu_ids}) > 1
+
+
+def _selector_cards_per_replica(role) -> Optional[int]:
+    """Read a peer's card count from its own single-worker selector.
+
+    An explicit per-replica count takes precedence. The full selector count
+    describes one replica when the role declares a single replica.
+    """
+    if _selector_spans_workers(role):
+        return None
+
+    selector = getattr(role, "gpu_selector", None)
+    gpu_ids = getattr(selector, "gpu_ids", None) if selector is not None else None
+    if not gpu_ids:
+        return None
+
+    per_replica = getattr(selector, "gpus_per_replica", None)
+    if not per_replica:
+        if (getattr(role, "replicas", None) or 1) != 1:
+            return None
+        per_replica = len(gpu_ids)
+    return per_replica if per_replica >= 1 else None
+
+
 def _cross_role_variables(
     model, instance=None, *, topology: Optional[ValidatedTopology] = None
 ) -> Dict[str, object]:
@@ -744,13 +773,9 @@ def _cross_role_variables(
     The peer's own member is not available to correct it with, and not by
     oversight: the injection is rendered on the worker as this member starts,
     and prefill routinely starts before decode has been placed at all, so its
-    `gpu_indexes` may not exist yet. What the *spec* can still say is said —
-    `validation.pd.parameters.selector_cards_per_replica` reads a peer that
-    pinned its own cards, which is the shape where the two sides provably differ. A peer that
-    pinned nothing falls back to the running member's count, deliberately: with
-    no per-role pin both roles are sized by the same auto-selection of the same
-    model on the same engine, and refusing to render there would break the
-    silent 1P1D that `_implicit_parallelism` was written for.
+    `gpu_indexes` may not exist yet. A peer pinned to its own cards can provide
+    a count from its selector. An unpinned peer uses the running member's
+    count because both roles use the same auto-selection for the same model.
     """
     context: Dict[str, object] = {}
     running_role = getattr(instance, "role", None)
@@ -760,7 +785,7 @@ def _cross_role_variables(
             continue
         projected = role_effective_model(model, name)
         is_peer = name != running_role
-        cards = selector_cards_per_replica(role) if is_peer else None
+        cards = _selector_cards_per_replica(role) if is_peer else None
         # A peer pinned across machines is left unresolved rather than sized
         # from the member that happens to be starting. Its own pin says None
         # for the same reason an absent pin does, so without this the peer
@@ -770,7 +795,7 @@ def _cross_role_variables(
         # descriptor that decode's engine then contradicts. Unresolved, the
         # placeholder survives to `_refuse_unrendered`, and the launch refuses
         # instead of pairing badly.
-        borrows_from = None if (is_peer and selector_spans_workers(role)) else instance
+        borrows_from = None if (is_peer and _selector_spans_workers(role)) else instance
         fields = _role_fields(
             projected,
             name,

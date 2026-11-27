@@ -6,8 +6,11 @@ from unittest.mock import AsyncMock
 
 from gpustack.api.exceptions import BadRequestException
 from gpustack.schemas.models import (
+    BackendEnum,
     DisaggregationSpec,
+    Model,
     ModelCreate,
+    ModelUpdate,
     PDModeEnum,
     RoleSpec,
     SourceEnum,
@@ -72,6 +75,148 @@ async def test_unified_entry_rejects_incompatible_pd_configuration(
     with pytest.raises(BadRequestException) as error:
         await validate_pd_config(None, model)
     assert error.value.status_code == 400
+    assert message in error.value.message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", list(PDModeEnum))
+async def test_pd_admission_skips_compatibility_for_all_modes(monkeypatch, mode):
+    from gpustack.validation.pd import runtime, validate_pd_config
+
+    resolve_config = AsyncMock()
+    probe_vendors = AsyncMock(return_value={"amd"})
+    monkeypatch.setattr(runtime, "resolve_pairing_model_config", resolve_config)
+    monkeypatch.setattr(runtime, "cluster_vendors", probe_vendors)
+    backend = (
+        BackendEnum.SGLANG
+        if mode in (PDModeEnum.SGLANG_MOONCAKE, PDModeEnum.SGLANG_NIXL)
+        else BackendEnum.VLLM
+    )
+    model = ModelCreate(
+        name="pd",
+        source=SourceEnum.HUGGING_FACE,
+        huggingface_repo_id="org/model",
+        backend=backend,
+        env={"GPUSTACK_SKIP_MODEL_EVALUATION": "1"},
+        roles=[
+            RoleSpec(name="prefill", backend_parameters=["--max-model-len=8192"]),
+            RoleSpec(
+                name="decode",
+                backend_parameters=["--max-model-len=4096"],
+                env={"GPUSTACK_SKIP_MODEL_EVALUATION": "0"},
+            ),
+        ],
+        disaggregation=DisaggregationSpec(mode=mode),
+    )
+
+    await validate_pd_config(None, model, cluster_id=1)
+
+    resolve_config.assert_not_awaited()
+    probe_vendors.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "env_fields,skips",
+    [
+        ({}, True),
+        ({"env": None}, False),
+        ({"env": {}}, False),
+        ({"env": {"GPUSTACK_SKIP_MODEL_EVALUATION": ""}}, False),
+        ({"env": {"GPUSTACK_SKIP_MODEL_EVALUATION": "0"}}, True),
+        ({"env": {"GPUSTACK_SKIP_MODEL_EVALUATION": "false"}}, True),
+    ],
+)
+async def test_pd_admission_reads_effective_deployment_env_on_update(env_fields, skips):
+    from gpustack.validation.pd import validate_pd_config
+
+    source = dict(
+        name="pd",
+        source=SourceEnum.HUGGING_FACE,
+        huggingface_repo_id="org/model",
+    )
+    stored = Model(
+        id=1,
+        **source,
+        backend="vLLM",
+        env={"GPUSTACK_SKIP_MODEL_EVALUATION": "1"},
+        roles=[
+            RoleSpec(
+                name="prefill",
+                backend_parameters=["--max-model-len=8192"],
+                env={"GPUSTACK_SKIP_MODEL_EVALUATION": "1"},
+            ),
+            RoleSpec(name="decode", backend_parameters=["--max-model-len=4096"]),
+        ],
+        disaggregation=DisaggregationSpec(mode=PDModeEnum.VLLM_NIXL),
+    )
+    update = ModelUpdate(**source, **env_fields)
+
+    if skips:
+        await validate_pd_config(None, update, stored=stored)
+    else:
+        with pytest.raises(BadRequestException) as error:
+            await validate_pd_config(None, update, stored=stored)
+        assert "context lengths" in error.value.message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "roles,mode,gather,message",
+    [
+        (
+            [RoleSpec(name="decode")],
+            PDModeEnum.VLLM_NIXL,
+            None,
+            "prefill role",
+        ),
+        (
+            [
+                RoleSpec(
+                    name="prefill", backend_parameters=["--kv-transfer-config=[]"]
+                ),
+                RoleSpec(name="decode"),
+            ],
+            PDModeEnum.VLLM_NIXL,
+            None,
+            "must be a JSON object",
+        ),
+        (
+            [RoleSpec(name=role) for role in ("prefill", "decode", "router")],
+            PDModeEnum.CUSTOM,
+            None,
+            "Router requires a command",
+        ),
+        (
+            [RoleSpec(name="prefill"), RoleSpec(name="decode")],
+            PDModeEnum.VLLM_NIXL,
+            GatherSpec(strategy=GatherStrategyEnum.MUST_GATHER, layer="missing-layer"),
+            "not a layer of this cluster",
+        ),
+    ],
+)
+async def test_pd_admission_preserves_platform_checks_when_evaluation_is_skipped(
+    monkeypatch, roles, mode, gather, message
+):
+    from gpustack.validation.pd import runtime, validate_pd_config
+
+    monkeypatch.setattr(runtime, "cluster_vendors", AsyncMock(return_value={"nvidia"}))
+    monkeypatch.setattr(
+        Cluster, "one_by_id", AsyncMock(return_value=SimpleNamespace(topology=None))
+    )
+    model = ModelCreate(
+        name="pd",
+        source=SourceEnum.HUGGING_FACE,
+        huggingface_repo_id="org/model",
+        backend="vLLM",
+        env={"GPUSTACK_SKIP_MODEL_EVALUATION": "1"},
+        roles=roles,
+        disaggregation=DisaggregationSpec(mode=mode),
+        gather=gather,
+    )
+
+    with pytest.raises(BadRequestException) as error:
+        await validate_pd_config(None, model, cluster_id=1)
     assert message in error.value.message
 
 

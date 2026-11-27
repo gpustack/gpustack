@@ -91,7 +91,13 @@ Items 2 and 3 come from the backend selected on Router itself. The same order ap
 These are configured separately from the backend, version, image and command:
 
 - **Parameters:** a Prefill or Decode role's own list replaces the deployment's list. Router uses its own parameter list and appends it to the Router command. Backend default parameters are filled into the form when selecting a backend; the saved role list determines what is passed at startup.
-- **Environment variables:** a role's own map replaces the deployment's map as a whole. For Prefill and Decode, backend defaults brought into the form become part of the saved role configuration. Router also loads defaults at startup; for the same variable name, priority is: role values (or deployment values when the role has none) → selected backend version → backend defaults → PD recipe defaults, when applicable.
+- **Environment variables.** When the deployment defines environment variables, each role offers an environment mode. New roles default to **Inherit and override**.
+    - **Inherit and override** (`env_mode: merge`) combines deployment and role variables. The role value wins for each matching key.
+    - **Use only role variables** (`env_mode: replace`) uses the role's own map. An empty role map supplies no user variables.
+
+    The selected mode stays saved when the deployment has no environment variables and the selector is hidden. With `env_mode` omitted or `null`, a role's `env: null` inherits the deployment map. An explicit map, including `{}`, replaces it.
+
+    Backend defaults loaded into the Prefill and Decode forms are saved as role values. Router uses the effective role environment first. The selected backend version, backend defaults, and applicable PD recipe defaults supply missing variables in that order.
 
 The backends and versions used by Prefill and Decode must meet the selected PD recipe's requirements. Any image you provide must contain the required startup program and support the matching connector protocol.
 
@@ -127,7 +133,7 @@ my-router --listen {{worker_ip}} --listen-port {{port}}
 
 Only variable values, single-level loops over the endpoint/URL lists, and joining URL lists with a literal separator are supported. Unknown names and unsupported syntax are rejected on save; unavailable named ports fail startup. Arbitrary calls, imports, conditionals, nested loops and other filters are unavailable. Newlines separate arguments; this is an argv template, with no implicit shell execution. Substituted values remain atomic even when they contain spaces or quotes.
 
-Templates can reference explicitly configured environment values such as `{{ROUTER_CONFIG}}`. The Router uses its role-level environment when provided, otherwise the deployment environment; catalog defaults are merged underneath. Template runtime variables take precedence when names overlap.
+Templates can reference explicitly configured environment values such as `{{ROUTER_CONFIG}}`. The Router uses the effective environment determined by its environment mode, with catalog defaults applied at lower priority. Template runtime variables take precedence when names overlap.
 
 A Router inheriting the deployment configuration reuses its image/version but never its inference command, in any PD mode. An independently selected backend supplies its version-level `run_command` or `default_run_command`; its configured entrypoint and command retain their normal argument semantics. A role-level `run_command` is a complete invocation and overrides that entrypoint. If no command source is available, including in `custom` PD mode, the deployment is rejected with a missing-command error.
 
@@ -384,14 +390,26 @@ consumes nine of them. If you run several such members per host, widen
 
 ## Constraints
 
-Configuration that would produce a group serving wrong answers is rejected at
-save time rather than at run time:
+Supported tensor-parallel topologies depend on the engine version, model, and KV
+connector. An unsupported topology can fail at startup or during KV transfer.
+After both roles start, send an inference request and confirm that Decode
+receives remote KV.
+
+Set `GPUSTACK_SKIP_MODEL_EVALUATION` to a non-empty value such as `1` in the
+deployment's top-level `env` to continue the preview after model metadata
+evaluation errors. A catalog model spec can supply this value as a default.
+Deployment previews still validate inputs, report which roles must span
+machines, and estimate resources when possible.
+
+For PD, the flag skips the early accelerator type check and the P/D pairing
+checks during preview, save, and scheduler analysis. GPUStack still validates
+the deployment structure. Actual scheduling checks worker eligibility and
+allocates resources and ports.
+
+By default, GPUStack checks these settings when saving a deployment.
 
 - **Prefill and decode must declare the same context length.** No engine checks
   this, and a mismatch is invisible until a long prompt arrives.
-- **Decode's tensor parallelism must be at least prefill's.** The engine does
-  assert this, but reports it as an internal error inside decode rather than as
-  a configuration problem.
 - **Data type, KV cache data type, block size and KV cache layout must agree**
   between the two sides.
 - **A role's engine must be one the chosen mode can configure.** Mixing engines
@@ -412,10 +430,10 @@ KV representations. NIXL's recurrent-state transfer requires
 `VLLM_ALLOW_CHUNKED_LOCAL_ATTN_WITH_HYBRID_KV_CACHE` is checked together with the
 HMA flags. Explicit attention backend choices are also compared.
 
-A role with an unset environment inherits the deployment's environment; an
-explicit dictionary replaces it, including an empty dictionary. Model-dependent
-checks use the source configuration and role overrides. Unknown configurations,
-runtime versions and transfer layouts are reported through `pairing_unverified`.
+These checks use each role's effective environment according to its environment
+mode. Model-dependent checks also use the source configuration. Unknown
+configurations, runtime versions and transfer layouts are reported through
+`pairing_unverified`.
 Network addresses, ports, device names and performance settings may differ between
 roles. Experimental layout permutation remains subject to the engine's direction
 and HMA restrictions.

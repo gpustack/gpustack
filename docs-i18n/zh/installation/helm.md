@@ -209,6 +209,93 @@ helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart 
   -f values.yaml
 ```
 
+### Higress 网关资源配置 { #sizing-the-higress-gateway }
+
+Higress 网关（Envoy）承载所有客户端推理流量。其内存占用随路由/配置变更频率和并发连接数增长，而 LLM 负载的流式响应会长时间保持连接，因此持续负载下内存会不断攀升。内置 `higress-core` 子 Chart 默认 requests 与 limits 均为 `2` CPU / `2Gi`，不足以支撑长期运行；因此 GPUStack Chart 将网关的 **limits** 提高到 `4` CPU / `4096Mi`（requests 保持子 Chart 默认的 `2` CPU / `2048Mi`）。
+
+!!! warning
+
+    网关被 OOMKilled 的影响不止是推理中断：所有经网关的在途请求都会断开；如果 Worker 通过网关地址访问 Server，所有 Worker 连接也会同时断开，触发全集群重连，可能导致模型服务不可用。参见下文 [Worker 直连 Server](#connecting-workers-directly-to-the-server)。
+
+调整规则：
+
+- **在内存触顶前关注它。** 内置 Prometheus 采集的是网关的 Envoy 指标，请对 `envoy_server_memory_allocated` 和 `envoy_server_memory_heap_size` 告警（Higress 部署在其他命名空间时参见 `gateway.namespace`）。`container_memory_working_set_bytes` 是 kubelet/cAdvisor 指标，只有集群级 Prometheus 才有。若正常负载下内存持续逼近 limit，请提高 `higress-core.gateway.resources.limits.memory`，不要等到第一次 OOMKill。
+- **至少保留 2 个副本以保证可用性。** 网关 Deployment 默认 `2` 副本（`higress-core.gateway.replicas`），这样滚动重启或单 Pod 故障不会中断全部流量。副本数不会降低配置与连接负载带来的单 Pod 内存——每个副本都持有完整路由；但副本会分摊请求流量，使每个 Pod 上在途的大请求更少（见下文）。注意 `higress-core.gateway.service.externalTrafficPolicy` 为 `Local`：使用 LoadBalancer/NodePort Service 时，外部 LB 必须对 `healthCheckNodePort` 做健康检查，否则没有网关 Pod 的节点会丢弃流量。
+- **内存 limit 才是应对 OOM 的手段。** 子 Chart 自带基于 CPU 利用率的 HPA，可以平滑请求负载，但**不能**防止 OOM——网关内存取决于连接数和请求大小，而非 CPU。即使开启自动扩缩容，也必须为内存 limits 预留足够余量。
+- **HPA 会覆盖 `replicas`。** 设置 `higress-core.gateway.autoscaling.enabled=true` 后 Deployment 不再使用 `replicas`，而子 Chart 的 `autoscaling.minReplicas` 默认为 `1`，仅开启 HPA 会让网关缩到 1 个 Pod。只要启用 HPA，就把 `autoscaling.minReplicas` 设为至少 `2`。
+
+```yaml
+# values.yaml
+higress-core:
+  gateway:
+    replicas: 2
+    resources:
+      requests:
+        cpu: 2000m
+        memory: 4096Mi
+      limits:
+        cpu: 4000m
+        memory: 8192Mi   # 内存持续攀升则继续调高
+    autoscaling:
+      enabled: true
+      minReplicas: 2    # HPA 会忽略 `replicas`；此处保持 >= 2
+      maxReplicas: 5
+      targetCPUUtilizationPercentage: 80
+```
+
+#### 按图片请求做容量规划
+
+路由与连接负载是内存占用的稳定部分，造成尖峰的是请求大小。检查或改写请求的网关插件都会整体缓冲请求体，因此内存随在途请求字节——并发数乘以请求体大小——增长。携带 base64 编码图片的请求是最常见的触发场景：JSON 里每张图片占其文件大小的 1.33 倍。
+
+下表数据来自单个网关 Pod（2 CPU / 4Gi），使用 GPUStack 默认插件链和 mock 上游，每个用例 60 秒流式负载且均从新启动的 Pod 开始。它们只用于判断量级，不是容量计算公式：
+
+| 图片数 | 请求体 | 并发 | 在途字节 | 高于空载的内存 |
+|---|---|---|---|---|
+| 1 | 1.3 MB | 64 | 85 MB | 约 0.1 GiB |
+| 8 | 10.7 MB | 4 | 43 MB | 约 0.2 GiB |
+| 32 | 42.7 MB | 4 | 171 MB | 约 1.8 GiB |
+| 32 | 42.7 MB | 16 | 683 MB | **OOMKilled** |
+
+单请求的开销增长快于请求体本身，而且负载结束后内存不会及时回落，所以请按在途字节而不是请求数来做预算。对 4Gi 的 Pod，把在途请求体控制在约 200 MB 以下，或者提高 `higress-core.gateway.resources.limits.memory`（多图流量建议从 8Gi 起步）；增加副本同样有帮助，因为副本会分摊请求。
+
+更多 Higress 自定义配置见 [Higress Helm 文档](https://higress.cn/en/docs/latest/ops/deploy-by-helm)。
+
+### Worker 直连 Server { #connecting-workers-directly-to-the-server }
+
+Worker 与 Server 之间的注册、心跳、模型/实例 watch（以及 `tunnel` 代理模式下的常驻 WebSocket）属于控制面流量，与客户端推理流量相互独立，**不应经过 Higress 网关**——否则网关重启或被 OOMKilled 时，所有 Worker 连接会被同时切断。
+
+Chart 自管的 Worker 已正确接线：`worker.enabled=true` 且未设置 `worker.serverURL` 时，Worker 通过集群内 Service（`http://<release>-server.<namespace>.svc:<server.apiPort>`）注册，完全绕过网关。需要自行指定地址时，优先使用 ClusterIP Service（`<release>-server-cluster-ip`）而不是上述 headless Service：headless 名称解析到的是 Pod IP，Server 故障切换后可能失效。
+
+需要重点检查的是通过 **Register Cluster** 注册的集群（或任何以 `--server-url` 启动的 Worker）。注册 manifest 中的 `worker.serverURL` 由 Server 生成，其解析顺序是集群自身的 **Server URL**、`server_external_url`、请求 Host——因此除非集群设置了覆盖值，否则就是 Server 的*外部* URL。Helm 部署下该 URL 通常就是 ingress 地址，即 Higress 网关。在这种布局下，网关 OOM 的影响范围远超请求中断：
+
+- 所有 Worker 同时失去与 Server 的连接。`tunnel` 模式下所有经隧道中转的在途推理流被切断，隧道客户端以指数退避（1s 起、上限 60s，带抖动）重连；`direct`/`worker` 模式没有隧道，但模型与实例的 watch 是长连接 HTTP 流，同样会被切断并触发集中重连和重新 list；心跳是周期性调用，只是失败后在下一个周期重试。
+
+- 若中断超过心跳宽限期（`GPUSTACK_WORKER_HEARTBEAT_GRACE_PERIOD`，默认 150s），Worker 会被判定离线并摘除其模型路由——即使推理进程仍在运行，模型服务也不可用。
+
+要将控制面路径与网关解耦，请让 Worker 指向可直达 Server 的地址：
+
+- **Register Cluster 注册的集群：** 把集群的 **Server URL** 设为直达地址——Worker 与 Server 同集群时用集群内 Service，否则用直接指向 Server Service 的专用 NodePort/LoadBalancer——然后重新获取并应用注册 manifest。应在集群上修改，而不是 `helm upgrade --set worker.serverURL=…`：下次应用 manifest 时 bootstrap Job 会按 Server 渲染的 values 重装 worker release，网关 URL 又会回来。也不要在 manifest 管理的 release 旁边再加一个 worker-only release，那会产生重复的 worker DaemonSet（其 Pod 因 `hostNetwork` 端口反亲和而处于 Pending）和第二个 operator。
+
+- **Kubernetes 之外的 Worker：** 启动时用 `--server-url` 指向直达地址。
+
+- **由 Helm 安装、没有注册 manifest 的 Worker：** 在 Server 所在集群部署一个 worker-only release。它与 Server release 位于同一命名空间，因此不能再渲染该 release 已拥有的 Secret：设置 `imagePullSecret.create: false`，并让 `registrationTokenSecretName` 指向 Server 的 `registration-token` Secret（`worker.enabled` 默认 `false`，而 `server`/`higress-core` 默认启用，三者同样必须显式声明）：
+
+```yaml
+# Server 所在集群内 worker-only Release 的 values.yaml
+server:
+  enabled: false
+higress-core:
+  enabled: false
+imagePullSecret:
+  create: false
+registrationTokenSecretName: registration-token
+worker:
+  enabled: true
+  serverURL: http://gpustack-server-server-cluster-ip.gpustack-system.svc:30080
+```
+
+这样网关只承载客户端推理流量，网关重启不再影响 Worker 的注册、心跳和 watch。代理模式本身参见 [Worker 连接模式](../user-guide/cluster-management.md#worker-connection-modes)。
+
 ### 从私有镜像仓库拉取镜像 { #pulling-images-from-a-private-registry }
 
 如需从私有镜像仓库拉取所有镜像，包括 GPUStack Server/Worker、higress-plugins 和内置 higress-core gateway/controller/pilot，请覆盖 `global.hub`。Helm 的全局值传播机制可让一个设置应用于所有镜像：
@@ -269,6 +356,11 @@ global:
 | `server.nodeSelector` | `{}` | Server Pod 的 nodeSelector；非空时替换 `global.nodeSelector`。 |
 | `gateway.ingressClassname` | `higress` | Higress IngressClass 名称；找到对应项时启用集群内网关模式。 |
 | `higress-core.enabled` | `true` | 部署内置 Higress 网关；若已安装，则禁用。 |
+| `higress-core.gateway.replicas` | `2` | Higress 网关副本数；保持 >= 2 以保证可用性。 |
+| `higress-core.gateway.resources` | limits `4` CPU / `4096Mi` | 网关资源；limits 高于子 Chart 默认值。参见 [Higress 网关资源配置](#sizing-the-higress-gateway)。 |
+| `higress-core.gateway.autoscaling.enabled` | `false` | 网关的基于 CPU 的 HPA；不能防止 OOM，仍需合理配置内存 limits。 |
+| `higress-core.gateway.autoscaling.minReplicas` | `1`                      | 启用 HPA 时的最小副本数；HPA 会覆盖 `replicas`，请设为至少 2。 |
+| `worker.serverURL` | `""` | Worker 注册的 Server 地址；为空时使用集群内 Server Service。避免经由网关路由。 |
 | `worker.enabled` | `false` | 生成 Worker DaemonSet。 |
 | `worker.gpuVendors` | `[nvidia]` | GPU 厂商；每个厂商对应一个 DaemonSet，此外还有 CPU DaemonSet。 |
 | `worker.cpuEnabled` | `true` | 生成 CPU Worker DaemonSet；设为 `false` 时必须指定 GPU 厂商。 |

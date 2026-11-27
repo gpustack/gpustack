@@ -28,6 +28,7 @@ from gpustack.schemas.workers import Worker
 from gpustack.utils.compat_importlib import pkg_resources
 from gpustack.utils.command import flatten_to_argv, rewrite_value_bool_flags
 from gpustack.utils.convert import parse_duration, safe_int
+from gpustack.utils.envs import should_skip_model_evaluation
 from gpustack.utils.hub import (
     filter_filename,
     list_repo,
@@ -778,7 +779,9 @@ async def get_pretrained_config_with_workers(
                     f"Please ensure the model files are available at the specified path."
                 )
 
-        if model.env and model.env.get("GPUSTACK_SKIP_MODEL_EVALUATION"):
+        if getattr(
+            model, "_deployment_skip_model_evaluation", False
+        ) or should_skip_model_evaluation(model.env):
             return pretrained_config
 
         if model.categories and any(

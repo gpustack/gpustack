@@ -93,6 +93,17 @@ def test_role_environment_replaces_the_model_dictionary(role_env):
     assert _pairing_unverified(model) is True
 
 
+def test_role_environment_can_keep_the_deployment_layout_with_overrides():
+    model = model_input(model_env={"VLLM_KV_CACHE_LAYOUT": "NHD"})
+    model.roles[1] = RoleSpec(
+        name="decode", env={"OMP_NUM_THREADS": "2"}, env_mode="merge"
+    )
+
+    validate_role_pairing(model)
+
+    assert _pairing_unverified(model) is False
+
+
 def test_an_unknown_layout_is_reported_instead_of_guessed():
     model = model_input(
         {"VLLM_KV_CACHE_LAYOUT": "{{worker_ip}}"},

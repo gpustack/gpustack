@@ -11,7 +11,9 @@ import io
 import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime
+from decimal import Decimal
 from unittest.mock import patch
+from xml.etree import ElementTree
 
 import pytest
 import pytest_asyncio
@@ -22,6 +24,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.api.exceptions import register_handlers
 from gpustack.routes import resource_usage as resource_routes
+from gpustack.schemas.gpu_instance_persistent_volumes import GPUInstancePersistentVolume
 from gpustack.schemas.gpu_instances import GPUInstance
 from gpustack.schemas.metered_usage import (
     METER_INSTANCE_UPTIME,
@@ -82,6 +85,7 @@ async def app_and_engine():
         await conn.run_sync(MeteredUsage.__table__.create)
         await conn.run_sync(Principal.__table__.create)
         await conn.run_sync(GPUInstance.__table__.create)
+        await conn.run_sync(GPUInstancePersistentVolume.__table__.create)
 
     async with AsyncSession(engine) as seed:
         seed.add(
@@ -171,6 +175,176 @@ def _parse_csv(body: bytes):
     return list(csv.DictReader(io.StringIO("\n".join(lines))))
 
 
+def _sliced_meter(resource_id, day, share, dimensions):
+    return MeteredUsage(
+        meter_key=METER_INSTANCE_UPTIME,
+        resource_type=RESOURCE_TYPE_GPU_INSTANCE,
+        resource_id=resource_id,
+        resource_name=f"inst-{resource_id}",
+        bucket_start=datetime(2026, 4, day),
+        quantity=3600,
+        unit="seconds",
+        sku="a100-pool",
+        sku_count=Decimal(share),
+        instance_type_name="NVIDIA-A100",
+        dimensions=dimensions,
+        creator_id=1,
+    )
+
+
+@pytest.mark.asyncio
+async def test_instance_type_export_preserves_gpu_allocation(client, app_and_engine):
+    _, engine = app_and_engine
+    async with AsyncSession(engine) as session:
+        session.add_all(
+            [
+                _sliced_meter(1, 1, "1", {"slice_mode": "whole"}),
+                _sliced_meter(
+                    2, 1, "0.1", {"slice_mode": "ratio", "sliced_memory_percentage": 10}
+                ),
+                _sliced_meter(
+                    3,
+                    1,
+                    "0.125",
+                    {"slice_mode": "profile", "partitioned_profile": "1g.10gb"},
+                ),
+                _sliced_meter(3, 2, "2", {"slice_mode": "whole", "gpu_count": 2}),
+                _sliced_meter(
+                    3,
+                    3,
+                    "0.2",
+                    {
+                        "slice_mode": "ratio",
+                        "sliced_memory_percentage": 10,
+                        "gpu_count": 2,
+                    },
+                ),
+                _sliced_meter(
+                    4, 3, "0.2", {"slice_mode": "ratio", "sliced_memory_percentage": 20}
+                ),
+            ]
+        )
+        await session.commit()
+
+    url = "/usage/gpu-instances/breakdown/export"
+    payload = {**RANGE, "group_by": ["instance_type"]}
+    csv_response = await client.post(url, json=payload)
+    assert csv_response.status_code == 200, csv_response.text
+    exported = _parse_csv(csv_response.content)
+    legacy = [row for row in exported if row["Instance Type"] == "flavor-a"]
+    assert [row["GPU Allocation"] for row in legacy] == [""]
+    rows = [row for row in exported if row["Instance Type"] == "NVIDIA-A100"]
+    assert {row["GPU Allocation"]: float(row["GPU Hours"]) for row in rows} == {
+        "Full GPU": 1.0,
+        "10%": 0.1,
+        "1g.10gb": 0.12,
+        "Full GPU × 2": 2.0,
+        "10% × 2 / 20%": 0.4,
+    }
+
+    xlsx_response = await client.post(url, json={**payload, "format": "xlsx"})
+    assert xlsx_response.status_code == 200, xlsx_response.text
+    with zipfile.ZipFile(io.BytesIO(xlsx_response.content)) as workbook:
+        sheet = ElementTree.fromstring(workbook.read("xl/worksheets/sheet1.xml"))
+    assert {"GPU Allocation", "Full GPU", "10%", "1g.10gb"} <= set(sheet.itertext())
+
+
+@pytest.mark.asyncio
+async def test_chart_export_reports_allocation_within_each_bucket(
+    client, app_and_engine
+):
+    _, engine = app_and_engine
+    async with AsyncSession(engine) as session:
+        for day, share, dimensions in (
+            (1, "0.1", {"slice_mode": "ratio", "sliced_memory_percentage": 10}),
+            (2, "1", {"slice_mode": "whole"}),
+            (3, "0.1", {"slice_mode": "ratio", "sliced_memory_percentage": 10}),
+            (3, "0.25", {"slice_mode": "ratio", "sliced_memory_percentage": 25}),
+        ):
+            session.add(_sliced_meter(4, day, share, dimensions))
+        await session.commit()
+
+    url = "/usage/gpu-instances/breakdown"
+    payload = {**RANGE, "instance_ids": [4], "group_by": ["date", "instance"]}
+    preview = await client.post(url, json={**payload, "include_gpu_allocation": True})
+    estimate = await client.post(f"{url}/export/estimate", json=payload)
+    download = await client.post(f"{url}/export", json=payload)
+    for response in (preview, estimate, download):
+        assert response.status_code == 200, response.text
+    assert {"key": "gpu_allocation", "title": "GPU Allocation"} in estimate.json()[
+        "sheets"
+    ][0]["columns"]
+    assert {
+        row["date"][:10]: row["gpu_allocation"] for row in preview.json()["items"]
+    } == {
+        "2026-04-01": "10%",
+        "2026-04-02": "Full GPU",
+        "2026-04-03": "10% / 25%",
+    }
+    assert {
+        row["Date"]: row["GPU Allocation"] for row in _parse_csv(download.content)
+    } == {"2026-04-01": "10%", "2026-04-02": "Full GPU", "2026-04-03": "10% / 25%"}
+
+    whole_interval = await client.post(
+        f"{url}/export", json={**payload, "group_by": ["instance"]}
+    )
+    assert whole_interval.status_code == 200, whole_interval.text
+    assert [row["GPU Allocation"] for row in _parse_csv(whole_interval.content)] == [
+        "10% / 25% / Full GPU"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_allocation_uses_only_selected_meter_rows(client, app_and_engine):
+    _, engine = app_and_engine
+    async with AsyncSession(engine) as session:
+        excluded = _sliced_meter(
+            4, 3, "0.25", {"slice_mode": "ratio", "sliced_memory_percentage": 25}
+        )
+        excluded.creator_id = 2
+        session.add_all(
+            [
+                _sliced_meter(4, 1, "1", {"gpu_count": 1}),
+                _sliced_meter(4, 2, "1", {}),
+                _sliced_meter(4, 3, "1", {"slice_mode": "whole"}),
+                excluded,
+            ]
+        )
+        await session.commit()
+
+    payload = {
+        **RANGE,
+        "instance_ids": [4],
+        "creator_ids": [1],
+        "group_by": ["instance"],
+    }
+    url = "/usage/gpu-instances/breakdown"
+    unfiltered = await client.post(f"{url}/export", json={**payload, "creator_ids": []})
+    exported = await client.post(f"{url}/export", json=payload)
+    preview = await client.post(url, json={**payload, "include_gpu_allocation": True})
+    for response in (unfiltered, exported, preview):
+        assert response.status_code == 200, response.text
+    assert _parse_csv(unfiltered.content)[0]["GPU Allocation"] == "25% / Full GPU"
+    assert _parse_csv(exported.content)[0]["GPU Allocation"] == "Full GPU"
+    assert preview.json()["items"][0]["gpu_allocation"] == "Full GPU"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["resource", "gpu-instances"])
+async def test_allocation_enrichment_is_only_used_for_gpu_export_preview(client, route):
+    response = await client.post(
+        f"/usage/{route}/breakdown",
+        json={
+            **RANGE,
+            "group_by": ["instance"],
+            "include_gpu_allocation": route == "resource",
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["items"]
+    assert all("gpu_allocation" not in item for item in response.json()["items"])
+
+
 @pytest.mark.asyncio
 async def test_export_enriches_names_while_the_cursor_is_open(client):
     """The second connection resolves display names mid-stream.
@@ -226,6 +400,101 @@ async def test_streaming_survives_a_chunk_boundary(client, monkeypatch):
     rows = _parse_csv(response.content)
     assert len(rows) == 3
     assert len({r["Instance ID"] for r in rows}) == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("preview", [False, True], ids=["export", "preview"])
+async def test_gpu_export_streams_allocations_once_across_batches(
+    client, app_and_engine, monkeypatch, preview
+):
+    _, engine = app_and_engine
+    async with AsyncSession(engine) as session:
+        for day, share, percentage in (
+            (1, "0.1", 10),
+            (1, "0.25", 25),
+            (1, "0.05", 5),
+            (2, "0.1", 10),
+        ):
+            session.add(
+                _sliced_meter(
+                    4,
+                    day,
+                    share,
+                    {"slice_mode": "ratio", "sliced_memory_percentage": percentage},
+                )
+            )
+        repeated = _sliced_meter(
+            4,
+            1,
+            "0.1",
+            {"slice_mode": "ratio", "sliced_memory_percentage": 10, "cpu_milli": 1000},
+        )
+        repeated.bucket_start = datetime(2026, 4, 1, 1)
+        session.add(repeated)
+        await session.commit()
+
+    stream = AsyncSession.stream
+    streamed = []
+
+    async def count_stream(session, statement, *args, **kwargs):
+        streamed.append(statement)
+        return await stream(session, statement, *args, **kwargs)
+
+    monkeypatch.setattr(AsyncSession, "stream", count_stream)
+    monkeypatch.setattr(resource_routes.envs, "USAGE_EXPORT_STREAM_CHUNK_ROWS", 1)
+    url = "/usage/gpu-instances/breakdown"
+    payload = {**RANGE, "group_by": ["date", "instance"], "instance_ids": [4]}
+    if preview:
+        payload["include_gpu_allocation"] = True
+    else:
+        url += "/export"
+    response = await client.post(url, json=payload)
+
+    assert response.status_code == 200, response.text
+    assert len(streamed) == 1
+    async with AsyncSession(engine) as session:
+        result = await stream(session, streamed[0])
+        assert len(await result.all()) == 4
+    if preview:
+        rows = [
+            (r["date"][:10], r["gpu_allocation"], r["metrics"]["gpu_hours"])
+            for r in response.json()["items"]
+        ]
+    else:
+        rows = [
+            (r["Date"], r["GPU Allocation"], float(r["GPU Hours"]))
+            for r in _parse_csv(response.content)
+        ]
+    assert rows == [
+        ("2026-04-02", "10%", 0.1),
+        ("2026-04-01", "5% / 10% / 25%", 0.5),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("grouping", "missing"), [("instance", "resource_id"), ("instance_type", "sku")]
+)
+async def test_gpu_export_keeps_allocations_for_null_group_keys(
+    client, app_and_engine, grouping, missing
+):
+    _, engine = app_and_engine
+    async with AsyncSession(engine) as session:
+        row = _sliced_meter(
+            4, 1, "0.25", {"slice_mode": "ratio", "sliced_memory_percentage": 25}
+        )
+        setattr(row, missing, None)
+        row.creator_id = 99
+        session.add(row)
+        await session.commit()
+    response = await client.post(
+        "/usage/gpu-instances/breakdown/export",
+        json={**RANGE, "group_by": ["date", grouping], "creator_ids": [99]},
+    )
+
+    assert response.status_code == 200, response.text
+    rows = _parse_csv(response.content)
+    assert [(r["GPU Allocation"], r["GPU Hours"]) for r in rows] == [("25%", "0.25")]
 
 
 @pytest.mark.asyncio

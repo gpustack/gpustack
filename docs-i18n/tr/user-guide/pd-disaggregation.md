@@ -68,7 +68,13 @@ Bu sıradaki ikinci ve üçüncü maddeler, Router rolünün kendisi için seçi
 Bunlar arka uç, sürüm, imaj ve komuttan ayrı yapılandırılır:
 
 - **Parametreler:** Prefill veya Decode rolünün kendi listesi dağıtımın listesinin yerini alır. Router kendi parametre listesini kullanır ve bunu Router komutuna ekler. Bir arka uç seçildiğinde varsayılan parametreleri forma doldurulur; başlangıçta hangi parametrelerin aktarılacağını rolün kaydedilmiş listesi belirler.
-- **Ortam değişkenleri:** rolün kendi değişken haritası, dağıtımın haritasının tamamının yerini alır. Prefill ve Decode için forma getirilen arka uç varsayılanları, rolün kaydedilmiş yapılandırmasının bir parçası olur. Router, varsayılanları başlangıçta da yükler; aynı adlı değişkenler için öncelik şöyledir: rolün değerleri (rolün kendi haritası yoksa dağıtımın değerleri) → seçilen arka uç sürümü → arka uç varsayılanları → geçerli olduğu durumlarda PD tarifinin varsayılanları.
+- **Ortam değişkenleri.** Dağıtım düzeyinde ortam değişkenleri tanımlandığında her rol için bir mod seçilebilir. Yeni rollerin varsayılanı **Devral ve geçersiz kıl** seçeneğidir.
+    - **Devral ve geçersiz kıl** (`env_mode: merge`), dağıtım ve rol değişkenlerini birleştirir. Aynı adlı değişkenler için rolün değeri kullanılır.
+    - **Yalnızca rol değişkenlerini kullan** (`env_mode: replace`), rolün kendi değişken haritasını kullanır. Boş bir harita, bu role kullanıcı tanımlı değişken aktarmaz.
+
+    Dağıtımda ortam değişkeni bulunmadığında ve mod seçici gizlendiğinde de seçilen mod kaydedilir. `env_mode` atlanırsa veya `null` ise rolün `env: null` değeri dağıtım değişkenlerini devralır. `{}` dahil açıkça belirtilmiş bir harita dağıtım değişkenlerinin tamamının yerini alır.
+
+    Prefill ve Decode formlarına yüklenen arka uç varsayılanları rol değerleri olarak kaydedilir. Router her değişken için sırasıyla rolün etkin ortamına, seçilen arka uç sürümüne, arka uç varsayılanlarına ve geçerliyse PD tarifi varsayılanlarına bakar. İlk kullanılabilir değer geçerlidir.
 
 Prefill ve Decode rollerinin kullandığı arka uçlar ve sürümler, seçilen PD tarifinin gereksinimlerini karşılamalıdır. Sağladığınız her imaj gerekli başlatma programını içermeli ve eşleşen konektör protokolünü desteklemelidir.
 
@@ -104,7 +110,7 @@ my-router --listen {{worker_ip}} --listen-port {{port}}
 
 Yalnızca değişken değerleri, uç nokta/URL listelerinde tek seviyeli döngüler ve sabit ayırıcıyla URL birleştirme desteklenir. Bilinmeyen adlar ve desteklenmeyen sözdizimi kayıtta reddedilir; bulunamayan adlandırılmış portlar başlatmayı durdurur. İşlev çağrıları, içe aktarma, koşullar, iç içe döngüler ve diğer filtreler desteklenmez. Yeni satırlar argümanları ayırır; bu, örtük shell çalıştırmayan bir argv şablonudur. Boşluk veya tırnak içeren değerler tek argüman olarak kalır.
 
-Şablonlar, `{{ROUTER_CONFIG}}` gibi açıkça yapılandırılmış ortam değişkenlerine de başvurabilir. Rolün ortam haritası belirtilmişse o kullanılır, aksi halde dağıtım ortamı devralınır; katalog değerleri varsayılan olarak birleştirilir. Aynı adlı çalışma zamanı şablon değişkenleri önceliklidir.
+Şablonlar, `{{ROUTER_CONFIG}}` gibi açıkça yapılandırılmış ortam değişkenlerine de başvurabilir. Router, seçilen modun belirlediği etkin ortamı kullanır. Katalog varsayılanları daha düşük öncelikle uygulanır. Aynı adlı çalışma zamanı şablon değişkenleri önceliklidir.
 
 Router üst imajı ve sürümü devralır ancak hiçbir PD modunda üst çıkarım komutunu devralmaz. Bağımsız seçilen arka uç, sürümün `run_command` veya `default_run_command` değerini normal entrypoint ve argüman anlamıyla sağlar. Rolün `run_command` değeri tam başlatma komutudur ve entrypoint değerini geçersiz kılar. `custom` PD modu dahil hiçbir komut kaynağı yoksa kayıt eksik Router komutu hatasıyla reddedilir.
 
@@ -237,10 +243,15 @@ Varsayılan aralık **64 bağlantı noktası** içerir; bu çoğu dağıtım iç
 
 ## Kısıtlamalar { #constraints }
 
-Yanlış yanıtlar sunan bir grup oluşturacak yapılandırma, çalışma zamanından ziyade kaydetme zamanında reddedilir:
+Desteklenen tensör paralelliği topolojileri çıkarım motorunun sürümüne, modele ve KV bağlayıcısına bağlıdır. Uyumsuz bir topoloji başlatma veya KV aktarımı sırasında hata verebilir. Her iki rol başladıktan sonra bir çıkarım isteği gönderin ve Decode rolünün uzak KV verisini aldığını doğrulayın.
+
+Model meta verileri değerlendirilirken hata oluşsa da önizlemenin devam etmesi için dağıtımın en üst düzey `env` alanında `GPUSTACK_SKIP_MODEL_EVALUATION` değişkenine `1` gibi boş olmayan bir değer verin. Katalogdaki model tanımı bu değeri varsayılan olarak belirleyebilir. Önizleme girdileri doğrulamaya, birden fazla makineye yayılması gereken rolleri göstermeye ve mümkün olduğunda kaynak gereksinimlerini hesaplamaya devam eder.
+
+PD için bu ayar, hızlandırıcı türü ön kontrolünü ve önizleme, kaydetme ve zamanlayıcı analizi sırasındaki P/D eşleşme kontrollerini atlar. GPUStack dağıtım yapısını doğrulamaya devam eder. Dağıtımı planlarken uygun çalışanları belirleyip kaynakları ve bağlantı noktalarını ayırır.
+
+Varsayılan olarak GPUStack, dağıtımı kaydederken aşağıdaki ayarları kontrol eder.
 
 - **Ön doldurma ve kod çözme aynı bağlam uzunluğunu bildirmelidir.** Hiçbir motor bunu kontrol etmez ve uzun bir komut gelene kadar bir uyumsuzluk görünmez.
-- **Kod çözmenin tensör paralelliği en azından önceden doldurmanınki olmalıdır.** Motor bunu iddia eder, ancak bunu bir yapılandırma sorunu yerine kod çözme içindeki dahili bir hata olarak bildirir.
 - **Veri türü, KV önbellek veri türü, blok boyutu ve KV önbellek düzeni iki taraf arasında** aynı olmalıdır.
 - **Bir rolün motoru, seçilen modun yapılandırabileceği bir motor olmalıdır.** Motorları roller arasında karıştırmak, bağlantı parametrelerinin sizin sağlayacağınız `custom` modunu gerektirir.
 - **`custom` modunu kullanan ayrıştırılmış bir dağıtım aynı zamanda genişletilmiş bir KV önbelleği de kullanamaz.** Diğer modlardan her biri sizin için ikisini oluşturur (bkz. [Paylaşılan bir KV önbelleğini onunla kullanma](#using-a-shared-kv-cache-with-it)); `custom` hiçbir bağlayıcı yapılandırması eklemez, bu nedenle önbelleği oluşturacak hiçbir şey yoktur; birleştirilmiş yapılandırmayı kendiniz yazın.
@@ -248,7 +259,7 @@ Yanlış yanıtlar sunan bir grup oluşturacak yapılandırma, çalışma zaman�
 
 `vllm-nixl` için uyumluluk kontrolleri role özgü ortam değişkenlerini içerir. `VLLM_KV_CACHE_LAYOUT` eşdeğer takma adları kabul eder (`NHD`/`LBNHC` ve `HND`/`LBHNC`). MLA modellerinde `VLLM_MLA_DISABLE` uyumlu gizli KV temsilleri üretmelidir. NIXL'in yinelenen durum aktarımı, desteklenen çalışma zamanlarında `VLLM_SSM_CONV_STATE_LAYOUT=DS` gerektirir. Parçalanmış yerel dikkat için, `VLLM_ALLOW_CHUNKED_LOCAL_ATTN_WITH_HYBRID_KV_CACHE` HMA bayraklarıyla birlikte işaretlenir. Açık dikkat arka uç seçenekleri de karşılaştırılır.
 
-Ayarlanmamış bir ortama sahip bir rol, dağıtımın ortamını devralır; boş bir sözlük de dahil olmak üzere açık bir sözlük onun yerini alır. Modele bağlı kontroller, kaynak yapılandırmasını ve rol geçersiz kılmalarını kullanır. Bilinmeyen yapılandırmalar, çalışma zamanı sürümleri ve aktarım düzenleri `pairing_unverified` aracılığıyla raporlanır. Ağ adresleri, bağlantı noktaları, cihaz adları ve performans ayarları roller arasında farklılık gösterebilir. Deneysel düzen permütasyonu, motorun yönüne ve HMA kısıtlamalarına tabi olmaya devam eder.
+Bu kontroller, her rolün moduna göre belirlenen etkin ortamı kullanır. Modele bağlı kontroller ayrıca kaynak yapılandırmasını kullanır. Bilinmeyen yapılandırmalar, çalışma zamanı sürümleri ve aktarım düzenleri `pairing_unverified` aracılığıyla raporlanır. Ağ adresleri, bağlantı noktaları, cihaz adları ve performans ayarları roller arasında farklılık gösterebilir. Deneysel düzen permütasyonu, motorun yönüne ve HMA kısıtlamalarına tabi olmaya devam eder.
 
 ## Sınırlamalar { #limitations }
 

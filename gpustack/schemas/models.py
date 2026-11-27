@@ -21,6 +21,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field as PydanticField,
+    PrivateAttr,
     field_serializer,
     field_validator,
     model_validator,
@@ -50,6 +51,7 @@ from gpustack.schemas.links import (
 )
 from gpustack.utils.name import bounded_follower_name
 from gpustack.utils.command import find_parameter, find_bool_parameter
+from gpustack.utils.envs import should_skip_model_evaluation
 from gpustack.schemas.model_routes import (
     ModelRoute,
     ModelRouteTarget,
@@ -542,7 +544,7 @@ ROUTER_DEFAULT_MEMORY = 2 * 1024**3
 class RoleSpec(BaseModel):
     """One role of a multi-role deployment.
 
-    Deployment fields left as ``None`` inherit the ``Model``-level field,
+    By default, deployment fields left as ``None`` inherit the ``Model``-level field,
     except when ``backend`` selects an independent launch configuration:
     its version, image and command then belong entirely to this role, and a
     null version means Auto. The override surface is
@@ -551,6 +553,9 @@ class RoleSpec(BaseModel):
     performance-related parameter, down to ``HCCL_CONNECT_TIMEOUT`` (120 vs
     1200) and ``HCCL_BUFFSIZE`` (2560 vs 1024). Any narrower surface runs out
     immediately.
+
+    ``env_mode`` lets a role overlay its environment on the deployment's
+    defaults or choose its own complete environment.
 
     Note that the inherit-when-None rule is not applied here: the projection
     onto an effective per-role Model happens on the read path, and its result
@@ -585,6 +590,15 @@ class RoleSpec(BaseModel):
 
     backend_parameters: Optional[List[str]] = None
     env: Optional[Dict[str, str]] = None
+    env_mode: Optional[Literal["merge", "replace"]] = Field(
+        default=None,
+        description=(
+            "Merge deployment environment variables with role overrides or "
+            "replace them with the role environment. Replace treats null env "
+            "as an empty map. Omit env_mode for legacy null inheritance and "
+            "whole-map replacement."
+        ),
+    )
     gpu_selector: Optional[GPUSelector] = None
     worker_selector: Optional[Dict[str, str]] = None
     gpu_type_selector: Optional[GPUTypeSelector] = None
@@ -1017,58 +1031,8 @@ class DegradationReasonEnum(str, Enum):
     release line the floor was ever measured against."""
 
     PAIRING_UNVERIFIED = "pairing_unverified"
-    """A pairing factor whose two effective values GPUStack could not compare —
-    usually one role declaring it and the other going silent.
-
-    The factors prefill and decode must share — the context window, the tensor
-    parallelism, the dtypes, the block size, the KV cache layout. Comparing
-    them only when *both* roles write them down would pass a group where one
-    side is silent by not checking it, and that is the ordinary way a group is
-    misconfigured: edit prefill, leave decode alone.
-
-    **A marker and not a 400, because the silent side's value is genuinely
-    unknown here.** Substituting the engines' defaults was the obvious repair
-    and is wrong for every one of these: an unwritten `--tensor-parallel-size`
-    is the member's card count and not 1, since GPUStack injects it itself; an
-    unwritten `--dtype` is `auto`, which needs the checkpoint's config to
-    resolve and admission has no session to fetch one; `--block-size` and
-    `--kv-cache-layout` are settled by the platform and the attention backend,
-    `VLLM_KV_CACHE_LAYOUT` included, so any constant written down would drift
-    into a false alarm on a later vLLM. A pair this marker describes is very
-    often correct — what it reports is that nothing verified it, which is not
-    the same claim as "this is broken".
-
-    **An explicit `auto` is silence, not a third value.** `--dtype auto`
-    against `--dtype float16` lands here rather than being refused: on a float16
-    checkpoint the two are the same run, and telling them apart needs the config
-    file admission cannot open. Writing `auto` down does not turn a question
-    into an answer.
-
-    A divergence GPUStack *can* prove — two concrete values that differ — is
-    still refused at admission. Both sides silent is deliberately not marked:
-    two roles taking the same default from the same engine on the same model
-    agree whatever it resolves to."""
-
     PAIRING_TP_MISPLACED = "pairing_tp_misplaced"
-    """The cards the members actually got break the recipe's tensor-parallel
-    direction.
-
-    The admission check can only read the spec, and the spec routinely does not
-    contain the number: a role that writes no `--tensor-parallel-size` and pins
-    no cards runs whatever the scheduler gives it. Placement is where that
-    stops being unknown — every member's `gpu_indexes` is written down, the
-    engines derive tp from exactly that for a single-worker member, and the
-    direction the recipe declares (`PDMode.pairing.tensor_parallel`) can
-    finally be applied to the deployment that exists rather than the one that
-    was described.
-
-    **Marked, never enforced.** By the time this is knowable the members are
-    placed and, usually, serving; failing them would take down a group to
-    report a shape it is already running. Under NIXL the shape does break —
-    a decode narrower than its prefill raises an `IndexError` inside decode on
-    first transfer — but that failure belongs to the engine and arrives with
-    its own message. This is the attribution: the reason that IndexError exists
-    is a placement, and the placement is written on the model."""
+    """Supports reading persisted states with this reason."""
 
     def __str__(self):
         return self.value
@@ -1462,6 +1426,8 @@ class RoleEffectiveModel(ModelBase):
     """
 
     id: Optional[int] = None
+    # PD metadata reads can honor the deployment opt-out after replacing env.
+    _deployment_skip_model_evaluation: Optional[bool] = PrivateAttr(default=None)
 
     # Deliberately left unhashable, which is what `Model` is too — SQLModel
     # sets `__hash__ = None` on a table class the same way pydantic does for
@@ -1474,7 +1440,7 @@ class RoleEffectiveModel(ModelBase):
 # The RoleSpec fields that describe the role itself rather than override a
 # Model field. Everything else is an override, derived rather than listed so
 # that adding one to RoleSpec cannot silently fail to be projected.
-_ROLE_OWN_FIELDS = frozenset({"name", "dependencies", "resources"})
+_ROLE_OWN_FIELDS = frozenset({"name", "dependencies", "resources", "env_mode"})
 
 _ROLE_OVERRIDE_FIELDS = frozenset(RoleSpec.model_fields) - _ROLE_OWN_FIELDS
 
@@ -1495,6 +1461,19 @@ def role_backend_field(
         if getattr(role, "backend", None) is not None or value is not None
         else default
     )
+
+
+def role_effective_env(
+    role: Optional[RoleSpec], model_env: Optional[Dict[str, str]]
+) -> Optional[Dict[str, str]]:
+    """Resolve the role's user environment from its deployment defaults."""
+    role_env = getattr(role, "env", None)
+    mode = getattr(role, "env_mode", None)
+    if mode == "merge":
+        return {**(model_env or {}), **(role_env or {})}
+    if mode == "replace":
+        return role_env or {}
+    return model_env if role_env is None else role_env
 
 
 def find_role(model, role_name: Optional[str]) -> Optional[RoleSpec]:
@@ -1683,8 +1662,19 @@ def role_effective_model(model, role_name: Optional[str]):
         return model
 
     projected = RoleEffectiveModel.model_validate(model)
+    if projected.disaggregation is not None:
+        deployment_flag = getattr(model, "_deployment_skip_model_evaluation", None)
+        projected._deployment_skip_model_evaluation = (
+            should_skip_model_evaluation(projected.env)
+            if deployment_flag is None
+            else deployment_flag
+        )
     for field in _ROLE_OVERRIDE_FIELDS:
-        value = getattr(role, field, None)
+        value = (
+            role_effective_env(role, projected.env)
+            if field == "env"
+            else getattr(role, field, None)
+        )
         independent_backend = role.backend is not None and field in ROLE_BACKEND_FIELDS
         if value is None and not independent_backend:
             continue

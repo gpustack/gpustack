@@ -133,6 +133,32 @@ def test_a_role_declaring_nothing_inherits_everything():
     assert router.image_name == "model/image"
 
 
+@pytest.mark.parametrize(
+    "mode,role_env,expected",
+    [
+        (None, None, {"COMMON": "1", "LOG_LEVEL": "warn"}),
+        (None, {}, {}),
+        (None, {"LOG_LEVEL": "info"}, {"LOG_LEVEL": "info"}),
+        ("merge", {}, {"COMMON": "1", "LOG_LEVEL": "warn"}),
+        ("merge", {"LOG_LEVEL": ""}, {"COMMON": "1", "LOG_LEVEL": ""}),
+        ("replace", None, {}),
+        ("replace", {"LOG_LEVEL": "info"}, {"LOG_LEVEL": "info"}),
+    ],
+)
+def test_role_environment_mode(mode, role_env, expected):
+    deployment_env = {"COMMON": "1", "LOG_LEVEL": "warn"}
+    model = _model(
+        env=deployment_env,
+        roles=[RoleSpec(name="decode", env=role_env, env_mode=mode)],
+    )
+
+    projected = role_effective_model(model, "decode")
+
+    assert projected.env == expected
+    assert model.env == deployment_env
+    assert model.roles[0].env == role_env
+
+
 @pytest.mark.parametrize("name", ["prefill", "decode", "router"])
 def test_an_independent_backend_owns_its_optional_launch_fields(name):
     model = _model(

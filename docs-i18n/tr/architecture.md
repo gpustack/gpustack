@@ -32,6 +32,8 @@ GPUStack çalışanı aşağıdaki bileşenlerden oluşur:
 
 AI Ağ Geçidi, istemcilerden gelen API isteklerini yönetir. Talepleri, talep edilen modele göre uygun model örneklerine yönlendirir. GPUStack, API yönlendirme ve yük dengeleme için [Higress](https://github.com/alibaba/higress)'i kullanır.
 
+Ağ geçidi yalnızca çıkarım veri yolunda durmak üzere tasarlanmıştır. Çalışan kontrol düzlemi trafiği — kayıt, kalp atışları, model/örnek watch'ları ve `tunnel` modu WebSocket'i — her çalışandan sunucuya gider; ancak varsayılan olarak sunucunun *dış* URL'sini kullanır ve Helm'de bu genellikle ağ geçididir. Bu trafiği ağ geçidinden uzak tutmak bir yapılandırma adımıdır, mimarinin garanti ettiği bir şey değildir. Bu yapılandırma olmadan ağ geçidi arızası tüm çalışanları keser — [Çalışanları Sunucuya Doğrudan Bağlama](installation/helm.md#connecting-workers-directly-to-the-server) bölümüne bakın. Ağ geçidi kaynak boyutlandırması için [Higress Ağ Geçidi Kaynak Boyutlandırma](installation/helm.md#sizing-the-higress-gateway) bölümüne bakın.
+
 ### SQL Veritabanı { #sql-database }
 
 GPUStack sunucusu veri deposu olarak bir SQL veritabanına bağlanır. GPUStack varsayılan olarak Gömülü PostgreSQL kullanır, ancak bunu harici bir veritabanı kullanacak şekilde de yapılandırabilirsiniz. Uyumlu veritabanlarının ve doğrulanmış sürümlerin listesi için [Veritabanı Gereksinimleri](installation/requirements.md#database-requirements)'e bakın.

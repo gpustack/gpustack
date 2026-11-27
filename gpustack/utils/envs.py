@@ -3,6 +3,8 @@ import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional
 
+SKIP_MODEL_EVALUATION_ENV = "GPUSTACK_SKIP_MODEL_EVALUATION"
+
 
 def extract_unix_vars_of_source(script_paths: List[Path]) -> Dict[str, str]:
     """
@@ -72,6 +74,11 @@ def get_gpustack_env_bool(env_var: str) -> Optional[bool]:
     if env_value is not None:
         return env_value.lower() in ["true", "1"]
     return None
+
+
+def should_skip_model_evaluation(env: Optional[Dict[str, str]]) -> bool:
+    """Enable the deployment opt-out for any non-empty value."""
+    return bool(env and env.get(SKIP_MODEL_EVALUATION_ENV))
 
 
 def is_docker_env() -> bool:

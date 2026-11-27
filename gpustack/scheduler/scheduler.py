@@ -119,6 +119,7 @@ from gpustack.server.services import (
     ModelFileService,
 )
 from gpustack.utils.command import find_last_parameter, find_parameter
+from gpustack.utils.envs import should_skip_model_evaluation
 from gpustack.utils.gpu import group_gpu_ids_by_worker
 from gpustack.utils.hub import has_diffusers_model_index
 from gpustack.utils.math import largest_power_of_2_leq
@@ -1659,14 +1660,13 @@ async def _evaluate_pretrained_config_core(
         meta_modified = True
 
     layout_config = await _pd_layout_config(model, pretrained_config, workers)
+    pairing_factors = (
+        []
+        if should_skip_model_evaluation(model.env)
+        else environment_pairing_factors(model, pretrained_config=layout_config)
+    )
     pairing_error = next(
-        (
-            factor.message
-            for factor in environment_pairing_factors(
-                model, pretrained_config=layout_config
-            )
-            if factor.verdict == DIFFER
-        ),
+        (factor.message for factor in pairing_factors if factor.verdict == DIFFER),
         None,
     )
     if pairing_error:
@@ -1706,7 +1706,11 @@ async def _pd_layout_config(
         return config
     mode = get_pd_mode(model.disaggregation.mode)
     if not mode or (
-        not mode.connector_variants and not environment_pairing_needs_config(model)
+        not mode.connector_variants
+        and (
+            should_skip_model_evaluation(model.env)
+            or not environment_pairing_needs_config(model)
+        )
     ):
         return config
     effective = _pd_prefill_model(model)

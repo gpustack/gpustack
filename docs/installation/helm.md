@@ -209,6 +209,90 @@ helm install gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart 
   -f values.yaml
 ```
 
+### Sizing the Higress Gateway
+
+The Higress gateway (Envoy) carries all client inference traffic. Its memory footprint grows with route/configuration churn and the number of concurrent connections, and LLM workloads hold connections open for long streaming responses — so memory keeps climbing under sustained load. The bundled `higress-core` sub-chart defaults to `2` CPU / `2Gi` for both requests and limits, which is not enough for sustained operation; the GPUStack chart therefore raises the gateway **limits** to `4` CPU / `4096Mi` (requests keep the sub-chart defaults of `2` CPU / `2048Mi`).
+
+!!! warning
+
+    An OOMKilled gateway is not just an inference interruption. Every in-flight request through the gateway is dropped, and — if workers reach the server through the gateway address — every worker connection drops with it, triggering a cluster-wide reconnect that can take model services offline. See [Connecting Workers Directly to the Server](#connecting-workers-directly-to-the-server) below.
+
+Tuning rules:
+
+- **Watch memory before it hits the limit.** The bundled Prometheus scrapes the gateway's Envoy stats, so alert on `envoy_server_memory_allocated` and `envoy_server_memory_heap_size` (see `gateway.namespace` when Higress runs in another namespace). `container_memory_working_set_bytes` is a kubelet/cAdvisor metric and is only available from a cluster-level Prometheus. If memory trends toward the limit during normal operation, raise `higress-core.gateway.resources.limits.memory` — do not wait for the first OOMKill.
+- **Keep at least 2 replicas for availability.** The gateway Deployment defaults to `2` replicas (`higress-core.gateway.replicas`), so a rolling restart or a single pod failure does not take down all traffic. Replicas do not lower memory per pod for configuration and connection load — every replica holds the full route set — but they do split request traffic, so fewer large requests are in flight on each pod. Note that `higress-core.gateway.service.externalTrafficPolicy` is `Local`: with a LoadBalancer/NodePort service, the external LB must health-check `healthCheckNodePort`, or nodes without a gateway pod drop traffic.
+- **The memory limit is the lever against OOM.** The sub-chart ships a CPU-utilization HPA. It smooths request load; it does **not** protect against OOM, because gateway memory grows with connection count and request size rather than CPU. Always size memory limits with headroom even when autoscaling is on.
+- **The HPA overrides `replicas`.** With `higress-core.gateway.autoscaling.enabled=true` the Deployment no longer takes `replicas`, and the sub-chart's `autoscaling.minReplicas` defaults to `1`, so enabling the HPA alone lets the gateway scale down to one pod. Set `autoscaling.minReplicas` to at least `2` whenever the HPA is on.
+
+```yaml
+# values.yaml
+higress-core:
+  gateway:
+    replicas: 2
+    resources:
+      requests:
+        cpu: 2000m
+        memory: 4096Mi
+      limits:
+        cpu: 4000m
+        memory: 8192Mi   # raise further if memory keeps climbing
+    autoscaling:
+      enabled: true
+      minReplicas: 2    # the HPA ignores `replicas`; keep this >= 2
+      maxReplicas: 5
+      targetCPUUtilizationPercentage: 80
+```
+
+#### Sizing for Image Requests
+
+Route and connection load is the steady part of the footprint; what makes it spike is request size. The gateway plugins that inspect or rewrite the request each buffer the whole request body, so memory scales with the request bytes in flight — concurrency multiplied by body size. Requests carrying base64-encoded images are the common way to get there: each image costs 1.33× its file size inside the JSON.
+
+The figures below come from one gateway pod (2 CPU / 4Gi) with the default GPUStack plugin chain, a mock upstream and 60 seconds of streaming load per case, each case started from a fresh pod. They are an order-of-magnitude reference, not a sizing formula:
+
+| Images | Request body | Concurrency | In flight | Memory above idle |
+|---|---|---|---|---|
+| 1 | 1.3 MB | 64 | 85 MB | about 0.1 GiB |
+| 8 | 10.7 MB | 4 | 43 MB | about 0.2 GiB |
+| 32 | 42.7 MB | 4 | 171 MB | about 1.8 GiB |
+| 32 | 42.7 MB | 16 | 683 MB | **OOMKilled** |
+
+Cost per request grows faster than the body itself, and the memory is not returned promptly once the load ends, so budget on bytes in flight rather than on request count. For a 4Gi pod keep request bodies in flight below roughly 200 MB, or raise `higress-core.gateway.resources.limits.memory` (8Gi is a reasonable starting point for multi-image traffic); additional replicas help here as well, since they split the requests.
+
+For further Higress customization, refer to the [Higress Helm documentation](https://higress.cn/en/docs/latest/ops/deploy-by-helm).
+
+### Connecting Workers Directly to the Server
+
+Workers talk to the server for registration, heartbeats, and model/instance watches (and, in `tunnel` proxy mode, a persistent WebSocket). This control traffic is separate from client inference traffic and **should not pass through the Higress gateway** — otherwise a gateway restart or OOMKill also severs every worker connection at once.
+
+The chart wires this correctly for chart-managed workers: with `worker.enabled=true` and no `worker.serverURL`, workers register against the server's in-cluster Service (`http://<release>-server.<namespace>.svc:<server.apiPort>`), bypassing the gateway entirely. When you set the address yourself, prefer the ClusterIP Service (`<release>-server-cluster-ip`) over that headless one: the headless name resolves to pod IPs that can go stale when the server fails over.
+
+The path to check is a cluster registered through **Register Cluster** (or any worker started with `--server-url`). The registration manifest takes its `worker.serverURL` from the server, which resolves the cluster's own **Server URL** first, then `server_external_url`, then the request host — so unless the cluster has an override, it is the server's *external* URL. On a Helm deployment that is usually the ingress address, i.e. the Higress gateway. In that layout, a gateway OOM has a blast radius beyond dropped requests:
+
+- All workers lose their server connections at once. In `tunnel` mode every in-flight inference stream relayed over the tunnels is cut, and the tunnel client reconnects with exponential backoff (1s up to 60s, with jitter). In `direct`/`worker` modes there is no tunnel, but the model and instance watches are long-lived HTTP streams that are cut as well and re-established with a mass reconnect and re-list; heartbeats are periodic calls that simply fail and retry on their next interval.
+- If the outage outlasts the heartbeat grace period (`GPUSTACK_WORKER_HEARTBEAT_GRACE_PERIOD`, default 150s), workers are marked offline and their model routes are withdrawn — model services become unavailable even though the inference processes are still running.
+
+To decouple the control path from the gateway, point workers at an address that reaches the server directly:
+
+- **Register Cluster clusters:** set the cluster's **Server URL** to a direct address — the in-cluster Service when the workers run in the server's cluster, otherwise a dedicated NodePort/LoadBalancer on the server Service — then fetch and re-apply the registration manifest. Do this on the cluster, not with `helm upgrade --set worker.serverURL=…`: the bootstrap Job re-installs the worker release from the server-rendered values the next time the manifest is applied, and the gateway URL comes back. Do not add a second worker-only release next to the manifest-managed one either; that gives duplicate worker DaemonSets (whose pods stay Pending under the `hostNetwork` port anti-affinity) and a second operator.
+- **Workers outside Kubernetes:** start them with `--server-url` pointing at the direct address.
+- **Workers installed by Helm without a registration manifest:** a worker-only release in the server's cluster. It lives in the same namespace as the server release, so it must not render the Secrets that release already owns: set `imagePullSecret.create: false` and point `registrationTokenSecretName` at the server's `registration-token` Secret (`worker.enabled` defaults to `false` while `server` and `higress-core` default to enabled, so all three must be stated as well):
+
+```yaml
+# values.yaml for a worker-only release in the server's cluster
+server:
+  enabled: false
+higress-core:
+  enabled: false
+imagePullSecret:
+  create: false
+registrationTokenSecretName: registration-token
+worker:
+  enabled: true
+  serverURL: http://gpustack-server-server-cluster-ip.gpustack-system.svc:30080
+```
+
+The gateway then carries only client inference traffic, and a gateway restart no longer touches worker registration, heartbeats or watches. See [Worker Connection Modes](../user-guide/cluster-management.md#worker-connection-modes) for the proxy modes themselves.
+
 ### Pulling Images From a Private Registry
 
 To pull all images (GPUStack server/worker, higress-plugins, and the bundled higress-core gateway/controller/pilot) from a mirrored private registry, override `global.hub`. This relies on Helm's global-values propagation, so a single setting covers every image:
@@ -269,6 +353,11 @@ The most commonly used parameters are listed below. For the complete and authori
 | `server.nodeSelector`                  | `{}`                     | Server pod nodeSelector; replaces `global.nodeSelector` when non-empty.    |
 | `gateway.ingressClassname`             | `higress`                | Higress IngressClass name; enables in-cluster gateway mode when found.     |
 | `higress-core.enabled`                 | `true`                   | Deploy the bundled Higress gateway; disable if already installed.          |
+| `higress-core.gateway.replicas`        | `2`                      | Higress gateway replica count; keep >= 2 for availability.                 |
+| `higress-core.gateway.resources`       | limits `4` CPU / `4096Mi` | Gateway resources; limits raised over the sub-chart defaults. See [Sizing the Higress Gateway](#sizing-the-higress-gateway). |
+| `higress-core.gateway.autoscaling.enabled` | `false`              | CPU-based HPA for the gateway; does not prevent OOM — size memory limits regardless. |
+| `higress-core.gateway.autoscaling.minReplicas` | `1`                      | Minimum replicas while the HPA is on. The HPA overrides `replicas`; keep this >= 2. |
+| `worker.serverURL`                     | `""`                     | Server address workers register with; empty uses the in-cluster server Service. Avoid routing it through the gateway. |
 | `worker.enabled`                       | `false`                  | Render worker DaemonSets.                                                 |
 | `worker.gpuVendors`                    | `[nvidia]`               | GPU vendors; one DaemonSet per vendor plus the CPU DaemonSet.              |
 | `worker.cpuEnabled`                    | `true`                   | Render the CPU worker DaemonSet; `false` requires a GPU vendor.            |

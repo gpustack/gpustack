@@ -6,7 +6,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from packaging.version import InvalidVersion, Version
 
-from gpustack.schemas.models import Model, ModelSpecBase, RoleSpec, role_backend_field
+from gpustack.schemas.models import (
+    Model,
+    ModelSpecBase,
+    RoleSpec,
+    role_backend_field,
+    role_effective_env,
+)
 from gpustack.validation.pd.common import model_field
 from gpustack.validation.pd.parameters import (
     AGREE,
@@ -61,21 +67,6 @@ class _RoleEnvironment:
     cached: bool
 
 
-def effective_role_environment(
-    role: RoleSpec, model_env: Optional[Dict[str, str]]
-) -> Dict[str, str]:
-    """Copy the dictionary the role uses; a non-null override replaces it.
-
-    Args:
-        role: The role whose environment is being resolved.
-        model_env: The deployment-level environment inherited by a null override.
-
-    Returns:
-        A copy of the effective environment dictionary.
-    """
-    return dict(model_env or {}) if role.env is None else dict(role.env)
-
-
 def _roles(
     model: ModelSpecBase, stored: Optional[Model]
 ) -> Optional[Tuple[_RoleEnvironment, _RoleEnvironment]]:
@@ -96,7 +87,7 @@ def _roles(
         _RoleEnvironment(
             role.name,
             role_parameters(role, parameters),
-            effective_role_environment(role, env),
+            dict(role_effective_env(role, env) or {}),
             _version(role, model, stored),
             _enabled_override(role, model, stored, "speculative_config")
             or find_last_parameter(

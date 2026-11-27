@@ -127,20 +127,12 @@ from gpustack.schemas.cache_providers import (
     render_optional_template,
     resolved_field_values,
 )
-from gpustack.schemas.pd_modes import PDTensorParallelPairingEnum
 from gpustack.server.cache_provider_catalog import (
     builtin_catalog_text,
     get_cache_provider,
 )
 from gpustack.validation.pd.pairing import undecidable_factors
-from gpustack.validation.pd.parameters import (
-    PAIRING_ANY_PARALLELISM,
-    PAIRING_TP,
-    role_parameters,
-    tensor_parallel_rule,
-    violates_tensor_parallel_direction,
-)
-from gpustack.utils.command import find_last_int_parameter, find_last_parameter
+from gpustack.utils.envs import should_skip_model_evaluation
 from gpustack.utils.pd_router_launch import router_backend_definition
 from gpustack.utils.hub import is_mmproj_file
 from gpustack.server import pd_membership
@@ -4107,22 +4099,9 @@ def _pd_pairing_roles(model: Model) -> Tuple[Optional[RoleSpec], Optional[RoleSp
 
 
 def _pairing_unverified(model: Model) -> bool:
-    """Whether a pairing factor was declared on one role and left silent on the
-    other, so admission could not judge it.
-
-    Placement has nothing to do with this one: like
-    `_engine_version_below_recipe_floor` it is a property of the spec and is
-    true from the moment the group is created. What it buys is an honest answer
-    to a question the user believes was already settled -- the pairing
-    pre-check refuses mismatched context windows and tensor parallelisms, so a
-    group that was accepted reads as a group that was checked, and until now a
-    single silent role was enough to make that untrue.
-
-    Not "the pair is wrong". `validation.pd.parameters` spells out why the silent
-    side's value cannot be resolved here for any of these factors, and most
-    deployments this marks are correct. The claim is only that nothing verified
-    them.
-    """
+    """Whether a pairing factor has an unresolved effective value."""
+    if should_skip_model_evaluation(getattr(model, "env", None)):
+        return False
     prefill, decode = _pd_pairing_roles(model)
     if prefill is None or decode is None:
         return False
@@ -4133,83 +4112,6 @@ def _pairing_unverified(model: Model) -> bool:
             getattr(model, "backend_parameters", None),
             model=model,
         )
-    )
-
-
-def _placed_tensor_parallelism(
-    model: Model, role: RoleSpec, instances: Sequence[ModelInstance]
-) -> List[int]:
-    """The tensor parallelism each placed member of this role actually runs.
-
-    A declared `--tensor-parallel-size` is the answer for every member of the
-    role. Absent one, a single-worker member runs the cards it was given --
-    that is `get_auto_parallelism_arguments` in both backends, not a guess --
-    which is precisely the number the spec could not supply at admission.
-
-    Two shapes contribute nothing rather than a number: a member spanning
-    workers, where `cal_distributed_parallelism_arguments` splits the world
-    size into tp and pp further down, and a role that writes dp or pp without
-    tp, which suppresses the injection entirely and falls back to the engine's
-    own default.
-    """
-    parameters = role_parameters(role, getattr(model, "backend_parameters", None))
-    declared = find_last_int_parameter(parameters, PAIRING_TP)
-    if declared is None and find_last_parameter(parameters, PAIRING_ANY_PARALLELISM):
-        return []
-
-    widths: List[int] = []
-    for instance in instances:
-        if instance.role != role.name or instance.worker_id is None:
-            continue
-        if declared is not None:
-            widths.append(declared)
-            continue
-        servers = getattr(instance, "distributed_servers", None)
-        if servers is not None and getattr(servers, "subordinate_workers", None):
-            continue
-        cards = len(getattr(instance, "gpu_indexes", None) or [])
-        if cards:
-            widths.append(cards)
-    return widths
-
-
-def _pairing_tp_misplaced(model: Model, instances: Sequence[ModelInstance]) -> bool:
-    """Whether the cards the members actually got break the recipe's
-    tensor-parallel direction.
-
-    The admission check reads the spec, and for this one factor the spec is
-    routinely silent: a role that writes no parallelism and pins no cards runs
-    whatever the scheduler hands it. That is the gap this closes -- the same
-    rule, applied where the number finally exists.
-
-    Compared at the extremes rather than pairwise, because the router pairs at
-    random: a group is only as good as its narrowest decode against its widest
-    prefill, and one member of each is enough for a transfer to land on the
-    shape the connector cannot serve.
-    """
-    from gpustack.server.pd_mode_catalog import get_pd_mode
-
-    prefill, decode = _pd_pairing_roles(model)
-    if prefill is None or decode is None:
-        return False
-
-    disaggregation = model.disaggregation
-    mode_name = disaggregation.mode.value
-    rule = tensor_parallel_rule(get_pd_mode(mode_name))
-    if rule == PDTensorParallelPairingEnum.ANY:
-        return False
-
-    prefill_widths = _placed_tensor_parallelism(model, prefill, instances)
-    decode_widths = _placed_tensor_parallelism(model, decode, instances)
-    if not prefill_widths or not decode_widths:
-        return False
-
-    if rule == PDTensorParallelPairingEnum.DECODE_GE_PREFILL:
-        return violates_tensor_parallel_direction(
-            rule, prefill_tp=max(prefill_widths), decode_tp=min(decode_widths)
-        )
-    return violates_tensor_parallel_direction(
-        rule, prefill_tp=min(prefill_widths), decode_tp=max(decode_widths)
     )
 
 
@@ -4323,15 +4225,6 @@ async def _degradation_reasons(
         # placement. Worth saying because the pre-check refuses the mismatches
         # it CAN see, so acceptance reads as verification.
         reasons.append(DegradationReasonEnum.PAIRING_UNVERIFIED.value)
-
-    if _pairing_tp_misplaced(model, instances):
-        # The other half of the same gap, and the half that can be answered:
-        # once the members are placed their cards are the tensor parallelism,
-        # so the direction the recipe declares finally applies to a deployment
-        # rather than to a description. Marked and not enforced -- these
-        # members are already running, and taking them down to report their
-        # shape would cost more than the report is worth.
-        reasons.append(DegradationReasonEnum.PAIRING_TP_MISPLACED.value)
 
     return reasons, state_message
 
