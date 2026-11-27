@@ -9,6 +9,7 @@ from typing import Any, List, Tuple, Optional, Dict
 
 from gpustack_runtime.detector import ManufacturerEnum
 from sqlmodel.ext.asyncio.session import AsyncSession
+from sqlmodel.sql.expression import SelectOfScalar
 from cachetools import TTLCache
 from aiolimiter import AsyncLimiter
 
@@ -48,7 +49,7 @@ from gpustack.schemas.principals import _platform_principal_id
 from gpustack.server.cache_service_resources import (
     cache_resource_reservations,
 )
-from gpustack.policies.resource_view import ResourceView
+from gpustack.policies.resource_view import ResourceView, cpu_allocated_by_worker
 from gpustack.scheduler.group_capacity import (
     GroupCapacity,
     attendant_demands,
@@ -140,6 +141,7 @@ async def evaluate_models(
     session: AsyncSession,
     model_specs: List[ModelSpec],
     cluster_id: Optional[int] = None,
+    visible_clusters: Optional[SelectOfScalar[int]] = None,
 ) -> List[ModelEvaluationResult]:
     """
     Evaluate the compatibility of a list of model specs with the available workers.
@@ -160,11 +162,18 @@ async def evaluate_models(
             )
         )
     ]
+    instance_conditions = []
+    if visible_clusters is not None:
+        extra_conditions.append(Worker.cluster_id.in_(visible_clusters))
+        # A shared cluster's other reservations still consume capacity.
+        instance_conditions.append(ModelInstance.cluster_id.in_(visible_clusters))
     workers = await Worker.all_by_fields(
         session, fields=fields, extra_conditions=extra_conditions
     )
 
-    model_instances = await ModelInstance.all_by_fields(session, fields=fields)
+    model_instances = await ModelInstance.all_by_fields(
+        session, fields=fields, extra_conditions=instance_conditions
+    )
 
     if len(model_specs) == 1:
         # Sort worker for single-model evaluation only. No need for batch evaluation.
@@ -187,11 +196,16 @@ async def evaluate_models(
     return results
 
 
+def _has_router(model: ModelSpec) -> bool:
+    return any(role_takes_no_accelerator(model, r.name) for r in (model.roles or []))
+
+
 def make_hashable_key(
     model: ModelSpec,
     workers: List[Worker],
     extra: Optional[Dict[str, Any]] = None,
 ) -> str:
+    has_router = _has_router(model)
     key_data = json.dumps(
         {
             "model": model.model_dump(mode="json"),
@@ -207,7 +221,7 @@ def make_hashable_key(
                     mode="json",
                     exclude={
                         "status": {
-                            "cpu": True,
+                            "cpu": {"utilization_rate"} if has_router else True,
                             "swap": True,
                             "filesystem": True,
                             "os": True,
@@ -315,6 +329,11 @@ async def evaluate_model_with_cache(
             extra={
                 "cache_service": cache_service_verdict_key(cache_service),
                 "reservations": resource_view.reservation_key(),
+                "router_cpu": (
+                    cpu_allocated_by_worker(model_instances)
+                    if _has_router(model)
+                    else None
+                ),
             },
         )
         if cache_key in evaluate_cache:
@@ -568,10 +587,8 @@ async def evaluate_group(
         return GroupEvaluation(messages=[f"Invalid role specification: {e}"])
 
     free_claims = _accelerator_free_claims(group_model)
-    if not demands:
-        # Nothing in this group occupies an accelerator. There is no placement
-        # to solve, but the group still has an honest footprint -- a router's
-        # container memory -- and reporting it beats reporting nothing.
+    attendants = [RoleDemand(**d) for d in attendant_demands(group_model)]
+    if not demands and not attendants:
         if not free_claims:
             return GroupEvaluation(
                 messages=["The group has no member that occupies an accelerator."]
@@ -608,7 +625,7 @@ async def evaluate_group(
         capacity,
         view.scopes(),
         gather_request(group_model),
-        attendants=[RoleDemand(**d) for d in attendant_demands(group_model)],
+        attendants=attendants,
     )
     if not isinstance(placement, GroupPlacement):
         reason = getattr(placement, "reason", "The group does not fit.")

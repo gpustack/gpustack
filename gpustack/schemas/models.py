@@ -21,6 +21,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field as PydanticField,
+    PositiveInt,
     PrivateAttr,
     field_serializer,
     field_validator,
@@ -520,17 +521,11 @@ class RoleResources(BaseModel):
     Kubernetes (so the Pod lands in the Guaranteed QoS class) and into
     ``cpu_shares`` on Docker, which makes it a weight rather than a cap there.
 
-    It does **not** take part in placement. The scheduler's allocatable
-    view has two dimensions, RAM and VRAM, and CPU is not one of them, so
-    nothing subtracts this from a worker before choosing it. Declaring it
-    still buys cgroup enforcement and kubelet admission; "the scheduler will
-    place the router according to this number" is not true yet and must not
-    be implied in the UI.
+    GPUStack reserves this request when placing the router. This does not
+    account for CPU requests from workloads outside the GPUStack ledger.
     """
     memory: Optional[int] = None
-    """Bytes. Unlike `cpu` this one *is* consumed by placement: it becomes the
-    role's ``ComputedResourceClaim.ram``, which the allocatable view already
-    tracks and subtracts."""
+    """Bytes reserved in ``ComputedResourceClaim.ram`` during placement."""
 
 
 # A managed router is a proxy: it forwards requests and loads no weights, so
@@ -1763,6 +1758,8 @@ class ComputedResourceClaim(BaseModel):
     total_layers: Optional[int] = None
     ram: Optional[int] = Field(default=None)  # in bytes
     vram: Optional[Dict[int, int]] = Field(default=None)  # in bytes
+    cpu_millicores: Optional[int] = Field(default=None, ge=0)
+    """CPU reserved by a PD Router on its assigned Worker."""
     tensor_split: Optional[List[int]] = Field(default=None)
     vram_utilization: Optional[float] = Field(default=None)
 
@@ -2107,6 +2104,23 @@ class ModelInstanceStopReport(BaseModel):
     restart_count: int = PydanticField(ge=0)
 
 
+class RouterCPURejection(BaseModel):
+    worker_ids: List[PositiveInt]
+    message: str
+    retry_pending: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def read_legacy_worker_id(cls, value: Any) -> Any:
+        if (
+            isinstance(value, dict)
+            and "worker_ids" not in value
+            and "worker_id" in value
+        ):
+            return {**value, "worker_ids": [value["worker_id"]]}
+        return value
+
+
 class DistributedServers(BaseModel):
     # Indicates how the distributed servers coordinate with the main worker.
     mode: DistributedServerCoordinateModeEnum = (
@@ -2128,6 +2142,9 @@ class DistributedServers(BaseModel):
         default=False, json_schema_extra={"readOnly": True}
     )
     legacy_stop: Optional[ModelInstanceLegacyStop] = PydanticField(
+        default=None, json_schema_extra={"readOnly": True}
+    )
+    router_cpu_rejection: Optional[RouterCPURejection] = PydanticField(
         default=None, json_schema_extra={"readOnly": True}
     )
     # The Server fixes this policy before a round creates inference workloads.

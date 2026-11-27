@@ -134,6 +134,12 @@ Sıralama tesadüfi değildir ve bilmeye değer çünkü bir grup geldiğinde g�
 
 Bu nedenle bir grup servis yapmadan önce bir süre `Partially ready` bildirir ve bu bir hatadan ziyade normal yoldur.
 
+### Router CPU yerleşimi { #router-cpu-placement }
+
+GPUStack, Router'ın CPU isteğini (varsayılan 2 çekirdek), Worker'ın bildirdiği kapasiteden diğer PD Router rezervasyonlarını düşerek kontrol eder. CPU, konteyner oluşturulmadan önce, yerleşim kesinleştiğinde ayrılır. CPU kapasitesi bildirmeyen Worker'lar seçilmez. Eski sürümlerde CPU rezervasyonu olmayan örnekler yeniden yerleştirildiklerinde hesaba katılır.
+
+Bu hesap yalnızca GPUStack rezervasyonlarını kapsar; Kubernetes düğümünün boş kapasitesini göstermez. Kubelet Pod'u `OutOfcpu` ile reddederse GPUStack nedeni saklar. Hata durumunda yeniden başlatma etkinse ve Worker durdurma onayını destekliyorsa GPUStack eski Pod'un kaldırılmasını bekler ve geçerli kurtarma döngüsünde Router'ı henüz reddetmemiş uygun Worker'ları tercih eder. Tüm uygun Worker'lar denendiğinde, bekleme süresinden sonra yeni bir döngü başlayabilir. Kademeli yükseltme sırasında durdurma onayını desteklemeyen Worker aynı düğümde yeniden dener.
+
 ## Bir grubun durumunu okuma { #reading-a-groups-state }
 
 | Ne görüyorsun | Ne anlama geliyor |

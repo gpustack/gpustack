@@ -1315,7 +1315,9 @@ class InferenceServer(ABC):
             self._model_spec or self._model,
             getattr(self._model_instance, "role", None),
         )
-        resources["cpu"] = declared.cpu
+        claim = getattr(self._model_instance, "computed_resource_claim", None)
+        cpu = getattr(claim, "cpu_millicores", None)
+        resources["cpu"] = cpu / 1000 if cpu is not None else declared.cpu
         resources["memory"] = declared.memory
         return resources
 

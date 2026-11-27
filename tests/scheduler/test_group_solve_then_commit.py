@@ -99,9 +99,7 @@ def _capacity(workers, model):
     cap = GroupCapacity(
         SimpleNamespace(), model, workers, [], resource_view=ResourceView([])
     )
-    cap._selector = lambda m, instances, cpu_only, ram_claim=None: _OneCardPerMember(
-        instances
-    )
+    cap._selector = lambda m, instances, *args: _OneCardPerMember(instances)
     for role in (spec.name for spec in model.roles):
         cap._eligible[role] = {w.id: w for w in workers}
         cap._projected[role] = _RoleProjection(model, False)

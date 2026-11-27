@@ -5,11 +5,13 @@ from typing import Dict, List, Optional, Tuple
 
 from gpustack.schemas.models import (
     ModelInstanceDeploymentMetadata,
+    RoleNameEnum,
     find_role,
     role_backend_field,
 )
 from gpustack.utils.command import format_backend_parameters
 from gpustack.utils.envs import sanitize_env
+from gpustack.utils.model_instance_workers import WORKLOAD_RESTART_COUNT_LABEL
 from gpustack.worker.backends.base import InferenceServer
 from gpustack.worker.pd_router import is_managed_router
 
@@ -217,8 +219,16 @@ class CustomServer(InferenceServer):
             f"{os.linesep.join(f'{k}={v}' for k, v in sorted(sanitize_env(env).items()))}"
         )
 
+        labels = None
+        if self._model_instance.role == RoleNameEnum.ROUTER.value:
+            labels = {
+                WORKLOAD_RESTART_COUNT_LABEL: str(
+                    self._model_instance.restart_count or 0
+                )
+            }
         workload_plan = WorkloadPlan(
             name=deployment_metadata.name,
+            labels=labels,
             host_network=True,
             host_ipc=self._host_ipc_enabled(),
             shm_size=int(container_config.shm_size_gib * (1 << 30)),

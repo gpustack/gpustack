@@ -98,6 +98,7 @@ from gpustack.utils.model_instance_workers import (
     model_instance_legacy_stop,
     model_instance_workloads_stopped,
     requires_group_recovery,
+    router_cpu_rejection,
 )
 from gpustack.utils.network import is_offline
 from gpustack.server.workqueue import WorkEvent, WorkEventType, WorkQueue
@@ -639,11 +640,17 @@ class ModelController:
         for instance in instances:
             workloads = get_model_instance_workloads(instance)
             if workloads is None:
-                if not requires_group_recovery(instance, model) or not (
+                recovering_router = (
+                    router_cpu_rejection(instance) is not None
+                    and model_instance_legacy_stop(instance) is not None
+                )
+                if not (
+                    recovering_router or requires_group_recovery(instance, model)
+                ) or not (
                     instance.state == ModelInstanceStateEnum.ERROR
                     or any(
                         w.state == ModelInstanceStateEnum.ERROR
-                        for w in instance.distributed_servers.subordinate_workers
+                        for w in instance.distributed_servers.subordinate_workers or []
                     )
                 ):
                     continue

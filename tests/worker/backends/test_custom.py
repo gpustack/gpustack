@@ -7,6 +7,7 @@ import pytest
 
 from gpustack.schemas.models import DisaggregationSpec, RoleSpec
 from gpustack.server.pd_mode_catalog import load_pd_modes
+from gpustack.utils.model_instance_workers import WORKLOAD_RESTART_COUNT_LABEL
 from gpustack.worker.backends.custom import CustomServer
 
 
@@ -27,6 +28,7 @@ def create_custom_workload(monkeypatch):
         router_backend=None,
         mode="vllm-nixl",
         definition=None,
+        return_plan=False,
     ):
         backend = CustomServer.__new__(CustomServer)
         backend._model_spec = SimpleNamespace(
@@ -55,7 +57,7 @@ def create_custom_workload(monkeypatch):
             backend._router_launch = resolve_router_launch(
                 backend._model_spec, definition
             )
-        backend._model_instance = SimpleNamespace(role=role)
+        backend._model_instance = SimpleNamespace(role=role, restart_count=3)
         backend._get_configured_image = lambda: backend._model.image_name
         backend._get_configured_resources = lambda: {}
         backend._get_configured_mounts = lambda: []
@@ -76,9 +78,17 @@ def create_custom_workload(monkeypatch):
             ),
             env={},
         )
-        return workloads[0].containers[0].execution
+        return workloads[0] if return_plan else workloads[0].containers[0].execution
 
     return create
+
+
+@pytest.mark.parametrize('role', ['router', 'decode'])
+def test_router_workload_carries_its_restart_count(create_custom_workload, role):
+    plan = create_custom_workload(role=role, return_plan=True)
+    assert (plan.labels or {}).get(WORKLOAD_RESTART_COUNT_LABEL) == (
+        '3' if role == 'router' else None
+    )
 
 
 @pytest.mark.parametrize("command", [None, ["tini", "--"]])

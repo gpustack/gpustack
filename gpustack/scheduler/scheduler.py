@@ -6,6 +6,7 @@ import os
 import queue
 from typing import Dict, List, Sequence, Tuple, Optional, Union
 from weakref import WeakValueDictionary
+from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy.orm import selectinload
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -17,7 +18,11 @@ from gpustack.policies.candidate_selectors.base_candidate_selector import (
 from gpustack.policies.scorers.pairing_affinity_scorer import PairingAffinityScorer
 from gpustack.policies.scorers.placement_scorer import PlacementScorer
 from gpustack.server.cache_service_resources import load_resource_view
-from gpustack.policies.resource_view import ResourceView
+from gpustack.policies.resource_view import (
+    ResourceView,
+    cpu_allocated_by_worker,
+    worker_cpu_millicores,
+)
 from gpustack.policies.scorers.topology_proximity_scorer import (
     TopologyProximityScorer,
 )
@@ -71,6 +76,7 @@ from gpustack.schemas.models import (
     Model,
     ModelInstance,
     ModelInstanceStateEnum,
+    RoleNameEnum,
     apply_decision_image_input_meta,
     get_backend,
     is_gguf_model,
@@ -85,16 +91,17 @@ from gpustack.schemas.models import (
 from gpustack.schemas.model_files import ModelFileStateEnum
 from gpustack.schemas.model_sets import ModelSpec
 from gpustack.schemas.principals import _platform_principal_id
-from gpustack.utils.unit import byte_to_gib
+from gpustack.utils.unit import byte_to_gib, cores_to_millicores
 from gpustack.utils.model_instance_workers import (
     get_model_instance_workloads,
     model_instance_legacy_stop,
     model_requires_managed_worker_binding,
+    router_cpu_rejection,
     sglang_smg_mode,
     worker_supports_model_instance_workloads,
 )
 
-from gpustack.server.bus import EventType
+from gpustack.server.bus import Event, EventType
 from gpustack.server.db import async_session
 from gpustack.scheduler.group_schedule import (
     is_group_forming,
@@ -187,18 +194,14 @@ class Scheduler:
         # of every existing instance which would flood the queue (#4794).
         await self._enqueue_pending_instances()
 
-        # Live trigger. event_types/replay_existing keep this subscription
-        # cheap so UPDATED/HEARTBEAT bursts don't fill the queue.
+        # Only creations and committed Router recovery handoffs use the fast path.
         async for event in ModelInstance.subscribe(
             source="scheduler",
-            event_types={EventType.CREATED},
+            event_types={EventType.CREATED, EventType.UPDATED},
             replay_existing=False,
+            event_filter=_scheduler_instance_event,
         ):
-            # The bus filter only blocks events from publishers; the
-            # subscribe() generator still yields HEARTBEAT events on its
-            # own to keep the stream alive (active_record.py). Skip those
-            # and any other non-CREATED events that may surface in future.
-            if event.type != EventType.CREATED:
+            if event.type == EventType.HEARTBEAT:
                 continue
             # Single-instance path; the IntervalTrigger above is still the
             # full-scan fallback for anything missed here.
@@ -250,7 +253,12 @@ class Scheduler:
         """
         async with async_session() as session:
             try:
-                instance = await ModelInstance.one_by_id(session, instance.id)
+                if getattr(instance, 'role', None) == RoleNameEnum.ROUTER.value:
+                    instance = await ModelInstance.one_by_id(
+                        session, instance.id, for_update=True, refresh=True
+                    )
+                else:
+                    instance = await ModelInstance.one_by_id(session, instance.id)
                 # Re-check against the freshly-fetched row: the caller's
                 # snapshot may be stale (event payload, last full scan, etc.)
                 # and the user may have deleted or transitioned the instance
@@ -264,7 +272,15 @@ class Scheduler:
 
                 if instance.state != ModelInstanceStateEnum.ANALYZING:
                     instance.state = ModelInstanceStateEnum.ANALYZING
-                    instance.state_message = "Evaluating resource requirements"
+                    rejection = router_cpu_rejection(instance)
+                    if rejection is None:
+                        instance.state_message = "Evaluating resource requirements"
+                    elif rejection.retry_pending:
+                        servers = instance.distributed_servers.model_copy()
+                        servers.router_cpu_rejection = rejection.model_copy(
+                            update={"retry_pending": False}
+                        )
+                        instance.distributed_servers = servers
                     await ModelInstanceService(session).update(instance)
 
                 # Get available workers for potential remote parsing
@@ -312,7 +328,10 @@ class Scheduler:
             except Exception as e:
                 try:
                     instance.state = ModelInstanceStateEnum.ERROR
-                    instance.state_message = str(e)
+                    rejection = router_cpu_rejection(instance)
+                    instance.state_message = (
+                        f"{rejection.message}\n{e}" if rejection else str(e)
+                    )
                     await ModelInstanceService(session).update(instance)
                 except Exception as ue:
                     logger.error(
@@ -357,14 +376,15 @@ class Scheduler:
         )
         return (
             (
-                # When enqueueing pending state model instances, handle two cases:
-                # 1. Newly created model instances (updated_at - created_at < 1 second),
-                #    which will be updated to ANALYZING in _evaluate.
-                # 2. Existing PENDING model instances periodically enqueued by the scheduler job.
-                #    In this case, update_delta is longer than 90s, as the scheduler runs every 180s.
+                # Creations and Router recovery handoffs can run immediately.
+                # Other pending instances wait for the periodic retry window.
                 instance.worker_id is None
                 and instance.state == ModelInstanceStateEnum.PENDING
-                and (newly_created or update_delta > timedelta(seconds=90))
+                and (
+                    newly_created
+                    or _router_cpu_retry_pending(instance)
+                    or update_delta > timedelta(seconds=90)
+                )
             )
             or (
                 # Reschedule while it stays in anayzing state for too long,
@@ -604,6 +624,11 @@ class Scheduler:
                     )
                 if state_message != "":
                     model_instance.state_message = state_message
+                if rejection := router_cpu_rejection(model_instance):
+                    detail = (
+                        state_message or "".join(messages) or "No suitable workers."
+                    )
+                    model_instance.state_message = f"{rejection.message}\n{detail}"
 
                 await ModelInstanceService(session).update(model_instance)
                 logger.debug(
@@ -630,6 +655,22 @@ _MANAGED_WORKER_MESSAGE = (
     "Managed workloads require READY candidate Workers and bound identities for "
     "every candidate and assigned cohort Worker; re-register unbound Workers."
 )
+
+
+def _router_cpu_retry_pending(instance: Optional[ModelInstance]) -> bool:
+    rejection = router_cpu_rejection(instance)
+    return (
+        rejection is not None
+        and rejection.retry_pending
+        and instance.state == ModelInstanceStateEnum.PENDING
+        and instance.worker_id is None
+    )
+
+
+def _scheduler_instance_event(event: Event) -> bool:
+    return event.type == EventType.CREATED or (
+        event.type == EventType.UPDATED and _router_cpu_retry_pending(event.data)
+    )
 
 
 def _model_cohort(instances, model_id):
@@ -688,6 +729,43 @@ def _incompatible_cohort_message(model, workers, instances, required):
     return None
 
 
+async def _lock_scheduling_rows(session, model, cpu_worker_ids):
+    if not cpu_worker_ids:
+        return await ModelInstance.all_by_field(
+            session, 'model_id', model.id, for_update=True, refresh=True
+        )
+
+    # A locking read sees placements committed while we waited for the Worker
+    # lock, even under repeatable read. Take the instance locks in one order.
+    statement = (
+        select(ModelInstance)
+        .where(
+            (ModelInstance.model_id == model.id)
+            | (
+                (ModelInstance.role == RoleNameEnum.ROUTER.value)
+                & (ModelInstance.cluster_id == model.cluster_id)
+                & ModelInstance.worker_id.in_(cpu_worker_ids)
+                & ModelInstance.deleted_at.is_(None)
+            )
+        )
+        .order_by(ModelInstance.id)
+        .with_for_update()
+        .execution_options(populate_existing=True, autoflush=False)
+    )
+    return (await session.exec(statement)).all()
+
+
+def _cpu_reservations_fit(workers, requested, current, replaced):
+    allocated = cpu_allocated_by_worker(
+        row for row in current if row.id not in replaced
+    )
+    for worker_id, cpu in requested.items():
+        total = worker_cpu_millicores(workers[worker_id])
+        if total is None or allocated.get(worker_id, 0) + cpu > total:
+            return False
+    return True
+
+
 async def _lock_scheduling_admission(
     session, model, expected, candidates, instances=None
 ):
@@ -716,9 +794,18 @@ async def _lock_scheduling_admission(
     ):
         await session.rollback()
         return None
-    current = await ModelInstance.all_by_field(
-        session, 'model_id', model.id, for_update=True, refresh=True
-    )
+    requested_cpu = {}
+    for candidate in candidates.values():
+        if cpu := getattr(candidate.computed_resource_claim, 'cpu_millicores', None):
+            wid = candidate.worker.id
+            requested_cpu[wid] = requested_cpu.get(wid, 0) + cpu
+    locked = await _lock_scheduling_rows(session, model, set(requested_cpu))
+    current = _model_cohort(locked, model.id)
+    if requested_cpu and not _cpu_reservations_fit(
+        indexed, requested_cpu, locked, candidates
+    ):
+        await session.rollback()
+        return None
     required = model_requires_managed_worker_binding(current, model.id)
     rows = {row.id: row for row in current}
     if (
@@ -821,8 +908,13 @@ async def apply_candidate_to_instance(
     model_instance.gpu_type = candidate.gpu_type
     model_instance.gpu_indexes = candidate.gpu_indexes
     model_instance.gpu_addresses = candidate.gpu_addresses
+    rejection = router_cpu_rejection(model_instance)
+    if rejection is not None and candidate.worker.id in rejection.worker_ids:
+        # Placement fell back to a tried Worker after exhausting eligible ones.
+        rejection = None
     model_instance.distributed_servers = DistributedServers(
         subordinate_workers=candidate.subordinate_workers,
+        router_cpu_rejection=rejection,
         workloads=(
             model_instance.distributed_servers.workloads
             if model_instance.distributed_servers is not None
@@ -900,6 +992,7 @@ def build_candidate_selector(
     *,
     resource_view: ResourceView,
     managed_sglang: bool = False,
+    cpu_millicores: Optional[int] = None,
 ) -> ScheduleCandidatesSelector:
     """Which resource-fit selector answers "does one more member fit here".
 
@@ -915,10 +1008,8 @@ def build_candidate_selector(
     every branch here reads Model-level fields and none of them knows about
     roles.
 
-    `ram_claim` is the accelerator-free role's declared memory, resolved by the
-    caller before projection because `resources` is a role-OWN field. Only the
-    `cpu_only` branch reads it — every other selector derives RAM from the
-    weights it just sized.
+    The CPU and RAM requests are resolved before projection because `resources`
+    belongs to the role. Only the `cpu_only` branch uses them.
     """
     if cpu_only:
         # Ahead of every backend branch, because the backend a router inherits
@@ -932,6 +1023,7 @@ def build_candidate_selector(
             model_instances,
             cpu_only=True,
             ram_claim=ram_claim,
+            cpu_millicores=cpu_millicores,
             resource_view=resource_view,
         )
     if model.gpu_type_selector:
@@ -1143,6 +1235,16 @@ def _instance_scheduling_model(
     )
 
 
+def _prefer_cpu_retry_candidates(
+    candidates: List[ModelInstanceScheduleCandidate], instance: Optional[ModelInstance]
+) -> List[ModelInstanceScheduleCandidate]:
+    rejection = router_cpu_rejection(instance)
+    if rejection is None:
+        return candidates
+    tried = set(rejection.worker_ids)
+    return [c for c in candidates if c.worker.id not in tried] or candidates
+
+
 async def find_candidate(
     session: AsyncSession,
     config: Config,
@@ -1211,7 +1313,7 @@ async def find_candidate(
     cpu_only = role_takes_no_accelerator(model, role)
     # Same reason, same moment: `resources` is role-OWN too, and only the
     # accelerator-free branch consumes it.
-    ram_claim = role_container_resources(model, role).memory if cpu_only else None
+    role_resources = role_container_resources(model, role) if cpu_only else None
     # Read here too, and for the third time for the same reason: both of these
     # are properties of the MODEL and its ROLES, and the projection below
     # flattens the roles away.
@@ -1273,7 +1375,12 @@ async def find_candidate(
             model,
             model_instances,
             cpu_only=cpu_only,
-            ram_claim=ram_claim,
+            ram_claim=role_resources.memory if role_resources is not None else None,
+            cpu_millicores=(
+                cores_to_millicores(role_resources.cpu)
+                if role_resources is not None
+                else None
+            ),
             resource_view=resource_view,
             managed_sglang=managed_sglang,
         )
@@ -1321,6 +1428,7 @@ async def find_candidate(
         session, model, role, candidates, workers, model_instances, exclude_instance_id
     )
     messages.extend(port_messages)
+    candidates = _prefer_cpu_retry_candidates(candidates, instance)
     candidate_scorers = [
         PlacementScorer(model, model_instances, resource_view=resource_view),
     ]

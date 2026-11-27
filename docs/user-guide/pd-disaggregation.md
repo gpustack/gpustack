@@ -165,6 +165,22 @@ see while a group comes up:
 A group therefore reports `Partially ready` for a while before it serves, and
 that is the normal path rather than a fault.
 
+### Router CPU placement
+
+GPUStack compares the Router's CPU request (2 cores by default) with the
+Worker's reported CPU capacity, minus other PD Router reservations. A placement
+reserves CPU before its container is created. A Worker without CPU capacity
+telemetry is not eligible, and assignments from older versions without a CPU
+claim start counting when they are placed again.
+
+This is GPUStack's own resource accounting, not Kubernetes node headroom.
+Kubernetes may still reject a Pod with `OutOfcpu`. With **Restart on error**
+enabled, GPUStack keeps the reason. If the Worker supports stop confirmation,
+GPUStack waits for the old Pod to be removed and tries eligible Workers that
+have not rejected this Router in the current recovery cycle. After backoff it
+can start a new cycle when all eligible Workers have been tried. During a
+rolling upgrade, a Worker without stop confirmation still retries locally.
+
 ## Reading a group's state
 
 | What you see | What it means |

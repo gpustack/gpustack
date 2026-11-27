@@ -11,6 +11,7 @@ from sqlalchemy.orm.attributes import set_committed_value
 
 from gpustack.api.exceptions import (
     ConflictException,
+    ForbiddenException,
     HTTPException,
     InternalServerErrorException,
 )
@@ -37,8 +38,10 @@ from gpustack.schemas.models import (
     ModelInstanceStateEnum,
     ModelInstanceWorkload,
     ModelInstanceLegacyStop,
+    ModelInstanceUpdate,
     DistributedServers,
     ModelInstanceWorkloadStateEnum,
+    RouterCPURejection,
     member_worker_ids,
 )
 from gpustack.schemas.model_routes import (
@@ -81,6 +84,7 @@ from gpustack.utils.model_instance_workers import (
     get_model_instance_worker_match,
     model_instance_workloads_stopped,
     model_instance_legacy_stop,
+    router_cpu_rejection,
     requires_group_recovery,
     calculate_group_recovery_policy,
 )
@@ -1384,6 +1388,65 @@ class ModelInstanceService:
         ):
             await self.update(instance, {})
 
+    async def prepare_router_cpu_recovery(
+        self,
+        instance: ModelInstance,
+        update: ModelInstanceUpdate,
+        message: str,
+        worker: Optional[Worker],
+        principal_id: int,
+    ) -> dict:
+        """Atomically fence an admission failure reported by the assigned Worker."""
+        if (
+            worker is None
+            or worker.deleted_at is not None
+            or worker.cluster_id != instance.cluster_id
+            or worker.system_principal_id != principal_id
+        ):
+            raise ForbiddenException(message="CPU rejection requires a bound Worker")
+        if (
+            instance.worker_id != worker.id
+            or update.worker_id != worker.id
+            or (update.restart_count or 0) != (instance.restart_count or 0)
+            or instance.draining_since is not None
+            or instance.spans_workers
+            or get_model_instance_workloads(instance) is not None
+            or instance.state
+            not in (
+                ModelInstanceStateEnum.STARTING,
+                ModelInstanceStateEnum.ERROR,
+            )
+        ):
+            raise ConflictException(
+                message="CPU rejection does not match the active Router"
+            )
+        # Do not apply unrelated fields from a legacy snapshot, including a
+        # snapshot that was read before the Server installed the stop barrier.
+        if model_instance_legacy_stop(instance) is not None:
+            return {}
+        source = {"state": ModelInstanceStateEnum.ERROR, "state_message": message}
+        if not getattr(worker.status, "supports_router_cpu_recovery", False):
+            return source
+        model = await Model.one_by_id(self.session, instance.model_id, refresh=True)
+        if (
+            model is None
+            or model.deleted_at is not None
+            or not model.restart_on_error
+            or model.replicas == 0
+            or model.restarting_since is not None
+            or model.stale
+        ):
+            return source
+
+        servers = await self._legacy_stop_servers(instance, {worker.id: principal_id})
+        previous = router_cpu_rejection(instance)
+        servers.router_cpu_rejection = RouterCPURejection(
+            worker_ids=sorted({worker.id, *(previous.worker_ids if previous else [])}),
+            message=message,
+        )
+        source["distributed_servers"] = servers
+        return source
+
     async def _prepare_recovery_policy(self, instance, source):
         fields = (
             {key: getattr(source, key) for key in source.model_fields_set}
@@ -1532,6 +1595,13 @@ class ModelInstanceService:
         return due
 
     async def _legacy_recovery(self, instance, allow_restart):
+        if (
+            router_cpu_rejection(instance) is not None
+            and model_instance_legacy_stop(instance) is not None
+        ):
+            if allow_restart and instance.draining_since is None:
+                return await self._managed_restart(instance, None)
+            return {}, None
         model = await Model.one_by_id(self.session, instance.model_id, refresh=True)
         if model is None or not requires_group_recovery(instance, model):
             return {}, None
@@ -1833,6 +1903,26 @@ class ModelInstanceService:
                 worker.state_message = None
                 worker.pid = None
             source['pid'] = None
+            if rejection := router_cpu_rejection(instance):
+                # The stop ACK is committed before any Worker or claim changes.
+                servers.router_cpu_rejection = rejection.model_copy(
+                    update={"retry_pending": True}
+                )
+                source.update(
+                    state=ModelInstanceStateEnum.PENDING,
+                    state_message=rejection.message,
+                    worker_id=None,
+                    worker_name=None,
+                    worker_ip=None,
+                    worker_advertise_address=None,
+                    worker_ifname=None,
+                    port=None,
+                    ports=None,
+                    named_ports=None,
+                    router_peer_snapshot=None,
+                    model_config_snapshot=None,
+                    computed_resource_claim=None,
+                )
             return source, None
         configuration_changed = False
         if not instance.group_id and instance.spec_digest:

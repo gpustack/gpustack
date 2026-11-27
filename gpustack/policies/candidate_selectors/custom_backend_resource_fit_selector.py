@@ -84,6 +84,7 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
         ram_claim: Optional[int] = None,
         *,
         resource_view: ResourceView,
+        cpu_millicores: Optional[int] = None,
     ):
         super().__init__(cfg, model, model_instances, resource_view=resource_view)
         self._event_collector = EventCollector(model, logger)
@@ -109,6 +110,7 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
         # model that has already been projected. None means "nothing declared",
         # and the router floor applies.
         self._declared_ram_claim = ram_claim
+        self._cpu_millicores = cpu_millicores
 
         # None when the model declares no such parameter, which is the case
         # this must not disturb: a custom backend that is neither vLLM nor
@@ -506,9 +508,20 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
         Find candidates for CPU-only inference.
         """
         candidates = []
+        cpu_refusals = []
 
         for worker in workers:
             allocatable = self._resource_view.allocatable(worker)
+            cpu = allocatable.cpu_millicores
+            if self._cpu_millicores is not None and (
+                cpu is None or cpu < self._cpu_millicores
+            ):
+                capacity = "unavailable" if cpu is None else f"{cpu}m available"
+                cpu_refusals.append(
+                    f"Worker {worker.name}: CPU capacity {capacity}; "
+                    f"the Router needs {self._cpu_millicores}m.\n"
+                )
+                continue
 
             # Check if worker has enough RAM for CPU inference
             if allocatable.ram >= self._ram_claim:
@@ -525,6 +538,17 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
                     str(event_msg),
                 )
 
+        if not candidates and cpu_refusals:
+            cpu_refusals = (
+                cpu_refusals
+                if len(cpu_refusals) <= 5
+                else [
+                    *cpu_refusals[:5],
+                    f"{len(cpu_refusals) - 5} more CPU refusals.\n",
+                ]
+            )
+            self._set_messages()
+            self._messages.extend(cpu_refusals)
         return candidates
 
     def _create_single_gpu_candidate(
@@ -580,6 +604,7 @@ class CustomBackendResourceFitSelector(ScheduleCandidatesSelector):
         computed_resource_claim = ComputedResourceClaim(
             ram=self._ram_claim,
             vram={},  # No VRAM for CPU-only
+            cpu_millicores=self._cpu_millicores,
         )
 
         return ModelInstanceScheduleCandidate(

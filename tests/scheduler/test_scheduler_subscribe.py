@@ -1,21 +1,28 @@
 """Regression tests for scheduler bus-subscription parameters (issue #4794)."""
 
 import asyncio
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from gpustack.scheduler import scheduler as scheduling
 from gpustack.scheduler.scheduler import Scheduler
-from gpustack.server.bus import EventType
+from gpustack.schemas.models import (
+    DistributedServers,
+    ModelInstance,
+    RouterCPURejection,
+)
+from gpustack.server.bus import Event, EventBus, EventType
+from tests.utils.model import new_model_instance
 
 
 @pytest.mark.parametrize('state', ['pending', 'scheduled'])
 @pytest.mark.parametrize('workload_state', ['pending', 'running', 'unknown', 'stopped'])
 def test_periodic_scheduling_waits_until_the_manifest_is_retired(state, workload_state):
-    from datetime import datetime, timedelta, timezone
-    from gpustack.schemas.models import DistributedServers
-    from tests.utils.model import new_model_instance, new_model_instance_workload
+    from tests.utils.model import new_model_instance_workload
 
     scheduler = Scheduler(SimpleNamespace(cache_dir=None), check_interval=180)
     instance = new_model_instance(7, 'managed', 1, state=state)
@@ -72,7 +79,7 @@ async def test_managed_admission_message_distinguishes_offline_workers(
 
 
 @pytest.mark.asyncio
-async def test_scheduler_subscribes_only_to_created_and_skips_replay():
+async def test_scheduler_subscribes_to_creation_and_cpu_recovery_without_replay():
     cfg = SimpleNamespace(cache_dir=None)
     scheduler = Scheduler(cfg, check_interval=180)
 
@@ -104,7 +111,14 @@ async def test_scheduler_subscribes_only_to_created_and_skips_replay():
                 break
         try:
             assert captured_kwargs.get("source") == "scheduler"
-            assert captured_kwargs.get("event_types") == {EventType.CREATED}
+            assert captured_kwargs.get("event_types") == {
+                EventType.CREATED,
+                EventType.UPDATED,
+            }
+            assert (
+                captured_kwargs.get("event_filter")
+                is scheduling._scheduler_instance_event
+            )
             assert captured_kwargs.get("replay_existing") is False
             # Bootstrap scan must have run at least once before the live loop.
             assert mock_enqueue.await_count >= 1
@@ -190,6 +204,104 @@ async def test_scheduler_handles_live_created_event_with_single_instance_path():
             finally:
                 forever.set()
                 await _stop_task(task)
+
+
+@pytest.mark.asyncio
+async def test_recovery_event_survives_coordinator_enrichment(monkeypatch):
+    scheduler = Scheduler(SimpleNamespace(cache_dir=None))
+    row = new_model_instance(420, 'router', 1, state='pending')
+    row.role = 'router'
+    row.worker_id = None
+    row.updated_at = datetime.now(timezone.utc)
+    row.created_at = row.updated_at - timedelta(minutes=5)
+    row.distributed_servers = DistributedServers(
+        router_cpu_rejection=RouterCPURejection(worker_ids=[1], message='OutOfcpu')
+    )
+    bus = EventBus()
+    subscriber = bus.subscribe(
+        'modelinstance', event_filter=scheduling._scheduler_instance_event
+    )
+    topic = 'modelinstance'
+
+    @asynccontextmanager
+    async def session():
+        yield SimpleNamespace()
+
+    monkeypatch.setattr('gpustack.server.db.async_session', session)
+    monkeypatch.setattr(
+        ModelInstance,
+        'one_by_id',
+        AsyncMock(side_effect=lambda *args: row.model_copy(deep=True)),
+    )
+    received = Event(type=EventType.UPDATED, data={'id': row.id}, id=row.id)
+    try:
+        await bus._process_coordinator_event(received, topic)
+        await asyncio.sleep(0)
+        assert subscriber.queue.empty()
+        assert not scheduler._should_schedule(row)
+
+        row.distributed_servers.router_cpu_rejection.retry_pending = True
+        await bus._process_coordinator_event(received, topic)
+        event = await asyncio.wait_for(subscriber.receive(), timeout=1)
+        assert event.data.id == row.id
+        with patch.object(scheduler, '_evaluate', AsyncMock()) as evaluate:
+            await scheduler._enqueue_event_instance(event.data)
+            evaluate.assert_awaited_once_with(event.data)
+    finally:
+        bus.unsubscribe(topic, subscriber)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('state', ['pending', 'scheduled'])
+async def test_recovery_claim_rechecks_the_row_under_lock(monkeypatch, state):
+    scheduler = Scheduler(SimpleNamespace(cache_dir=None))
+    event_row = new_model_instance(7, 'router', 1, state='pending')
+    event_row.role = 'router'
+    event_row.worker_id = None
+    event_row.updated_at = datetime.now(timezone.utc)
+    event_row.created_at = event_row.updated_at - timedelta(minutes=5)
+    event_row.distributed_servers = DistributedServers(
+        router_cpu_rejection=RouterCPURejection(
+            worker_ids=[1], message='OutOfcpu', retry_pending=True
+        )
+    )
+    row = event_row.model_copy(deep=True, update={'state': state})
+    if state == 'scheduled':
+        row.worker_id = 2
+    db = SimpleNamespace()
+
+    @asynccontextmanager
+    async def session():
+        yield db
+
+    monkeypatch.setattr(scheduling, 'async_session', session)
+    get = AsyncMock(return_value=row)
+    monkeypatch.setattr(ModelInstance, 'one_by_id', get)
+    monkeypatch.setattr(
+        scheduling.Model, 'one_by_id', AsyncMock(return_value=SimpleNamespace())
+    )
+    monkeypatch.setattr(scheduling.Worker, 'all', AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        scheduling, 'prioritize_workers_with_model_files', AsyncMock(return_value=[])
+    )
+    monkeypatch.setattr(scheduling, 'is_gguf_model', lambda model: False)
+    monkeypatch.setattr(
+        scheduling, 'evaluate_pretrained_config', AsyncMock(return_value=False)
+    )
+    monkeypatch.setattr(scheduling, '_record_pd_connector_variant', lambda *args: False)
+    persist = AsyncMock()
+    monkeypatch.setattr(scheduling.ModelInstanceService, 'update', persist)
+
+    await scheduler._evaluate_instance(event_row)
+
+    get.assert_awaited_once_with(db, row.id, for_update=True, refresh=True)
+    if state == 'scheduled':
+        persist.assert_not_awaited()
+        return
+    persist.assert_awaited_once_with(row)
+    assert row.state == 'analyzing'
+    assert not row.distributed_servers.router_cpu_rejection.retry_pending
+    assert (await asyncio.wait_for(scheduler._queue.get(), timeout=1)).id == row.id
 
 
 @pytest.mark.asyncio

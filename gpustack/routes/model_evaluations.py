@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Request
+from sqlmodel import select
 
-from gpustack.api.tenant import assert_cluster_visible
+from gpustack.api.tenant import assert_cluster_visible, cluster_visibility_conditions
 from gpustack.config.config import Config
 from gpustack.scheduler.evaluator import evaluate_models
 from gpustack.schemas.clusters import Cluster
@@ -13,7 +14,6 @@ from gpustack.api.exceptions import (
     InternalServerErrorException,
 )
 from gpustack.server.deps import SessionDep, TenantContextDep
-
 
 router = APIRouter()
 
@@ -30,9 +30,14 @@ async def create_model_evaluation(
 
     # If a specific cluster was named, gate access through cluster visibility.
     cluster = None
+    visible_clusters = None
     if model_evaluation_in.cluster_id is not None:
         cluster = await Cluster.one_by_id(session, model_evaluation_in.cluster_id)
         assert_cluster_visible(ctx, cluster, not_found_message="Cluster not found")
+    else:
+        visible_clusters = select(Cluster.id).where(
+            Cluster.deleted_at.is_(None), *cluster_visibility_conditions(ctx, Cluster)
+        )
 
     # Stamp the owner the model would be created under (mirrors
     # create_model's resolution: current Org context, else the target
@@ -57,6 +62,7 @@ async def create_model_evaluation(
             config=config,
             session=session,
             model_specs=model_specs,
+            visible_clusters=visible_clusters,
         )
     except Exception as e:
         raise InternalServerErrorException(

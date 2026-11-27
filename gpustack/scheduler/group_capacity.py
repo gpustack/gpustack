@@ -51,7 +51,8 @@ from gpustack.schemas.models import (
     role_takes_no_accelerator,
 )
 from gpustack.schemas.workers import Worker
-from gpustack.policies.resource_view import ResourceView
+from gpustack.policies.resource_view import ResourceView, worker_cpu_millicores
+from gpustack.utils.unit import cores_to_millicores
 from gpustack.scheduler.offer_slot import _stand_in_for, count_offer_slots
 
 logger = logging.getLogger(__name__)
@@ -71,19 +72,12 @@ def _reports_no_memory(worker: Worker) -> bool:
 
 
 class _RoleProjection(NamedTuple):
-    """What `_eligible_for` worked out for a role, read back by two callers.
-
-    A NamedTuple rather than a bare tuple because the role-OWN fields read
-    before projection are a growing set — the accelerator-free flag, now
-    `ram_claim` — and a
-    positional tuple couples every read site, plus every test that builds one,
-    to that count. `ram_claim` defaults so a caller that only cares about
-    placement need not spell it.
-    """
+    """Projected model and resource requests that belong to the role itself."""
 
     model: Model
     cpu_only: bool
     ram_claim: Optional[int] = None
+    cpu_millicores: Optional[int] = None
 
 
 class GroupCapacity:
@@ -263,9 +257,23 @@ class GroupCapacity:
                     role,
                 )
                 continue
+            if (
+                projected.cpu_millicores is not None
+                and worker_cpu_millicores(worker) is None
+            ):
+                self._remember_notes(
+                    role, [f"Worker {worker.name}: CPU capacity unavailable."]
+                )
+                continue
             offer = await count_offer_slots(
                 make_selector=lambda instances_now, p=projected: (
-                    self._selector(p.model, instances_now, p.cpu_only, p.ram_claim)
+                    self._selector(
+                        p.model,
+                        instances_now,
+                        p.cpu_only,
+                        p.ram_claim,
+                        p.cpu_millicores,
+                    )
                 ),
                 workers=[worker],
                 model_instances=instances,
@@ -512,7 +520,9 @@ class GroupCapacity:
 
         offer = await count_offer_slots(
             make_selector=lambda instances_now, p=self._projected[role]: (
-                self._selector(p.model, instances_now, p.cpu_only, p.ram_claim)
+                self._selector(
+                    p.model, instances_now, p.cpu_only, p.ram_claim, p.cpu_millicores
+                )
             ),
             workers=usable,
             model_instances=instances,
@@ -851,7 +861,9 @@ class GroupCapacity:
             out.append(_stand_in_for(offers[index], self._projected[role].model))
         return out
 
-    def _selector(self, model, instances, cpu_only, ram_claim=None):
+    def _selector(
+        self, model, instances, cpu_only, ram_claim=None, cpu_millicores=None
+    ):
         # Imported here rather than at module scope: `scheduler` imports a wide
         # slice of the policy stack, and this module is imported by a route.
         from gpustack.scheduler.scheduler import build_candidate_selector
@@ -862,6 +874,7 @@ class GroupCapacity:
             instances,
             cpu_only=cpu_only,
             ram_claim=ram_claim,
+            cpu_millicores=cpu_millicores,
             resource_view=self._resource_view.with_model_instances(instances),
         )
 
@@ -885,11 +898,14 @@ class GroupCapacity:
         cpu_only = role_takes_no_accelerator(self._model, role)
         # `resources` is role-OWN as well, and only the accelerator-free
         # branch consumes it — same read-before-projection reason.
-        ram_claim = (
-            role_container_resources(self._model, role).memory if cpu_only else None
-        )
+        resources = role_container_resources(self._model, role) if cpu_only else None
         model = role_effective_model(self._model, role)
-        self._projected[role] = _RoleProjection(model, cpu_only, ram_claim)
+        self._projected[role] = _RoleProjection(
+            model,
+            cpu_only,
+            resources.memory if resources is not None else None,
+            cores_to_millicores(resources.cpu) if resources is not None else None,
+        )
 
         chain = WorkerFilterChain(
             [
@@ -994,7 +1010,13 @@ class GroupCapacity:
                 return []
             offer = await count_offer_slots(
                 make_selector=lambda instances_now, p=projected: (
-                    self._selector(p.model, instances_now, p.cpu_only, p.ram_claim)
+                    self._selector(
+                        p.model,
+                        instances_now,
+                        p.cpu_only,
+                        p.ram_claim,
+                        p.cpu_millicores,
+                    )
                 ),
                 workers=span,
                 model_instances=instances,

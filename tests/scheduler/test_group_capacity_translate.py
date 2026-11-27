@@ -84,9 +84,7 @@ def _capacity(workers):
     )
     # Both stubbed: the real ones need model metadata off the network, and what
     # is under test is the translation between them.
-    cap._selector = lambda model, instances, cpu_only, ram_claim=None: _FakeSelector(
-        instances
-    )
+    cap._selector = lambda model, instances, *args: _FakeSelector(instances)
     return cap
 
 
@@ -215,9 +213,7 @@ def _dealing_capacity(workers, roles):
     cap = GroupCapacity(
         SimpleNamespace(), model, workers, [], resource_view=ResourceView([])
     )
-    cap._selector = lambda m, instances, cpu_only, ram_claim=None: (
-        _DealingSelector(instances)
-    )
+    cap._selector = lambda m, instances, *args: _DealingSelector(instances)
     for role in roles:
         cap._eligible[role] = {w.id: w for w in workers}
         cap._projected[role] = _RoleProjection(model, False)

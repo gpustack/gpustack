@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -30,9 +31,11 @@ from gpustack.schemas.models import (
     ModelInstanceStateEnum,
     ModelInstanceSubordinateWorker,
     ModelInstanceUpdate,
+    RouterCPURejection,
     SourceEnum,
 )
 from gpustack.schemas.principals import PrincipalType
+from gpustack.schemas.workers import WorkerStatus
 from gpustack.server.deps import get_session, get_tenant_context
 from gpustack.server.controllers import (
     sync_instance_files_state,
@@ -1949,6 +1952,24 @@ def test_legacy_stop_guard_round_trips_in_existing_json_column(dialect):
     assert restored.workloads is None
 
 
+@pytest.mark.parametrize('dialect', [mysql.dialect(), postgresql.dialect()])
+def test_router_rejection_reads_single_worker_from_existing_json(dialect):
+    legacy = json.dumps(
+        {'router_cpu_rejection': {'worker_id': 1, 'message': 'OutOfcpu'}}
+    )
+    column = ModelInstance.__table__.c.distributed_servers.type
+    read = column.result_processor(dialect, None)
+
+    restored = read(legacy)
+
+    assert restored.router_cpu_rejection.worker_ids == [1]
+    assert restored.router_cpu_rejection.message == 'OutOfcpu'
+    assert not restored.router_cpu_rejection.retry_pending
+    stored = column.bind_processor(dialect)(restored)
+    assert json.loads(stored)['router_cpu_rejection']['worker_ids'] == [1]
+    assert read(stored) == restored
+
+
 def _sg_component(kind='sglang_engine', worker_id=1, **fields):
     from gpustack.schemas.models import ModelInstanceWorkload
 
@@ -2834,7 +2855,12 @@ async def test_snapshot_cannot_forge_or_clear_server_stop_release(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     'intent',
-    [{'stop_requested': True}, {'group_recovery': False}, {'group_recovery': True}],
+    [
+        {'stop_requested': True},
+        {'group_recovery': False},
+        {'group_recovery': True},
+        {'router_cpu_rejection': {'worker_ids': [1], 'message': 'OutOfcpu'}},
+    ],
 )
 async def test_create_cannot_supply_server_recovery_intent(report_api, intent):
     api = report_api
@@ -2847,6 +2873,191 @@ async def test_create_cannot_supply_server_recovery_intent(report_api, intent):
     ) as client:
         response = await client.post("/model-instances", json=payload)
     assert response.status_code == 400, response.text
+
+
+@pytest.fixture
+def router_report_api(report_api, monkeypatch):
+    from gpustack.schemas.models import ComputedResourceClaim
+    from gpustack.server.services import ModelInstanceService
+
+    api = report_api
+    row = api.instance
+    row.role = 'router'
+    row.state = ModelInstanceStateEnum.STARTING
+    row.distributed_servers = DistributedServers()
+    row.port = 40000
+    row.ports = [40000]
+    row.computed_resource_claim = ComputedResourceClaim(ram=1024, cpu_millicores=2000)
+    api.session.get.side_effect = None
+    api.session.get.return_value = SimpleNamespace(
+        id=1,
+        cluster_id=1,
+        system_principal_id=10,
+        deleted_at=None,
+        state='ready',
+        unreachable=False,
+        status=WorkerStatus(supports_router_cpu_recovery=True),
+    )
+    model = new_model(1, 'test', huggingface_repo_id='org/repo', cluster_id=1)
+    model.replicas = 1
+    model.restart_on_error = True
+    monkeypatch.setattr(routes.Model, 'one_by_id', AsyncMock(return_value=model))
+    monkeypatch.setattr(
+        routes.ModelInstance, 'all_by_field', AsyncMock(return_value=[row])
+    )
+    api.session.commit = AsyncMock()
+    service = ModelInstanceService(api.session)
+    api.service.prepare_router_cpu_recovery = service.prepare_router_cpu_recovery
+    monkeypatch.setattr(ModelInstanceService, 'update', api.service.update)
+    api.model = model
+    return api
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'restart_on_error, supports_recovery', [(True, True), (True, False), (False, True)]
+)
+async def test_router_cpu_rejection_waits_for_stop_before_requeuing(
+    router_report_api, restart_on_error, supports_recovery
+):
+    from gpustack.server.controllers import ModelController
+
+    api = router_report_api
+    api.model.restart_on_error = restart_on_error
+    row = api.instance
+    row.distributed_servers.router_cpu_rejection = RouterCPURejection(
+        worker_ids=[2], message='Earlier rejection'
+    )
+    api.session.get.return_value.status = (
+        WorkerStatus(supports_router_cpu_recovery=True)
+        if supports_recovery
+        else WorkerStatus()
+    )
+
+    payload = row.model_dump(mode='json')
+    # A legacy Worker may not know the CPU field in the JSON claim.
+    payload['computed_resource_claim'].pop('cpu_millicores')
+    payload.update(
+        state='error',
+        state_message=(
+            "Pod was rejected: Node didn't have enough resource: cpu, "
+            "requested: 2000, used: 6575, capacity: 8000"
+        ),
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=api.app), base_url='http://test'
+    ) as client:
+        response = await client.put('/model-instances/7', json=payload)
+        assert response.status_code == 200, response.text
+        assert row.worker_id == 1
+        assert row.state == ModelInstanceStateEnum.ERROR
+        assert row.state_message == f"OutOfcpu: {payload['state_message']}"
+        assert row.computed_resource_claim.cpu_millicores == 2000
+        guard = row.distributed_servers.legacy_stop
+        if not restart_on_error or not supports_recovery:
+            assert guard is None
+            if restart_on_error:
+                restart = row.model_dump(mode='json')
+                restart.update(state='scheduled', state_message='', restart_count=1)
+                assert (
+                    await client.put('/model-instances/7', json=restart)
+                ).status_code == 200
+                assert row.state == ModelInstanceStateEnum.SCHEDULED
+                assert row.worker_id == 1
+            return
+        assert guard.worker_ids == [1]
+
+        api.service.update.reset_mock()
+        assert (await client.put('/model-instances/7', json=payload)).status_code == 200
+        api.service.update.assert_not_awaited()
+
+        # Verify the controller observes both the failure and its stop ACK.
+        await ModelController._sync_managed_model_instances(
+            None, api.session, api.model
+        )
+        assert row.worker_id == 1 and row.restart_count == 0
+        stale = {**payload, 'state': 'scheduled', 'restart_count': 1}
+        assert (await client.put('/model-instances/7', json=stale)).status_code == 409
+        response = await client.post(
+            '/model-instances/7/stop-confirmation',
+            json={'token': str(guard.token), 'restart_count': 0},
+        )
+        assert response.status_code == 200, response.text
+        await ModelController._sync_managed_model_instances(
+            None, api.session, api.model
+        )
+
+    assert row.state == ModelInstanceStateEnum.PENDING
+    assert row.state_message.startswith('OutOfcpu:')
+    assert row.restart_count == 1
+    assert row.worker_id is row.computed_resource_claim is row.port is row.ports is None
+    assert row.distributed_servers.legacy_stop is None
+    assert row.distributed_servers.router_cpu_rejection.worker_ids == [1, 2]
+    assert row.distributed_servers.router_cpu_rejection.retry_pending
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'current_worker,current_generation,current_state',
+    [
+        (2, 1, 'running'),
+        (1, 1, 'starting'),
+        (1, 0, 'running'),
+    ],
+)
+async def test_stale_router_cpu_report_does_not_write_instance(
+    router_report_api, current_worker, current_generation, current_state
+):
+    api = router_report_api
+    row = api.instance
+    payload = row.model_dump(mode='json')
+    payload.update(state='error', state_message='OutOfcpu', role=None, restart_count=0)
+    row.worker_id = current_worker
+    row.restart_count = current_generation
+    row.state = ModelInstanceStateEnum(current_state)
+    before = row.model_dump()
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=api.app), base_url='http://test'
+    ) as client:
+        response = await client.put('/model-instances/7', json=payload)
+
+    assert response.status_code == 409, response.text
+    api.session.get.assert_awaited_once()
+    api.lookup.assert_awaited_once_with(api.session, 7, for_update=True, refresh=True)
+    api.service.update.assert_not_awaited()
+    assert row.model_dump() == before
+
+
+@pytest.mark.asyncio
+async def test_running_router_clears_history_without_blocking_startup(
+    router_report_api,
+):
+    api = router_report_api
+    row = api.instance
+    row.state = ModelInstanceStateEnum.SCHEDULED
+    row.restart_count = 2
+    row.distributed_servers.router_cpu_rejection = RouterCPURejection(
+        worker_ids=[2, 3], message='OutOfcpu'
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=api.app), base_url='http://test'
+    ) as client:
+        stale = row.model_dump(mode='json')
+        stale.update(state='running', restart_count=1, distributed_servers=None)
+        rejected = await client.put('/model-instances/7', json=stale)
+        assert rejected.status_code == 409, rejected.text
+        api.service.update.assert_not_awaited()
+
+        for state in ('initializing', 'starting', 'running'):
+            payload = row.model_dump(mode='json')
+            payload.update(state=state, distributed_servers=None, state_message='')
+            response = await client.put('/model-instances/7', json=payload)
+            assert response.status_code == 200, response.text
+            assert row.state == state
+            history = row.distributed_servers.router_cpu_rejection
+            assert (history is None) == (state == 'running')
 
 
 @pytest.mark.parametrize('headless', [False, True])

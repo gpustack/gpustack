@@ -289,6 +289,8 @@ class WorkerStatus(SystemInfo):
     gpu_devices: Optional[GPUDevicesStatus] = Field(
         sa_column=Column(JSON), default=None
     )
+    supports_router_cpu_recovery: bool = False
+    """Whether the Worker can confirm a Router has stopped before reassignment."""
     rpc_servers: Optional[Dict[int, RPCServer]] = Field(
         sa_column=Column(JSON), default=None
     )

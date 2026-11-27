@@ -34,6 +34,7 @@ from gpustack.server.bus import Event, EventType
 from gpustack.schemas.workers import WorkerStateEnum
 from gpustack.server.controllers import model_members_stale, model_spec_digest
 from gpustack.utils import network
+from gpustack.utils.model_instance_workers import WORKLOAD_RESTART_COUNT_LABEL
 from gpustack.utils.process import terminate_multiprocessing_process
 from gpustack.worker.serve_manager import ServeManager
 from gpustack.worker.backends.base import InferenceServer
@@ -2794,6 +2795,66 @@ def test_failed_state_write_keeps_workload_without_tracked_process(manager):
 
     delete.assert_not_called()
     _terminate_mock().assert_not_called()
+
+
+@pytest.mark.parametrize('manager', [1], indirect=True)
+@pytest.mark.parametrize(
+    'observed, current, response_code, log',
+    [
+        ('3', 3, 200, None),
+        ('2', 3, None, 'Ignoring stale Router CPU rejection'),
+        ('3', 4, None, 'Ignoring stale Router CPU rejection'),
+        (None, 4, None, 'Ignoring stale Router CPU rejection'),
+        (None, 3, 200, None),
+        ('invalid', 3, None, 'invalid workload restart-count label'),
+        ('3', 3, 409, 'Server declined Router CPU rejection'),
+    ],
+)
+def test_router_cpu_report_uses_observed_workload_generation(
+    manager, observed, current, response_code, log, caplog
+):
+    serve, client = manager
+    instance = _instance()
+    instance.role = 'router'
+    instance.distributed_servers = None
+    instance.restart_count = 3
+    instance.state = ModelInstanceStateEnum.STARTING
+    client.model_instances.list.return_value = SimpleNamespace(items=[instance])
+    client.model_instances.get.return_value = instance.model_copy(
+        update={'restart_count': current}
+    )
+    workload = SimpleNamespace(
+        state=WorkloadStatusStateEnum.FAILED,
+        state_message="Node didn't have enough resource: cpu, requested: 2000",
+        labels={} if observed is None else {WORKLOAD_RESTART_COUNT_LABEL: observed},
+    )
+    if response_code == 409:
+        client.model_instances.update.side_effect = HTTPException(
+            409, 'Conflict', 'CPU rejection does not match the active Router'
+        )
+    with (
+        patch('gpustack.worker.serve_manager.get_workload', return_value=workload),
+        caplog.at_level('DEBUG', logger='gpustack.worker.serve_manager'),
+    ):
+        serve.sync_model_instances_state()
+
+    if observed == 'invalid':
+        client.model_instances.get.assert_not_called()
+    else:
+        client.model_instances.get.assert_called_with(id=instance.id, use_cache=False)
+    if response_code is not None:
+        client.model_instances.update.assert_called_once()
+        updated = client.model_instances.update.call_args.kwargs['model_update']
+        assert updated.restart_count == 3
+        assert updated.state is ModelInstanceStateEnum.ERROR
+        assert updated.state_message.startswith('OutOfcpu:')
+    else:
+        client.model_instances.update.assert_not_called()
+    serve._update_model_instance.assert_not_called()
+    if log is not None:
+        assert log in caplog.text
+        assert 'OutOfcpu:' in caplog.text
+        assert 'Failed to sync model instance' not in caplog.text
 
 
 def test_failed_state_write_cancels_queued_recovery_of_running_workload(manager):
