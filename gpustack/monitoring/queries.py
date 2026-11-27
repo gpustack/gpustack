@@ -338,17 +338,25 @@ def build_histogram_query(
             sum=_reduce(part('sum'), scope, labels),
             count=_reduce(part('count'), scope, labels),
         )
-    count = config.query(
-        profile, 'histogram', 'positive_count', expression=part('count')
-    )
+    count = part('count')
+    observed = config.query(profile, 'histogram', 'positive_count', expression=count)
     buckets = config.query(
-        profile, 'histogram', 'observed_buckets', buckets=part('bucket'), count=count
+        profile, 'histogram', 'observed_buckets', buckets=part('bucket'), count=observed
     )
-    return config.query(
+    percentile = config.query(
         profile,
         'histogram',
         statistic,
         buckets=_reduce(buckets, scope, labels + ('le',)),
+    )
+    if summary:
+        return percentile
+    return config.query(
+        profile,
+        'histogram',
+        'idle_gaps',
+        percentile=percentile,
+        count=_reduce(count, scope, labels),
     )
 
 

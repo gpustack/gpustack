@@ -41,18 +41,19 @@ def test_range_histogram_keeps_pd_roles_and_current_source_guards():
     assert 'max_over_time' not in query
 
 
-def test_promql_percentile_and_cdf_use_only_observed_histogram_cohorts(tmp_path):
+@pytest.mark.parametrize('view', ['aggregate', 'instances'])
+def test_promql_histograms_exclude_idle_cohorts_and_keep_idle_gaps(tmp_path, view):
     promtool = os.environ.get('PROMTOOL') or shutil.which('promtool')
     if not promtool:
         pytest.skip('promtool is required to evaluate the histogram queries')
     module = _queries()
-    scope = module.MetricQueryScope(1, 9, (12, 13), ('decode',))
+    scope = module.MetricQueryScope(1, 9, (12, 13), ('decode',), view)
     family = 'gpustack:time_to_first_token_seconds'
     scrape_status = 'gpustack:runtime_metrics_scrape_status'
     inputs = []
     for identity, bounds, values in (
-        (12, ('0.01', '0.02', '+Inf'), '0+15x4'),
-        (13, ('0.005', '0.01', '+Inf'), '0x4'),
+        (12, ('0.01', '0.02', '+Inf'), '0+15x4 60x4 75+15x6'),
+        (13, ('0.005', '0.01', '+Inf'), '0x15'),
     ):
         labels = (
             f'cluster_id="1",model_id="9",model_instance_id="{identity}",role="decode",'
@@ -62,21 +63,37 @@ def test_promql_percentile_and_cdf_use_only_observed_histogram_cohorts(tmp_path)
             {'series': f'{family}_count{{{labels}}}', 'values': values},
             {
                 'series': f'gpustack:model_instance_source_info{{{labels}}}',
-                'values': '1x4',
+                'values': '1x15',
             },
             {
                 'series': f'{scrape_status}{{{labels},status="success"}}',
-                'values': '1x4',
+                'values': '1x12 0x2',
             },
         ] + [
             {'series': f'{family}_bucket{{{labels},le="{bound}"}}', 'values': values}
             for bound in bounds
         ]
-    percentile = module.build_histogram_query(family, scope, 'p50', 60)
+    p50 = module.build_histogram_query(family, scope, 'p50', 60)
+    p99 = module.build_histogram_query(family, scope, 'p99', 60)
     cdf = module.build_histogram_cdf_query(family, [(scope, 0.02, ('0.02',))], 60)
+    active = 'role="decode"'
+    idle = []
+    if view == 'instances':
+        active += ',model_instance_id="12"'
+        idle = [{'labels': '{role="decode",model_instance_id="13"}', 'value': 1}]
+    # NaN compares unequal to itself. The bool comparison emits 1 for a gap.
+    gaps = f'({p99}) != bool ({p99})'
     samples = [
-        (percentile, '{role="decode"}', 0.005),
-        (cdf, '{role="decode",histogram_upper_bound="0.02"}', 1),
+        (f'({p50}) >= 0', '60s', [{'labels': f'{{{active}}}', 'value': 0.005}]),
+        (
+            cdf,
+            '60s',
+            [{'labels': f'{{{active},histogram_upper_bound="0.02"}}', 'value': 1}],
+        ),
+        (gaps, '60s', [{'labels': f'{{{active}}}', 'value': 0}] + idle),
+        (gaps, '120s', [{'labels': f'{{{active}}}', 'value': 1}] + idle),
+        (gaps, '180s', [{'labels': f'{{{active}}}', 'value': 0}] + idle),
+        (gaps, '210s', []),
     ]
     fixture = tmp_path / 'histogram.yaml'
     fixture.write_text(
@@ -91,10 +108,10 @@ def test_promql_percentile_and_cdf_use_only_observed_histogram_cohorts(tmp_path)
                         'promql_expr_test': [
                             {
                                 'expr': query,
-                                'eval_time': '60s',
-                                'exp_samples': [{'labels': labels, 'value': value}],
+                                'eval_time': at,
+                                'exp_samples': expected,
                             }
-                            for query, labels, value in samples
+                            for query, at, expected in samples
                         ],
                     }
                 ],

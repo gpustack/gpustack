@@ -167,6 +167,7 @@ _PROFILE_VARIABLES = {
         'p99': {'buckets'},
         'positive_count': {'expression'},
         'observed_buckets': {'buckets', 'count'},
+        'idle_gaps': {'percentile', 'count'},
         'trend_component': {'expression', 'part'},
         'bucket_population': {'expression', 'count'},
         'canonical_bucket': {'expression'},
