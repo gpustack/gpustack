@@ -1074,6 +1074,7 @@ async def test_tunnel_model_resolver_checks_identity_and_releases_session(
     worker = SimpleNamespace(
         id=1,
         ip='10.0.0.2',
+        state='ready',
         cluster_id=11,
         deleted_at=None,
         system_principal_id=9,

@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, Query, Response, Request
 from fastapi.responses import StreamingResponse, RedirectResponse
 from pydantic import StringConstraints
 
+from gpustack import envs
 from gpustack.api.streaming import tenant_streaming
 from gpustack.mixins.immutable import allow_immutable_field_update
 from gpustack.api.exceptions import (
@@ -49,6 +50,7 @@ from gpustack.utils.model_instance_workers import (
     get_model_instance_worker_match,
 )
 from gpustack.schemas.workers import (
+    Maintenance,
     WorkerCreate,
     WorkerListParams,
     WorkerPublic,
@@ -76,6 +78,7 @@ from gpustack.schemas.clusters import (
 from gpustack.schemas.principals import Principal, PrincipalType
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.config import (
+    ModelInstanceProxyModeEnum,
     SensitivePredefinedConfig,
     PredefinedConfig,
     PredefinedConfigNoDefaults,
@@ -91,6 +94,7 @@ from gpustack.server.services import WorkerService
 from gpustack.cloud_providers.common import key_bytes_to_openssh_pem
 from gpustack.utils.grafana import resolve_grafana_base_url
 from gpustack.utils.labels import LabelFilter
+from gpustack.utils.network import is_offline
 
 router = APIRouter()
 system_name_prefix = "system/worker"
@@ -462,6 +466,31 @@ async def get_worker_dashboard(
     return RedirectResponse(url=dashboard_url, status_code=302)
 
 
+def _maintenance_with_server_liveness(
+    maintenance: Optional[Maintenance],
+    existing: Optional[Worker],
+    proxy_mode: Optional[ModelInstanceProxyModeEnum],
+) -> Optional[Maintenance]:
+    if maintenance is None:
+        return None
+    heartbeat_lost = (
+        True
+        if existing is not None
+        and existing.maintenance is not None
+        and existing.maintenance.enabled
+        and existing.maintenance.worker_proxy_heartbeat_lost is True
+        and maintenance.enabled
+        and proxy_mode == ModelInstanceProxyModeEnum.WORKER
+        and is_offline(existing.heartbeat_time, envs.WORKER_HEARTBEAT_GRACE_PERIOD)[0]
+        else None
+    )
+    if maintenance.worker_proxy_heartbeat_lost == heartbeat_lost:
+        return maintenance
+    return maintenance.model_copy(
+        update={"worker_proxy_heartbeat_lost": heartbeat_lost}
+    )
+
+
 def update_worker_data(
     worker_in: WorkerCreate,
     existing: Optional[Worker] = None,
@@ -536,6 +565,11 @@ def update_worker_data(
         )
         if cluster is not None:
             to_create_worker.cluster = cluster
+    to_create_worker.maintenance = _maintenance_with_server_liveness(
+        to_create_worker.maintenance,
+        existing,
+        to_create_worker.proxy_mode,
+    )
     to_create_worker.compute_state()
     return to_create_worker
 
@@ -1004,7 +1038,7 @@ async def update_worker(
     id: int,
     worker_in: WorkerUpdate,
 ):
-    worker = await Worker.one_by_id(session, id)
+    worker = await Worker.one_by_id(session, id, for_update=True, refresh=True)
     if worker is not None and worker.deleted_at is not None:
         worker = None
     assert_resource_visible(ctx, worker, not_found_message="worker not found")
@@ -1012,8 +1046,11 @@ async def update_worker(
 
     patch = worker_in.model_dump(exclude_unset=True)
     if worker_in.maintenance is not None:
-        worker.maintenance = worker_in.maintenance
+        worker.maintenance = _maintenance_with_server_liveness(
+            worker_in.maintenance, worker, worker.proxy_mode
+        )
         worker.compute_state()
+        patch["maintenance"] = worker.maintenance
         patch["state"] = worker.state
     try:
         await WorkerService(session).update(worker, patch)

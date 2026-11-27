@@ -4,11 +4,13 @@ from typing import Dict, Iterable, List, Optional, Set, Union
 
 from gpustack.schemas.models import (
     BackendEnum,
+    DPRankPlacement,
     DistributedServerCoordinateModeEnum,
     Model,
     ModelBase,
     ModelConfigSnapshot,
     ModelInstance,
+    ModelInstanceComponent,
     ModelInstanceLegacyStop,
     ModelInstanceBase,
     ModelInstanceWorkload,
@@ -25,7 +27,53 @@ from gpustack.utils.command import (
     find_parameter,
 )
 
-from gpustack.schemas.workers import Worker
+from gpustack.schemas.config import ModelInstanceProxyModeEnum
+from gpustack.schemas.workers import Worker, WorkerStateEnum
+
+
+def maintenance_inference_path_unavailable(worker: Worker) -> bool:
+    """Whether planned downtime cuts an inference path through this Worker."""
+    return worker.state == WorkerStateEnum.MAINTENANCE and inference_proxy_unavailable(
+        worker
+    )
+
+
+def inference_proxy_unavailable(worker: Worker) -> bool:
+    """Check the proxy or tunnel on the worker's configured serving path."""
+    if worker.proxy_mode == ModelInstanceProxyModeEnum.TUNNEL:
+        return worker.proxy_address is None or worker.unreachable
+    return worker.proxy_mode == ModelInstanceProxyModeEnum.WORKER and (
+        worker.unreachable
+        or (
+            worker.state == WorkerStateEnum.MAINTENANCE
+            and worker.maintenance is not None
+            and worker.maintenance.worker_proxy_heartbeat_lost is True
+        )
+    )
+
+
+def managed_workload_serving_apis(
+    workload: ModelInstanceWorkload,
+) -> List[Union[ModelInstanceComponent, DPRankPlacement]]:
+    """Local APIs that admit inference traffic through this workload's worker."""
+    component = workload.component
+    if component is None:
+        return [p for p in workload.dp_rank_placements if p.node_rank == 0]
+    if component.kind in ("vllm_hybrid", "sglang_smg") and component.api_port:
+        return [component]
+    return []
+
+
+def managed_worker_observed_ready(
+    workloads: List[ModelInstanceWorkload], worker_id: int
+) -> bool:
+    local = [task for task in workloads if task.worker_id == worker_id]
+    apis = [api for task in local for api in managed_workload_serving_apis(task)]
+    return (
+        bool(apis)
+        and all(task.state == ModelInstanceWorkloadStateEnum.RUNNING for task in local)
+        and all(api.ready for api in apis)
+    )
 
 
 @dataclass(frozen=True)
@@ -643,6 +691,11 @@ def model_instance_endpoints(
             if port and instance.worker_id
             else []
         )
+    pending = (
+        set(instance.distributed_servers.maintenance_pending_worker_ids)
+        if instance.distributed_servers is not None
+        else set()
+    )
     if workloads and workloads[0].component is not None:
         if workloads[0].component.kind == "vllm_hybrid":
             members = set(member_worker_ids(instance))
@@ -658,7 +711,7 @@ def model_instance_endpoints(
             ):
                 return []
             apis = [w for w in workloads if w.component.api_port is not None]
-            if not apis or any(not w.component.ready for w in apis):
+            if any(not w.component.ready and w.worker_id not in pending for w in apis):
                 return []
             return [
                 ModelInstanceEndpoint(
@@ -670,6 +723,7 @@ def model_instance_endpoints(
                     component="vllm_hybrid",
                 )
                 for w in apis
+                if w.worker_id not in pending
             ]
         # Engine failure retires the full generation; SMG-only recovery retains
         # the Engines but withholds the router until its complete set is ready.
@@ -683,6 +737,7 @@ def model_instance_endpoints(
             not engines
             or len(smgs) != 1
             or smgs[0].worker_id != instance.worker_id
+            or smgs[0].worker_id in pending
             or smgs[0].state != ModelInstanceWorkloadStateEnum.RUNNING
             or not smgs[0].component.ready
             or smgs[0].component.stop_requested
@@ -716,7 +771,7 @@ def model_instance_endpoints(
     if (
         {p.dp_rank for _, p in mains} != ranks
         or len(mains) != len(ranks)
-        or not all(p.ready for _, p in mains)
+        or any(not p.ready and worker_id not in pending for worker_id, p in mains)
     ):
         return []
     return [
@@ -729,6 +784,7 @@ def model_instance_endpoints(
             p.dp_rank,
         )
         for worker_id, p in sorted(mains, key=lambda item: item[1].dp_rank)
+        if worker_id not in pending
     ]
 
 

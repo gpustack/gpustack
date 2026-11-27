@@ -138,6 +138,13 @@ async def test_proxy_preserves_api_path_and_selects_rank_owner(
         )
     )
     monkeypatch.setattr(openai_route.WorkerService, 'get_by_id', get_worker)
+    from gpustack.schemas.workers import Worker
+
+    monkeypatch.setattr(
+        Worker,
+        'all_by_ids',
+        AsyncMock(return_value=[Worker(id=2, ip='10.0.0.2', port=10150)]),
+    )
     monkeypatch.setattr(openai_route, 'mutate_request', MagicMock())
     monkeypatch.setattr(
         openai_route,
@@ -247,6 +254,7 @@ async def test_server_proxy_sends_component_specific_payload(
 
     async with _fake_inference_server(handler) as port:
         worker = Worker(id=1, ip='127.0.0.1', port=port, token='worker-token')
+        monkeypatch.setattr(Worker, 'all_by_ids', AsyncMock(return_value=[worker]))
         monkeypatch.setattr(
             openai_route.WorkerService, 'get_by_id', AsyncMock(return_value=worker)
         )
@@ -308,3 +316,77 @@ async def test_multipart_stream_field_is_parsed_as_a_boolean(fields, expected):
 
     assert resp.status_code == 200
     assert resp.json() == {"stream": expected}
+
+
+@pytest.fixture
+def proxy_api_instances(monkeypatch):
+    from gpustack.schemas.models import ModelInstance
+    from gpustack.schemas.workers import Worker, WorkerStateEnum
+    from tests.routes.test_worker_proxy import hybrid_instance, rank_instance
+
+    instance = hybrid_instance.__wrapped__(rank_instance.__wrapped__())
+    workers = {
+        worker_id: Worker(
+            id=worker_id,
+            ip=f'10.0.0.{worker_id}',
+            port=10150,
+            state=WorkerStateEnum.READY,
+            proxy_mode='worker',
+        )
+        for worker_id in (1, 2, 3)
+    }
+    monkeypatch.setattr(ModelInstance, 'one_by_id', AsyncMock(return_value=instance))
+    monkeypatch.setattr(
+        Worker, 'all_by_ids', AsyncMock(return_value=list(workers.values()))
+    )
+    monkeypatch.setattr(openai_route.random, 'choice', lambda choices: choices[0])
+    return instance, workers
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['direct', 'worker', 'tunnel'])
+async def test_builtin_proxy_chooses_a_reachable_existing_api(
+    proxy_api_instances, mode
+):
+    from gpustack.schemas.workers import WorkerStateEnum
+
+    instance, workers = proxy_api_instances
+    worker = workers[1]
+    worker.state, worker.proxy_mode = WorkerStateEnum.MAINTENANCE, mode
+    worker.unreachable = mode != 'tunnel'
+    _, endpoint = await openai_route._select_managed_endpoint(None, instance)
+    assert endpoint.worker_id == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('healthy_replica', [False, True])
+async def test_builtin_proxy_skips_instances_without_any_usable_api(
+    proxy_api_instances, monkeypatch, healthy_replica
+):
+    from gpustack.schemas.workers import WorkerStateEnum
+    from tests.utils.model import new_model, new_model_instance
+
+    instance, workers = proxy_api_instances
+    for worker in (workers[1], workers[2]):
+        worker.state = WorkerStateEnum.MAINTENANCE
+        worker.unreachable = True
+    healthy = new_model_instance(8, 'healthy', 1, worker_id=3, state='running')
+    healthy.worker_ip, healthy.port = '10.0.0.3', 42000
+    candidates = [instance, healthy] if healthy_replica else [instance]
+    monkeypatch.setattr(
+        openai_route.ModelInstanceService,
+        'get_running_instances',
+        AsyncMock(return_value=candidates),
+    )
+    monkeypatch.setattr(
+        openai_route.load_balancer,
+        'get_instance',
+        AsyncMock(side_effect=lambda instances: instances[0]),
+    )
+    model = new_model(1, 'moe', huggingface_repo_id='org/model')
+    if healthy_replica:
+        selected = await openai_route.get_running_instance(None, model)
+        assert selected.id == healthy.id
+    else:
+        with pytest.raises(ServiceUnavailableException):
+            await openai_route.get_running_instance(None, model)

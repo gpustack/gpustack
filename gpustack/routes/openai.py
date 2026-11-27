@@ -32,6 +32,7 @@ from gpustack.schemas.models import Model, servable_instances
 from gpustack.utils.model_instance_workers import (
     get_model_instance_workloads,
     model_instance_endpoints,
+    maintenance_inference_path_unavailable,
 )
 from gpustack.schemas.model_routes import (
     ModelRoute,
@@ -39,7 +40,7 @@ from gpustack.schemas.model_routes import (
     effective_route_name,
 )
 from gpustack.schemas.principals import Principal, platform_principal_id
-from gpustack.schemas.workers import Worker
+from gpustack.schemas.workers import Worker, WorkerStateEnum
 from gpustack.routes.model_routes import (
     _model_route_grant_conditions,
     _my_model_visibility_sql,
@@ -461,13 +462,56 @@ async def parse_json_body(request: Request):
         )
 
 
+async def _proxy_endpoint_workers(session, instances):
+    worker_ids = {
+        worker_id
+        for instance in instances
+        for worker_id in (
+            [endpoint.worker_id for endpoint in model_instance_endpoints(instance)]
+            if get_model_instance_workloads(instance) is not None
+            else [instance.worker_id]
+        )
+        if worker_id is not None
+    }
+    workers = await Worker.all_by_ids(session, worker_ids, refresh=True)
+    return {worker.id: worker for worker in workers}
+
+
+def _proxy_endpoints(instance, workers):
+    endpoints = (
+        model_instance_endpoints(instance)
+        if get_model_instance_workloads(instance) is not None
+        else [None]
+    )
+    available = []
+    for endpoint in endpoints:
+        worker = workers.get(endpoint.worker_id if endpoint else instance.worker_id)
+        if (
+            worker is None
+            or worker.deleted_at is not None
+            or (
+                instance.cluster_id is not None
+                and worker.cluster_id != instance.cluster_id
+            )
+        ):
+            return []
+        # This API always uses the Worker's HTTP proxy, including DIRECT mode.
+        if maintenance_inference_path_unavailable(worker) or (
+            worker.state == WorkerStateEnum.MAINTENANCE and worker.unreachable
+        ):
+            continue
+        available.append(endpoint)
+    return available
+
+
 async def _select_managed_endpoint(session, instance):
     rank_endpoint = None
     if get_model_instance_workloads(instance) is not None:
         from gpustack.schemas.models import ModelInstance
 
         instance = await ModelInstance.one_by_id(session, instance.id, refresh=True)
-        endpoints = model_instance_endpoints(instance) if instance is not None else []
+        workers = await _proxy_endpoint_workers(session, [instance]) if instance else {}
+        endpoints = _proxy_endpoints(instance, workers) if instance else []
         if not endpoints:
             raise ServiceUnavailableException(
                 message="No running rank endpoints available",
@@ -649,6 +693,17 @@ async def get_running_instance(
                 ),
                 is_openai_exception=True,
             )
+    workers = await _proxy_endpoint_workers(session, running_instances)
+    running_instances = [
+        instance
+        for instance in running_instances
+        if _proxy_endpoints(instance, workers)
+    ]
+    if not running_instances:
+        raise ServiceUnavailableException(
+            message="No running instances available",
+            is_openai_exception=True,
+        )
     return await load_balancer.get_instance(running_instances)
 
 

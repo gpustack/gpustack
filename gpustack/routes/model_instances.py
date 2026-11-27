@@ -77,6 +77,9 @@ from gpustack.utils.vllm_topology import (
 from gpustack.utils.model_instance_workers import (
     get_model_instance_worker_match,
     get_model_instance_workloads,
+    inference_proxy_unavailable,
+    maintenance_inference_path_unavailable,
+    managed_worker_observed_ready,
     workload_topology,
     model_instance_legacy_stop,
     model_instance_metrics_source_inventory,
@@ -1435,8 +1438,25 @@ def _validate_reported_workloads(worker_id, local, incoming, registration):
         raise ConflictException(message="Use observations for registered workloads")
 
 
+def _confirm_serving_path_observation(servers, worker, report, local_workloads):
+    # A full registration may replay the stored readiness. Only a runtime
+    # observation can confirm the registered owner's APIs after a disconnect.
+    if (
+        worker is not None
+        and worker.id in servers.maintenance_pending_worker_ids
+        and report.observations
+        and report.state != ModelInstanceStateEnum.ERROR
+        and not inference_proxy_unavailable(worker)
+        and managed_worker_observed_ready(local_workloads, worker.id)
+    ):
+        servers.maintenance_pending_worker_ids.remove(worker.id)
+
+
 def _merge_workload_report(
-    instance: ModelInstance, ctx: TenantContext, report: ModelInstanceMemberReport
+    instance: ModelInstance,
+    ctx: TenantContext,
+    report: ModelInstanceMemberReport,
+    current_worker: Optional[Worker] = None,
 ) -> DistributedServers:
     """Validate and merge a local report while the caller holds the instance row lock."""
     worker = ctx.user.worker
@@ -1509,6 +1529,7 @@ def _merge_workload_report(
     except ValueError as exc:
         raise BadRequestException(message=str(exc)) from exc
     _validate_complete_manifest(instance, servers.workloads)
+    _confirm_serving_path_observation(servers, current_worker, report, workloads)
     return servers
 
 
@@ -1887,6 +1908,50 @@ async def _locked_reporting_worker(session, ctx):
     return await Worker.one_by_id(session, worker.id, for_update=True, refresh=True)
 
 
+def _worker_readiness_snapshot(report, ctx) -> bool:
+    return (
+        isinstance(report, ModelInstanceUpdate)
+        and report.state == ModelInstanceStateEnum.RUNNING
+        and get_model_instance_workloads(report) is None
+        and ctx.user.kind == PrincipalType.SYSTEM
+        and getattr(ctx.user, "worker", None) is not None
+    )
+
+
+def _legacy_readiness_override(instance, worker, reported_state) -> dict:
+    if reported_state != ModelInstanceStateEnum.RUNNING:
+        return {}
+    # A subordinate's full snapshot includes the parent's state, but only
+    # the primary can confirm that the inference endpoint is serving.
+    if worker.id != instance.worker_id or instance.draining_since is not None:
+        return {"state": instance.state, "state_message": instance.state_message}
+    if maintenance_inference_path_unavailable(worker):
+        if instance.state == ModelInstanceStateEnum.ERROR:
+            return {"state": instance.state, "state_message": instance.state_message}
+        return {
+            "state": ModelInstanceStateEnum.UNREACHABLE,
+            "state_message": "Worker is unreachable from the server",
+        }
+    return {}
+
+
+def _legacy_snapshot_readiness(instance, update, worker):
+    if (
+        "worker_id" in update.model_fields_set
+        and update.worker_id != instance.worker_id
+    ) or (
+        "restart_count" in update.model_fields_set
+        and (update.restart_count or 0) != (instance.restart_count or 0)
+    ):
+        raise ConflictException(
+            message="Readiness report does not match the active assignment"
+        )
+    for key, value in _legacy_readiness_override(
+        instance, worker, update.state
+    ).items():
+        setattr(update, key, value)
+
+
 async def _persist_instance_update(session, instance, source):
     """Suppress duplicate reports after authorization and generation checks."""
     if isinstance(source, dict) and all(
@@ -1929,13 +1994,13 @@ async def confirm_model_instance_stop(
 async def _update_model_instance(session, ctx, id, model_instance_in):
     member_report = isinstance(model_instance_in, ModelInstanceMemberReport)
     stop_report = isinstance(model_instance_in, ModelInstanceStopReport)
-    worker = ctx.user.worker if member_report or stop_report else None
+    readiness_snapshot = _worker_readiness_snapshot(model_instance_in, ctx)
+    worker_report = member_report or stop_report or readiness_snapshot
+    worker = ctx.user.worker if worker_report else None
     current_worker = (
-        await _locked_reporting_worker(session, ctx)
-        if member_report or stop_report
-        else None
+        await _locked_reporting_worker(session, ctx) if worker_report else None
     )
-    if member_report or stop_report:
+    if worker_report:
         model_instance = await ModelInstance.one_by_id(
             session, id, for_update=True, refresh=True
         )
@@ -1947,13 +2012,7 @@ async def _update_model_instance(session, ctx, id, model_instance_in):
         not_found_message="Model instance not found",
     )
 
-    if stop_report:
-        source = {
-            "distributed_servers": _merge_legacy_stop_report(
-                model_instance, ctx, model_instance_in, current_worker
-            )
-        }
-    elif member_report:
+    if member_report or readiness_snapshot:
         # Authentication can precede a concurrent Worker deletion or rebind.
         # The instance lock serializes registration with the deletion guard.
         if (
@@ -1969,13 +2028,21 @@ async def _update_model_instance(session, ctx, id, model_instance_in):
             raise ForbiddenException(
                 message="Worker identity is no longer bound to this instance and cluster"
             )
+
+    if stop_report:
+        source = {
+            "distributed_servers": _merge_legacy_stop_report(
+                model_instance, ctx, model_instance_in, current_worker
+            )
+        }
+    elif member_report:
         if get_model_instance_workloads(model_instance) is None:
             source = await _legacy_runtime_fields(
-                session, model_instance, ctx, model_instance_in
+                session, model_instance, ctx, model_instance_in, current_worker
             )
         else:
             source = await _managed_report_fields(
-                session, model_instance, ctx, model_instance_in
+                session, model_instance, ctx, model_instance_in, current_worker
             )
     else:
         _preserve_download_state(model_instance, model_instance_in)
@@ -1988,6 +2055,15 @@ async def _update_model_instance(session, ctx, id, model_instance_in):
                 model_instance, model
             )
         _preserve_managed_fields(model_instance, model_instance_in, legacy=legacy)
+        if (
+            readiness_snapshot
+            and not legacy
+            and get_model_instance_workloads(model_instance) is None
+            and model_instance_legacy_stop(model_instance) is None
+        ):
+            _legacy_snapshot_readiness(
+                model_instance, model_instance_in, current_worker
+            )
         source = model_instance_in
     _preserve_model_config_snapshot(model_instance, model_instance_in, source, ctx)
     try:
@@ -2001,7 +2077,7 @@ async def _update_model_instance(session, ctx, id, model_instance_in):
     return model_instance
 
 
-async def _legacy_runtime_fields(session, instance, ctx, report):
+async def _legacy_runtime_fields(session, instance, ctx, report, current_worker):
     worker = ctx.user.worker
     if (
         ctx.user.kind != PrincipalType.SYSTEM
@@ -2080,6 +2156,9 @@ async def _legacy_runtime_fields(session, instance, ctx, report):
         source.pop('state', None)
         source.pop('state_message', None)
     if main:
+        source.update(
+            _legacy_readiness_override(instance, current_worker, source.get("state"))
+        )
         return source
     version = source.pop('backend_version', None)
     for field, value in source.items():
@@ -2090,7 +2169,9 @@ async def _legacy_runtime_fields(session, instance, ctx, report):
     }
 
 
-async def _managed_report_fields(session, model_instance, ctx, model_instance_in):
+async def _managed_report_fields(
+    session, model_instance, ctx, model_instance_in, current_worker
+):
     if model_instance_in.state not in (None, ModelInstanceStateEnum.ERROR):
         raise BadRequestException(
             message='Managed instance state belongs to the Server'
@@ -2117,7 +2198,7 @@ async def _managed_report_fields(session, model_instance, ctx, model_instance_in
     worker = ctx.user.worker
     source = {
         "distributed_servers": _merge_workload_report(
-            model_instance, ctx, model_instance_in
+            model_instance, ctx, model_instance_in, current_worker
         )
     }
     await _validate_workload_layout(
@@ -2147,15 +2228,21 @@ async def _managed_report_fields(session, model_instance, ctx, model_instance_in
         )
     # Diagnostics share the manifest's Worker and generation fence. A probe
     # can report failure, but cannot recover an ERROR or request RUNNING.
-    if (
-        model_instance.state
+    maintenance_fault = (
+        model_instance.state == ModelInstanceStateEnum.UNREACHABLE
+        and model_instance_in.state == ModelInstanceStateEnum.ERROR
+        and bool(model_instance.distributed_servers.maintenance_pending_worker_ids)
+        and not model_instance.distributed_servers.stop_requested
+    )
+    if model_instance.draining_since is None and (
+        maintenance_fault
+        or model_instance.state
         in (
             ModelInstanceStateEnum.SCHEDULED,
             ModelInstanceStateEnum.INITIALIZING,
             ModelInstanceStateEnum.STARTING,
             ModelInstanceStateEnum.RUNNING,
         )
-        and model_instance.draining_since is None
     ):
         if model_instance_in.state is not None:
             source["state"] = model_instance_in.state

@@ -1,0 +1,37 @@
+[
+  {
+    "name": "sharded-safetensors",
+    "files": [
+      {"path": "model-00001-of-00002.safetensors", "size": 110},
+      {"path": "model-00002-of-00002.safetensors", "size": 210},
+      {"path": "consolidated.safetensors", "size": 316},
+      {"path": "pytorch_model.bin", "size": 350},
+      {"path": "config.json", "size": 1000},
+      {"path": "optional/model.safetensors", "size": 2000}
+    ],
+    "expected_size": 320
+  },
+  {
+    "name": "consolidated-only",
+    "files": [
+      {"path": "consolidated.safetensors", "size": 330},
+      {"path": "pytorch_model.bin", "size": 360},
+      {"path": "tokenizer.json", "size": 1000},
+      {"path": "optional/adapter.safetensors", "size": 2000}
+    ],
+    "expected_size": 330
+  },
+  {
+    "name": "pytorch-and-audio-weights",
+    "files": [
+      {"path": "pytorch_model-00001-of-00002.bin", "size": 100},
+      {"path": "pytorch_model-00002-of-00002.bin", "size": 200},
+      {"path": "speech_tokenizer.pt", "size": 50},
+      {"path": "flow.pth", "size": 25},
+      {"path": "config.json", "size": 1000},
+      {"path": "model.onnx", "size": 1000},
+      {"path": "CosyVoice-BlankEN/flow.pt", "size": 2000}
+    ],
+    "expected_size": 375
+  }
+]

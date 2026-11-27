@@ -92,6 +92,11 @@ from gpustack.schemas.models import (
 from gpustack.schemas.gpu_instance_types import GPUInstanceType
 from gpustack.utils.model_instance_workers import (
     get_model_instance_workloads,
+    inference_proxy_unavailable,
+    maintenance_inference_path_unavailable,
+    managed_worker_observed_ready,
+    managed_workload_serving_apis,
+    model_instance_endpoints,
     sglang_smg_mode,
     has_model_instance_stop_barrier,
     requires_model_instance_stop_barrier,
@@ -5391,16 +5396,28 @@ class WorkerController:
             # Coalesced updates can hide availability fields behind a label edit.
             # Managed availability is rechecked against current persisted state.
             await self._reconcile_cache_instances(session, worker, event.type)
+            changed = (event.changed_fields or {}).keys()
             availability_changed = event.type == EventType.DELETED or (
                 event.type == EventType.UPDATED
-                and bool({"state", "unreachable"} & (event.changed_fields or {}).keys())
+                and bool({"state", "unreachable"} & changed)
             )
             unavailable = (
                 event.type == EventType.DELETED
                 or self._managed_worker_unavailable(worker)
             )
-            if not availability_changed and not unavailable:
+            maintenance = worker.state == WorkerStateEnum.MAINTENANCE
+            # A later update may replace the field delta for a reconnect.
+            if not (availability_changed or unavailable or maintenance):
                 return
+            legacy_unreachable = worker.unreachable or worker.state in (
+                WorkerStateEnum.UNREACHABLE,
+                WorkerStateEnum.NOT_READY,
+            )
+            reconcile_legacy = legacy_allowed and (
+                event.type == EventType.DELETED
+                or maintenance_inference_path_unavailable(worker)
+                or (not maintenance and availability_changed and legacy_unreachable)
+            )
 
             all_instances = await ModelInstance.all_by_field(
                 session, "cluster_id", worker.cluster_id
@@ -5434,7 +5451,7 @@ class WorkerController:
                                 instance.restart_count or 0,
                                 allow_restart=False,
                             )
-                    elif availability_changed and legacy_allowed:
+                    elif reconcile_legacy:
                         matched_instances.append((instance, match))
             if not matched_instances:
                 return
@@ -5450,26 +5467,19 @@ class WorkerController:
                     )
                 return
 
-            if (
-                worker.unreachable
-                or worker.state == WorkerStateEnum.UNREACHABLE
-                or worker.state == WorkerStateEnum.NOT_READY
-            ):
-                await self.update_impacted_instance_states_to_unreachable(
-                    session,
-                    matched_instances,
-                    worker.name,
-                )
-                return
+            await self.update_impacted_instance_states_to_unreachable(
+                session, matched_instances, worker
+            )
 
     @staticmethod
     def _managed_worker_unavailable(worker: Optional[Worker]) -> bool:
-        if worker is None:
+        if worker is None or worker.deleted_at is not None:
             return True
+        if worker.state == WorkerStateEnum.MAINTENANCE:
+            return maintenance_inference_path_unavailable(worker)
         return (
-            worker.deleted_at is not None
-            or worker.unreachable
-            or worker.state not in (WorkerStateEnum.READY, WorkerStateEnum.MAINTENANCE)
+            worker.unreachable
+            or worker.state != WorkerStateEnum.READY
             or is_offline(worker.heartbeat_time, envs.WORKER_HEARTBEAT_GRACE_PERIOD)[0]
         )
 
@@ -5498,12 +5508,21 @@ class WorkerController:
             await session.commit()
             return
         match = get_model_instance_worker_match(current, worker_id=worker.id)
-        if (
-            not match.matched
-            or (deleted and live_worker is not None and live_worker.deleted_at is None)
-            or (not deleted and not self._managed_worker_unavailable(live_worker))
+        if not match.matched or (
+            deleted and live_worker is not None and live_worker.deleted_at is None
         ):
             await session.commit()
+            return
+        if not deleted and not self._managed_worker_unavailable(live_worker):
+            await self._restore_observed_maintenance_path(session, current, live_worker)
+            return
+        if (
+            not deleted
+            and live_worker is not None
+            and live_worker.deleted_at is None
+            and live_worker.state == WorkerStateEnum.MAINTENANCE
+        ):
+            await self._check_managed_maintenance_paths(session, current, live_worker)
             return
         patch = {}
         message = f"Worker {worker.id} is unavailable."
@@ -5543,6 +5562,55 @@ class WorkerController:
         else:
             await session.commit()
 
+    @staticmethod
+    async def _restore_observed_maintenance_path(session, instance, worker):
+        # A fresh runtime observation and the restored connection can arrive
+        # in either order. Consume the stored observation under the same locks.
+        servers = instance.distributed_servers
+        if (
+            servers is not None
+            and servers.workloads
+            and worker.id in servers.maintenance_pending_worker_ids
+            and not inference_proxy_unavailable(worker)
+            and managed_worker_observed_ready(servers.workloads, worker.id)
+        ):
+            servers = servers.model_copy(deep=True)
+            servers.maintenance_pending_worker_ids.remove(worker.id)
+            await ModelInstanceService(session).update(
+                instance, {"distributed_servers": servers}
+            )
+        else:
+            await session.commit()
+
+    @staticmethod
+    async def _check_managed_maintenance_paths(session, instance, worker):
+        service = ModelInstanceService(session)
+        servers = instance.distributed_servers
+        owners = {endpoint.worker_id for endpoint in model_instance_endpoints(instance)}
+        if servers is None or not servers.workloads or worker.id not in owners:
+            await session.commit()
+            return
+
+        servers = servers.model_copy(deep=True)
+        patch = {"distributed_servers": servers}
+        lost = {worker.id}
+        if await service.managed_maintenance_paths_unavailable(instance, worker):
+            lost = owners
+            patch.update(
+                state=ModelInstanceStateEnum.UNREACHABLE,
+                state_message="No inference endpoint is reachable during worker maintenance",
+            )
+        # Preserve process and headless-member facts. Only the withdrawn API
+        # owners must confirm local readiness before those paths rejoin routing.
+        for workload in servers.workloads:
+            if workload.worker_id in lost:
+                for api in managed_workload_serving_apis(workload):
+                    api.ready = False
+        servers.maintenance_pending_worker_ids = sorted(
+            lost.union(servers.maintenance_pending_worker_ids)
+        )
+        await service.update(instance, patch)
+
     async def _reconcile_cache_instances(
         self, session: AsyncSession, worker: Worker, event_type: EventType
     ) -> None:
@@ -5559,11 +5627,42 @@ class WorkerController:
         self,
         session,
         matched_instances,
-        worker_name,
+        worker: Worker,
     ):
+        worker_name = worker.name
+        maintenance = worker.state == WorkerStateEnum.MAINTENANCE
         instance_names = set()
         subordinate_worker_names = set()
         for instance, match in matched_instances:
+            if maintenance:
+                if not match.is_main_worker:
+                    continue
+                # The main worker owns the legacy inference API. Recheck the
+                # path under lock so a queued disconnect cannot undo a reconnect.
+                current = await Worker.one_by_id(
+                    session, worker.id, for_update=True, refresh=True
+                )
+                if (
+                    current is None
+                    or current.deleted_at is not None
+                    or current.cluster_id != worker.cluster_id
+                    or not maintenance_inference_path_unavailable(current)
+                ):
+                    break
+                restart_count = instance.restart_count
+                instance = await ModelInstance.one_by_id(
+                    session, instance.id, for_update=True, refresh=True
+                )
+                if (
+                    instance is None
+                    or instance.deleted_at is not None
+                    or instance.cluster_id != current.cluster_id
+                    or instance.restart_count != restart_count
+                    or instance.worker_id != current.id
+                    or model_instance_legacy_stop(instance) is not None
+                    or get_model_instance_workloads(instance) is not None
+                ):
+                    continue
             patch = {}
             distributed_servers_changed = False
             if (
@@ -5610,11 +5709,16 @@ class WorkerController:
         if event.type not in (EventType.UPDATED, EventType.DELETED):
             return
         worker: Worker = event.data
-        changed_fields = event.changed_fields
-        if not worker or (not changed_fields and event.type != EventType.DELETED):
+        changed_fields = event.changed_fields or {}
+        if not worker:
             return
         state_changed: Optional[Tuple[Any, Any]] = (changed_fields or {}).get(
             "state", None
+        )
+        # Losing or restoring one serving path can leave the replica count
+        # unchanged. Rebuild from live workers even after coalesced updates.
+        maintenance_path = worker.state == WorkerStateEnum.MAINTENANCE or (
+            state_changed is not None and WorkerStateEnum.MAINTENANCE in state_changed
         )
         proxy_mode_changed: Optional[Tuple[Any, Any]] = (changed_fields or {}).get(
             "proxy_mode", None
@@ -5635,7 +5739,8 @@ class WorkerController:
         # Rank readiness can settle before Worker availability. Its recovery
         # event must wake the model even when no rank facts change afterward.
         should_notify_children = (
-            state_changed is not None
+            maintenance_path
+            or state_changed is not None
             or "unreachable" in (changed_fields or {})
             or proxy_address_changed is not None
             or proxy_mode_changed is not None
@@ -5713,6 +5818,11 @@ class WorkerController:
                 # ``ready_replicas`` has already settled has no other
                 # trigger left.
                 worker_changed_fields = {}
+                if maintenance_path:
+                    worker_changed_fields["worker_inference_path"] = (
+                        None,
+                        maintenance_inference_path_unavailable(worker),
+                    )
                 if address_changes or event.type == EventType.DELETED:
                     worker_changed_fields["worker_address"] = (None, address_changes)
                 if proxy_address_changed is not None:
@@ -7282,6 +7392,7 @@ async def notify_model_route_target(session: AsyncSession, model: Model, event: 
             "worker_proxy_address",
             "worker_proxy_mode",
             "worker_address",
+            "worker_inference_path",
             "instance_endpoints",
         ]
         for field in related_fields:

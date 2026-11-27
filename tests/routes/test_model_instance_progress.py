@@ -26,6 +26,7 @@ from gpustack.schemas.models import (
     ModelInstance,
     ModelInstancePublic,
     ModelInstanceWorkload,
+    ModelInstanceWorkloadStateEnum,
     ModelInstanceMemberReport,
     ModelInstanceStateEnum,
     ModelInstanceSubordinateWorker,
@@ -627,6 +628,7 @@ def report_api(monkeypatch):
         side_effect=lambda cls, key, **kwargs: SimpleNamespace(
             id=key,
             cluster_id=ctx.user.worker.cluster_id,
+            state="ready",
             system_principal_id=ctx.user.id,
             deleted_at=None,
         )
@@ -914,6 +916,85 @@ async def test_member_report_cannot_register_managed_tasks_for_legacy(
         )
     assert response.status_code == 400, response.text
     api.service.update.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("group_recovery", [False, True])
+@pytest.mark.parametrize(
+    "mode, proxy_address, unreachable, reported, expected",
+    [
+        ("tunnel", None, False, "running", "unreachable"),
+        ("tunnel", "http://proxy", False, "running", "running"),
+        ("worker", None, True, "running", "unreachable"),
+        ("direct", None, True, "running", "running"),
+        ("tunnel", None, False, "error", "error"),
+    ],
+)
+async def test_legacy_worker_reports_respect_maintenance_serving_path(
+    report_api, group_recovery, mode, proxy_address, unreachable, reported, expected
+):
+    api = report_api
+    if group_recovery:
+        _legacy_report_instance(api)
+        api.instance.distributed_servers.group_recovery = True
+    else:
+        api.instance.distributed_servers = None
+    api.instance.state = ModelInstanceStateEnum.UNREACHABLE
+    worker = SimpleNamespace(
+        id=1,
+        cluster_id=1,
+        system_principal_id=api.ctx.user.id,
+        deleted_at=None,
+        state="maintenance",
+        proxy_mode=mode,
+        proxy_address=proxy_address,
+        unreachable=unreachable,
+    )
+    api.session.get.side_effect = None
+    api.session.get.return_value = worker
+    state_message = "engine exited" if reported == "error" else ""
+    payload = dict(state=reported, state_message=state_message, port=23456)
+    path = "/model-instances/7"
+    if group_recovery:
+        path += "/workload-report"
+        payload.update(restart_count=0, preparation={"port": payload.pop("port")})
+    else:
+        payload = api.instance.model_dump(mode="json") | payload
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=api.app), base_url="http://test"
+    ) as client:
+        response = await client.put(path, json=payload)
+    assert response.status_code == 200, response.text
+    assert api.instance.state == expected
+    assert api.instance.port == 23456
+    if reported == "error":
+        assert api.instance.state_message == state_message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stale_round", [False, True])
+async def test_legacy_follower_snapshot_cannot_resume_primary(report_api, stale_round):
+    api = report_api
+    api.ctx.user.worker.id = 2
+    _legacy_report_instance(api)
+    api.instance.distributed_servers.group_recovery = False
+    payload = api.instance.model_dump(mode="json")
+    payload["distributed_servers"]["subordinate_workers"][0]["state"] = "running"
+    if stale_round:
+        api.instance.restart_count = 1
+    api.instance.state = ModelInstanceStateEnum.UNREACHABLE
+    api.instance.state_message = "Worker is unreachable from the server"
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=api.app), base_url="http://test"
+    ) as client:
+        response = await client.put("/model-instances/7", json=payload)
+    assert response.status_code == (409 if stale_round else 200)
+    assert api.instance.state == ModelInstanceStateEnum.UNREACHABLE
+    assert api.instance.state_message == "Worker is unreachable from the server"
+    if not stale_round:
+        assert api.instance.distributed_servers.subordinate_workers[0].state == (
+            ModelInstanceStateEnum.RUNNING
+        )
 
 
 @pytest.mark.asyncio
@@ -1343,6 +1424,7 @@ async def test_old_snapshot_cannot_reset_manifest(report_api, omitted):
     api = report_api
     assert (await put(api)).status_code == 200
     payload = api.instance.model_dump(mode="json")
+    api.instance.distributed_servers.maintenance_pending_worker_ids = [1]
     if omitted == "servers":
         payload["distributed_servers"] = None
     elif omitted == "field":
@@ -1361,6 +1443,7 @@ async def test_old_snapshot_cannot_reset_manifest(report_api, omitted):
         409 if omitted == "empty_list" else 200
     ), response.text
     assert len(api.instance.distributed_servers.workloads) == 1
+    assert api.instance.distributed_servers.maintenance_pending_worker_ids == [1]
 
 
 @pytest.mark.asyncio
@@ -1559,6 +1642,46 @@ async def test_rank_health_fault_is_fenced_without_falsifying_runtime(report_api
     ).status_code == 409
     assert api.instance.state_message == 'rank 0 HTTP 503 (3/3)'
     assert (await put(api, items, state='running')).status_code == 400
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "waiting, stopping, accept_fault",
+    [
+        (True, False, True),
+        (False, False, False),
+        (True, True, False),
+    ],
+)
+async def test_rank_failure_while_waiting_for_a_maintenance_path(
+    report_api, waiting, stopping, accept_fault
+):
+    api = report_api
+    assert (await put(api)).status_code == 200
+    api.instance.state = ModelInstanceStateEnum.UNREACHABLE
+    api.instance.state_message = "Worker is unreachable from the server"
+    api.instance.distributed_servers.maintenance_pending_worker_ids = (
+        [1] if waiting else []
+    )
+    api.instance.distributed_servers.stop_requested = stopping
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=api.app), base_url="http://test"
+    ) as client:
+        response = await client.put(
+            "/model-instances/7/workload-report",
+            json={
+                "restart_count": 0,
+                "state": "error",
+                "state_message": "Rank health failed",
+            },
+        )
+    assert response.status_code == 200, response.text
+    if accept_fault:
+        assert api.instance.state == ModelInstanceStateEnum.ERROR
+        assert api.instance.state_message == "Rank health failed"
+    else:
+        assert api.instance.state == ModelInstanceStateEnum.UNREACHABLE
+        assert api.instance.state_message == "Worker is unreachable from the server"
 
 
 @pytest.mark.asyncio
@@ -3045,6 +3168,123 @@ def test_hybrid_endpoints_require_complete_ready_instance(report_api, blocked):
         "managed" if instance.distributed_servers.workloads is not None else "legacy"
     )
     assert model_instance_endpoints(instance) == []
+
+
+@pytest.mark.parametrize(
+    "kind, ready, registration, confirms",
+    [
+        ("rank", True, False, True),
+        ("hybrid", True, False, True),
+        ("smg", True, False, True),
+        ("engine", True, False, False),
+        ("rank", False, False, False),
+        ("rank", True, True, False),
+    ],
+)
+def test_only_current_serving_endpoint_observations_confirm_maintenance_recovery(
+    report_api, kind, ready, registration, confirms
+):
+    api = report_api
+    if kind in ("smg", "engine"):
+        engine = _sg_component(api_port=40000, dp_size=2)
+        engine.component.ready = True
+        smg = _sg_component("sglang_smg", api_port=40001, metrics_port=40002)
+        smg.component.ready = kind == "smg"
+        local = [engine, smg]
+    else:
+        create = new_model_instance_workload if kind == "rank" else new_hybrid_workload
+        item = ModelInstanceWorkload.model_validate(create(state="running"))
+        if item.component:
+            item.component.ready = ready
+        else:
+            item.dp_rank_placements[0].ready = ready
+        local = [item]
+    for item in local:
+        item.state = ModelInstanceWorkloadStateEnum.RUNNING
+    api.instance.state = ModelInstanceStateEnum.UNREACHABLE
+    api.instance.distributed_servers.workloads = local
+    api.instance.distributed_servers.maintenance_pending_worker_ids = [1, 2]
+    report = worker_workload_report(api.instance, 1, local)
+    if registration:
+        report = ModelInstanceMemberReport(
+            restart_count=0, workloads=[item.model_dump() for item in local]
+        )
+    current_worker = SimpleNamespace(id=1, state="ready", proxy_mode="direct")
+    merged = routes._merge_workload_report(
+        api.instance, api.ctx, report, current_worker
+    )
+    assert merged.maintenance_pending_worker_ids == ([2] if confirms else [1, 2])
+
+
+@pytest.mark.asyncio
+async def test_replayed_registration_cannot_confirm_reconnected_worker(report_api):
+    api = report_api
+    api.session.get.side_effect = None
+    api.session.get.return_value = SimpleNamespace(
+        id=1,
+        cluster_id=1,
+        system_principal_id=api.ctx.user.id,
+        deleted_at=None,
+        state="ready",
+        proxy_mode="tunnel",
+        proxy_address="http://proxy",
+        unreachable=False,
+    )
+    task = new_model_instance_workload(state="running")
+    assert (await put(api, [task])).status_code == 200
+    api.instance.distributed_servers.maintenance_pending_worker_ids = [1]
+
+    # An equal registration is idempotent. A registration carrying an older
+    # ready=True snapshot cannot undo the disconnect's ready=False.
+    response = await put(api, workloads=[task], observations=None)
+    assert response.status_code == 200, response.text
+    assert api.instance.distributed_servers.maintenance_pending_worker_ids == [1]
+    task["dp_rank_placements"][0]["ready"] = True
+    response = await put(api, workloads=[task], observations=None)
+    assert response.status_code == 409, response.text
+    assert api.instance.distributed_servers.maintenance_pending_worker_ids == [1]
+
+    response = await put(api, [task])
+    assert response.status_code == 200, response.text
+    assert api.instance.distributed_servers.maintenance_pending_worker_ids == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("worker_state", ["maintenance", "ready"])
+async def test_readiness_before_tunnel_reconnect_records_observation_and_holds_routing(
+    report_api, worker_state
+):
+    api = report_api
+    item = new_model_instance_workload(state="running")
+    api.instance.distributed_servers.workloads = [
+        ModelInstanceWorkload.model_validate(item)
+    ]
+    api.instance.distributed_servers.maintenance_pending_worker_ids = [1]
+    # Authentication predates the disconnect. The route reads the locked
+    # Worker again before deciding whether its local API can serve.
+    api.ctx.user.worker.state = "ready"
+    worker = SimpleNamespace(
+        id=1,
+        cluster_id=1,
+        system_principal_id=api.ctx.user.id,
+        deleted_at=None,
+        state=worker_state,
+        proxy_mode="tunnel",
+        proxy_address=None,
+        unreachable=False,
+    )
+    api.session.get.side_effect = None
+    api.session.get.return_value = worker
+    item["dp_rank_placements"][0]["ready"] = True
+    response = await put(api, [item])
+    assert response.status_code == 200, response.text
+    assert api.instance.distributed_servers.workloads[0].dp_rank_placements[0].ready
+    assert api.instance.distributed_servers.maintenance_pending_worker_ids == [1]
+
+    worker.proxy_address = "http://proxy"
+    response = await put(api, [item])
+    assert response.status_code == 200, response.text
+    assert api.instance.distributed_servers.maintenance_pending_worker_ids == []
 
 
 def test_hybrid_error_observation_clears_api_readiness(report_api):

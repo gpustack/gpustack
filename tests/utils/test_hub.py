@@ -1,5 +1,7 @@
+import json
+from pathlib import Path
+
 import pytest
-from tenacity import retry, stop_after_attempt, wait_fixed
 from transformers import PretrainedConfig
 from gpustack.utils import hub, model_config
 from gpustack.utils.hub import (
@@ -57,108 +59,48 @@ def test_hub_auth_errors_report_restricted_access(monkeypatch, status):
         )
 
 
-def test_get_hub_model_weight_size():
-    model_to_weight_sizes = [
-        (
-            Model(
-                source=SourceEnum.HUGGING_FACE,
-                huggingface_repo_id="Qwen/Qwen2-0.5B-Instruct",
-            ),
-            988_097_824,
-        ),
-        (
-            Model(
-                source=SourceEnum.HUGGING_FACE,
-                huggingface_repo_id="Qwen/Qwen2-VL-7B-Instruct",
-            ),
-            16_582_831_200,
-        ),
-        (
-            Model(
-                source=SourceEnum.HUGGING_FACE,
-                huggingface_repo_id="Qwen/Qwen2.5-72B-Instruct-GPTQ-Int4",
-            ),
-            41_621_048_632,
-        ),
-        (
-            Model(
-                source=SourceEnum.HUGGING_FACE,
-                huggingface_repo_id="unsloth/Llama-3.3-70B-Instruct-bnb-4bit",
-            ),
-            39_518_238_055,
-        ),
-        (
-            Model(
-                source=SourceEnum.HUGGING_FACE,
-                huggingface_repo_id="deepseek-ai/DeepSeek-R1",
-            ),
-            688_586_727_753,
-        ),
-        (
-            Model(
-                source=SourceEnum.HUGGING_FACE,
-                huggingface_repo_id="Systran/faster-whisper-large-v3",
-            ),
-            3_087_284_237,
-        ),
-        (
-            Model(
-                source=SourceEnum.MODEL_SCOPE,
-                model_scope_model_id="Qwen/Qwen2-0.5B-Instruct",
-            ),
-            988_097_824,
-        ),
-        (
-            Model(
-                source=SourceEnum.MODEL_SCOPE,
-                model_scope_model_id="Qwen/Qwen2-VL-7B-Instruct",
-            ),
-            16_582_831_200,
-        ),
-        (
-            Model(
-                source=SourceEnum.MODEL_SCOPE,
-                model_scope_model_id="Qwen/Qwen2.5-72B-Instruct-GPTQ-Int4",
-            ),
-            41_621_048_632,
-        ),
-        (
-            Model(
-                source=SourceEnum.MODEL_SCOPE,
-                model_scope_model_id="unsloth/Llama-3.3-70B-Instruct-bnb-4bit",
-            ),
-            39_518_238_055,
-        ),
-        (
-            Model(
-                source=SourceEnum.MODEL_SCOPE,
-                model_scope_model_id="deepseek-ai/DeepSeek-R1",
-            ),
-            688_586_727_753,
-        ),
-        (
-            Model(
-                source=SourceEnum.MODEL_SCOPE,
-                model_scope_model_id="gpustack/faster-whisper-large-v3",
-            ),
-            3_087_284_237,
-        ),
-        (
-            Model(
-                source=SourceEnum.MODEL_SCOPE,
-                model_scope_model_id="gpustack/CosyVoice2-0.5B",
-            ),
-            2_557_256_546,
-            # The CosyVoice2-0.5B repository contains a subdirectory named CosyVoice-BlankEN,
-            # which is optional and should be excluded from weight calculations.
-        ),
-    ]
+@pytest.fixture(
+    params=json.loads(
+        (Path(__file__).parents[1] / "fixtures/hub/weight_metadata.json").read_text()
+    ),
+    ids=lambda metadata: metadata["name"],
+)
+def weight_metadata(request):
+    return request.param
 
-    for model, expected_weight_size in model_to_weight_sizes:
-        computed = get_hub_model_weight_size_with_retry(model)
-        assert (
-            computed == expected_weight_size
-        ), f"weight_size mismatch for {model}, computed: {computed}, expected: {expected_weight_size}"
+
+@pytest.mark.parametrize("source", [SourceEnum.HUGGING_FACE, SourceEnum.MODEL_SCOPE])
+def test_get_hub_model_weight_size(monkeypatch, weight_metadata, source):
+    repo_id = f"fixtures/{weight_metadata['name']}"
+
+    def hf_files(self, path, recursive=False):
+        assert path == repo_id
+        assert recursive is False
+        return [
+            {"name": f"{repo_id}/{file['path']}", "size": file["size"], "type": "file"}
+            for file in weight_metadata["files"]
+        ]
+
+    def ms_files(self, model_id, recursive=True):
+        assert model_id == repo_id
+        assert recursive is False
+        return [
+            {"Path": file["path"], "Size": file["size"]}
+            for file in weight_metadata["files"]
+        ]
+
+    monkeypatch.setattr(hub.HfFileSystem, "ls", hf_files)
+    monkeypatch.setattr(hub.HubApi, "get_model_files", ms_files)
+    monkeypatch.setattr(hub, "load_cache", lambda *args: (None, False))
+    monkeypatch.setattr(hub, "save_cache", lambda *args: True)
+    model_id_field = (
+        "huggingface_repo_id"
+        if source == SourceEnum.HUGGING_FACE
+        else "model_scope_model_id"
+    )
+    model = Model(source=source, **{model_id_field: repo_id})
+
+    assert get_model_weight_size(model) == weight_metadata["expected_size"]
 
 
 def test_get_hf_min_gguf_file_skips_mmproj(monkeypatch):
@@ -248,11 +190,6 @@ def test_select_model_scope_file_info_keeps_main_file_first():
         'vllm-d3-mini-Q8_0.gguf',
         'mmproj-vllm-d3-mini-Q8_0.gguf',
     ]
-
-
-@retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
-def get_hub_model_weight_size_with_retry(model: Model) -> int:
-    return get_model_weight_size(model)
 
 
 def test_get_hf_min_gguf_file():

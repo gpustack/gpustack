@@ -2,7 +2,13 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import ClassVar, Dict, Optional, Any, TYPE_CHECKING
 from typing_extensions import Annotated, deprecated
-from pydantic import ConfigDict, BaseModel, PositiveInt, field_validator
+from pydantic import (
+    ConfigDict,
+    BaseModel,
+    PositiveInt,
+    field_validator,
+    Field as PydanticField,
+)
 from urllib.parse import urlparse
 from sqlmodel import (
     Field,
@@ -279,6 +285,14 @@ class SystemInfo(BaseModel):
 class Maintenance(BaseModel):
     enabled: bool = False
     message: Optional[str] = None
+    worker_proxy_heartbeat_lost: Optional[bool] = PydanticField(
+        default=None,
+        json_schema_extra={"readOnly": True},
+        description=(
+            "Server-observed heartbeat loss for a worker inference proxy when "
+            "active reachability checks are disabled."
+        ),
+    )
 
 
 class WorkerStatus(SystemInfo):

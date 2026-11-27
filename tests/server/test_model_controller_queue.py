@@ -24,7 +24,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from gpustack.api.exceptions import ConflictException
 
 from gpustack.config.config import Config
-from gpustack.schemas.config import GatewayModeEnum
+from gpustack.schemas.config import GatewayModeEnum, ModelInstanceProxyModeEnum
 from gpustack.schemas.models import (
     BackendEnum,
     ComputedResourceClaim,
@@ -43,6 +43,7 @@ from gpustack.server.bus import Event, EventBus, EventType
 from gpustack.server.controllers import ModelController, ModelInstanceController
 from gpustack.server.services import ModelInstanceService
 from gpustack.server.workqueue import WorkEvent, WorkEventType
+from gpustack.utils.model_instance_workers import managed_workload_serving_apis
 from tests.utils.model import new_model_instance, new_model_instance_workload
 
 
@@ -92,6 +93,15 @@ async def test_managed_worker_readiness_uses_one_fresh_complete_batch(unavailabl
         assert await service._managed_workers_ready({1, 2}) == (unavailable == 'none')
         batch.assert_awaited_once_with(session, {1, 2}, refresh=True)
         single.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_managed_readiness_requires_an_instance_manifest():
+    instance = new_model_instance(1, 'legacy', 1, worker_id=1)
+    service = ModelInstanceService(MagicMock())
+
+    assert not await service._managed_instance_ready(instance, [])
+    assert not await service._managed_workers_ready({1}, instance=instance)
 
 
 def _work(model_id, type_, changed_fields):
@@ -2053,6 +2063,340 @@ async def test_managed_worker_recovery_preserves_generation_and_readiness_fences
         else ModelInstanceStateEnum.UNREACHABLE
     )
     assert ctx.instance.restart_count == int(blocked == 'epoch')
+
+
+@pytest.fixture
+def maintenance_recovery(hybrid_recovery, monkeypatch):
+    from gpustack.schemas.workers import Worker, WorkerStateEnum
+
+    ctx = hybrid_recovery
+    ctx.instance.cluster_id = 1
+    ctx.instance.state = ModelInstanceStateEnum.UNREACHABLE
+    ctx.workers = {
+        worker_id: SimpleNamespace(
+            id=worker_id,
+            cluster_id=1,
+            deleted_at=None,
+            state=WorkerStateEnum.MAINTENANCE,
+            heartbeat_time=datetime.now(timezone.utc),
+            unreachable=False,
+            proxy_mode=ModelInstanceProxyModeEnum.DIRECT,
+            proxy_address=None,
+        )
+        for worker_id in (1, 2, 3, 4)
+    }
+    monkeypatch.setattr(
+        Worker,
+        'all_by_ids',
+        AsyncMock(
+            side_effect=lambda session, members, **kwargs: [
+                ctx.workers[key] for key in members if key in ctx.workers
+            ]
+        ),
+    )
+    return ctx
+
+
+def _use_managed_rank_topology(ctx):
+    ctx.instance.distributed_servers.workloads = [
+        ModelInstanceWorkload.model_validate(
+            new_model_instance_workload(
+                worker_id=worker_id,
+                dp_rank=(worker_id - 1) // 2,
+                node_rank=(worker_id - 1) % 2,
+                state='running',
+            )
+        )
+        for worker_id in (1, 2, 3, 4)
+    ]
+    for workload in ctx.instance.distributed_servers.workloads:
+        for placement in workload.dp_rank_placements:
+            placement.ready = placement.node_rank == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('topology', ['hybrid', 'ranks'])
+@pytest.mark.parametrize('lost_worker', [1, 2])
+@pytest.mark.parametrize('other_api_lost', [False, True])
+async def test_managed_maintenance_path_loss_uses_serving_topology(
+    maintenance_recovery, topology, lost_worker, other_api_lost
+):
+    ctx = maintenance_recovery
+    ctx.instance.state = ModelInstanceStateEnum.RUNNING
+    if topology == 'ranks':
+        _use_managed_rank_topology(ctx)
+    trigger = ctx.workers[lost_worker]
+    trigger.proxy_mode = ModelInstanceProxyModeEnum.TUNNEL
+    if other_api_lost:
+        ctx.workers[3].proxy_mode = ModelInstanceProxyModeEnum.WORKER
+        ctx.workers[3].unreachable = True
+    before = ctx.instance.model_dump()
+
+    assert await ctx.service.managed_maintenance_paths_unavailable(
+        ctx.instance, trigger
+    ) is (lost_worker == 1 and other_api_lost)
+    assert ctx.instance.model_dump() == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('blocked', ['draining', 'unready', 'failed', 'headless'])
+async def test_maintenance_path_loss_requires_a_current_serving_owner(
+    maintenance_recovery, blocked
+):
+    ctx = maintenance_recovery
+    ctx.instance.state = ModelInstanceStateEnum.RUNNING
+    for worker_id in (1, 2, 3):
+        ctx.workers[worker_id].proxy_mode = ModelInstanceProxyModeEnum.TUNNEL
+    trigger = ctx.workers[2 if blocked == 'headless' else 1]
+    if blocked == 'draining':
+        ctx.instance.draining_since = datetime.now(timezone.utc)
+    elif blocked == 'unready':
+        ctx.instance.distributed_servers.workloads[2].component.ready = False
+    elif blocked == 'failed':
+        ctx.instance.distributed_servers.workloads[2].state = (
+            ModelInstanceWorkloadStateEnum.FAILED
+        )
+        ctx.instance.distributed_servers.workloads[2].component.ready = False
+    before = ctx.instance.model_dump()
+
+    assert not await ctx.service.managed_maintenance_paths_unavailable(
+        ctx.instance, trigger
+    )
+    assert ctx.instance.model_dump() == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'blocked',
+    [
+        None,
+        'worker_api',
+        'headless_proxy',
+        'one_api_proxy',
+        'all_api_proxy',
+        'tunnel_missing',
+        'offline',
+        'unknown',
+        'unready',
+        'missing',
+        'deleted',
+        'nonmaintenance',
+        'starting',
+    ],
+)
+async def test_managed_maintenance_recovery_requires_fresh_group_and_serving_path(
+    maintenance_recovery, blocked
+):
+    from gpustack.schemas.workers import WorkerStateEnum
+
+    ctx = maintenance_recovery
+    if blocked == 'worker_api':
+        for worker in ctx.workers.values():
+            worker.unreachable = True
+    if blocked in ('headless_proxy', 'one_api_proxy', 'all_api_proxy'):
+        lost = (2,) if blocked == 'headless_proxy' else (1,)
+        if blocked == 'all_api_proxy':
+            lost = (1, 3)
+        for worker_id in lost:
+            ctx.workers[worker_id].proxy_mode = ModelInstanceProxyModeEnum.WORKER
+            ctx.workers[worker_id].unreachable = True
+    if blocked == 'tunnel_missing':
+        for worker_id in (1, 3):
+            ctx.workers[worker_id].proxy_mode = ModelInstanceProxyModeEnum.TUNNEL
+    if blocked == 'offline':
+        ctx.workers[2].heartbeat_time -= timedelta(days=1)
+    if blocked == 'unknown':
+        ctx.instance.distributed_servers.workloads[1].state = (
+            ModelInstanceWorkloadStateEnum.UNKNOWN
+        )
+    if blocked == 'unready':
+        ctx.instance.distributed_servers.workloads[2].component.ready = False
+    if blocked == 'missing':
+        del ctx.workers[4]
+    if blocked == 'deleted':
+        ctx.workers[4].deleted_at = datetime.now(timezone.utc)
+    if blocked == 'nonmaintenance':
+        ctx.workers[2].state = WorkerStateEnum.READY
+        ctx.workers[2].unreachable = True
+    if blocked == 'starting':
+        ctx.instance.state = ModelInstanceStateEnum.STARTING
+        ctx.workers[2].unreachable = True
+    initial_state = ctx.instance.state
+    before = ctx.instance.distributed_servers.model_dump()
+
+    await ctx.service.reconcile_managed_instance(ctx.instance.id, 0)
+
+    assert ctx.instance.state == (
+        ModelInstanceStateEnum.RUNNING
+        if blocked in (None, 'worker_api', 'headless_proxy', 'one_api_proxy', 'offline')
+        else initial_state
+    )
+    assert ctx.instance.distributed_servers.model_dump() == before
+    assert ctx.instance.restart_count == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('report_first', [False, True])
+@pytest.mark.parametrize('topology', ['hybrid', 'ranks'])
+async def test_managed_maintenance_recovery_waits_for_report_and_path(
+    maintenance_recovery, report_first, topology
+):
+    ctx = maintenance_recovery
+    if topology == 'ranks':
+        _use_managed_rank_topology(ctx)
+    ctx.instance.distributed_servers = ctx.instance.distributed_servers.model_copy(
+        update={'maintenance_pending_worker_ids': [1, 3]}
+    )
+    apis = {
+        item.worker_id: managed_workload_serving_apis(item)[0]
+        for item in ctx.instance.distributed_servers.workloads
+        if managed_workload_serving_apis(item)
+    }
+    for worker_id, api in apis.items():
+        api.ready = False
+        ctx.workers[worker_id].proxy_mode = ModelInstanceProxyModeEnum.TUNNEL
+    ctx.workers[3].heartbeat_time -= timedelta(days=1)
+    ctx.workers[2].heartbeat_time -= timedelta(days=1)
+    changes = ['report', 'path'] if report_first else ['path', 'report']
+    for index, change in enumerate(changes):
+        if change == 'report':
+            apis[1].ready = True
+            ctx.instance.distributed_servers = (
+                ctx.instance.distributed_servers.model_copy(
+                    update={'maintenance_pending_worker_ids': [3]}
+                )
+            )
+        else:
+            ctx.workers[1].proxy_address = 'http://127.0.0.1:30079'
+
+        await ctx.service.reconcile_managed_instance(ctx.instance.id, 0)
+
+        assert ctx.instance.state == (
+            ModelInstanceStateEnum.RUNNING
+            if index == 1
+            else ModelInstanceStateEnum.UNREACHABLE
+        )
+        assert all(
+            item.state == ModelInstanceWorkloadStateEnum.RUNNING
+            for item in ctx.instance.distributed_servers.workloads
+        )
+    assert not apis[3].ready
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('topology', ['hybrid', 'ranks'])
+@pytest.mark.parametrize(
+    'blocked',
+    [None, 'starting', 'unknown', 'failed', 'missing', 'nonmaintenance', 'api'],
+)
+async def test_managed_recovery_retains_maintenance_headless_runtime_facts(
+    maintenance_recovery, topology, blocked
+):
+    from gpustack.schemas.workers import WorkerStateEnum
+
+    ctx = maintenance_recovery
+    if topology == 'ranks':
+        _use_managed_rank_topology(ctx)
+    ctx.instance.distributed_servers.maintenance_pending_worker_ids = [3]
+    for api in managed_workload_serving_apis(
+        ctx.instance.distributed_servers.workloads[2]
+    ):
+        api.ready = False
+    ctx.workers[3].proxy_mode = ModelInstanceProxyModeEnum.TUNNEL
+    ctx.workers[3].heartbeat_time -= timedelta(days=1)
+    ctx.workers[2].heartbeat_time -= timedelta(days=1)
+    ctx.workers[2].unreachable = True
+    if blocked == 'starting':
+        ctx.instance.state = ModelInstanceStateEnum.STARTING
+    elif blocked in ('unknown', 'failed'):
+        ctx.instance.distributed_servers.workloads[1].state = (
+            ModelInstanceWorkloadStateEnum(blocked)
+        )
+    elif blocked == 'missing':
+        del ctx.workers[2]
+    elif blocked == 'nonmaintenance':
+        ctx.workers[2].state = WorkerStateEnum.READY
+    elif blocked == 'api':
+        ctx.workers[1].heartbeat_time -= timedelta(days=1)
+    initial_state = ctx.instance.state
+    before = ctx.instance.distributed_servers.model_dump()
+
+    await ctx.service.reconcile_managed_instance(ctx.instance.id, 0)
+
+    expected = initial_state
+    if blocked is None:
+        expected = ModelInstanceStateEnum.RUNNING
+    elif blocked == 'failed':
+        expected = ModelInstanceStateEnum.ERROR
+    assert ctx.instance.state == expected
+    assert ctx.instance.distributed_servers.model_dump() == before
+    assert ctx.instance.restart_count == 0
+
+
+@pytest.mark.asyncio
+async def test_pending_maintenance_paths_require_a_new_runtime_confirmation(
+    maintenance_recovery,
+):
+    ctx = maintenance_recovery
+    ctx.instance.distributed_servers = ctx.instance.distributed_servers.model_copy(
+        update={'maintenance_pending_worker_ids': [1, 3]}
+    )
+
+    await ctx.service.reconcile_managed_instance(ctx.instance.id, 0)
+
+    assert ctx.instance.state == ModelInstanceStateEnum.UNREACHABLE
+    ctx.write.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'blocked', ['unknown', 'missing', 'deleted', 'not_maintenance']
+)
+async def test_pending_maintenance_worker_cannot_hide_lost_runtime_evidence(
+    maintenance_recovery, blocked
+):
+    from gpustack.schemas.workers import WorkerStateEnum
+
+    ctx = maintenance_recovery
+    ctx.instance.distributed_servers = ctx.instance.distributed_servers.model_copy(
+        update={'maintenance_pending_worker_ids': [3]}
+    )
+    ctx.instance.distributed_servers.workloads[2].component.ready = False
+    ctx.workers[3].proxy_mode = ModelInstanceProxyModeEnum.TUNNEL
+    ctx.workers[3].heartbeat_time -= timedelta(days=1)
+    if blocked == 'unknown':
+        ctx.instance.distributed_servers.workloads[2].state = (
+            ModelInstanceWorkloadStateEnum.UNKNOWN
+        )
+    elif blocked == 'missing':
+        del ctx.workers[3]
+    elif blocked == 'deleted':
+        ctx.workers[3].deleted_at = datetime.now(timezone.utc)
+    else:
+        ctx.workers[3].state = WorkerStateEnum.READY
+
+    await ctx.service.reconcile_managed_instance(ctx.instance.id, 0)
+
+    assert ctx.instance.state == ModelInstanceStateEnum.UNREACHABLE
+    ctx.write.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_managed_restart_retires_maintenance_pending_observations(
+    managed_recovery,
+):
+    ctx = managed_recovery
+    ctx.instance.state = ModelInstanceStateEnum.ERROR
+    ctx.instance.distributed_servers = ctx.instance.distributed_servers.model_copy(
+        update={'maintenance_pending_worker_ids': [1]}
+    )
+    for workload in ctx.instance.distributed_servers.workloads:
+        workload.state = ModelInstanceWorkloadStateEnum.STOPPED
+
+    await ctx.service.reconcile_managed_instance(ctx.instance.id, 0)
+
+    assert ctx.instance.state == ModelInstanceStateEnum.SCHEDULED
+    assert ctx.instance.distributed_servers.maintenance_pending_worker_ids == []
 
 
 @pytest.mark.asyncio

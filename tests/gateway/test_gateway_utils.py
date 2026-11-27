@@ -1132,6 +1132,147 @@ def rank_workers():
     }
 
 
+@pytest.fixture(params=['rank', 'hybrid'])
+def independent_api_instance(managed_rank_instance, request):
+    from tests.routes.test_worker_proxy import hybrid_instance
+    from gpustack.schemas.models import ModelInstanceSubordinateWorker
+
+    if request.param == 'hybrid':
+        return hybrid_instance.__wrapped__(managed_rank_instance)
+    instance = managed_rank_instance
+    first = instance.distributed_servers.workloads[0]
+    second = first.model_copy(deep=True)
+    second.worker_id, second.name = 2, 'second-worker'
+    second.dp_rank_placements = second.dp_rank_placements[1:]
+    first.dp_rank_placements = first.dp_rank_placements[:1]
+    instance.distributed_servers.workloads.append(second)
+    instance.distributed_servers.subordinate_workers = [
+        ModelInstanceSubordinateWorker(worker_id=2)
+    ]
+    return instance
+
+
+@pytest.mark.parametrize(
+    'mode,unreachable,address,count',
+    [
+        ('direct', True, None, 2),
+        ('worker', True, None, 1),
+        ('tunnel', False, None, 1),
+        ('tunnel', True, 'http://127.0.0.1:30079', 1),
+        ('tunnel', False, 'http://127.0.0.1:30079', 2),
+    ],
+)
+def test_maintenance_withdraws_only_unavailable_api_owner(
+    independent_api_instance, rank_workers, mode, unreachable, address, count
+):
+    from gpustack.schemas.workers import WorkerStateEnum
+
+    worker = rank_workers[2]
+    worker.state = WorkerStateEnum.MAINTENANCE
+    worker.proxy_mode, worker.unreachable, worker.proxy_address = (
+        mode,
+        unreachable,
+        address,
+    )
+    destinations = model_instances_registry_list(
+        [independent_api_instance], rank_workers, downstream_model_name='moe:adapter'
+    )
+    assert len(destinations) == count
+    assert all(name == 'moe:adapter' for _, name, _ in destinations)
+    assert destinations[0][2].domain.startswith('10.0.0.1:')
+
+
+@pytest.mark.parametrize('failure', ['runtime', 'readiness', 'deleted', 'foreign'])
+def test_maintenance_does_not_bypass_generation_readiness(
+    independent_api_instance, rank_workers, failure
+):
+    from datetime import datetime, timezone
+    from gpustack.schemas.models import ModelInstanceWorkloadStateEnum
+    from gpustack.schemas.workers import WorkerStateEnum
+
+    worker = rank_workers[2]
+    worker.state, worker.proxy_mode = WorkerStateEnum.MAINTENANCE, 'tunnel'
+    if failure == 'deleted':
+        worker.deleted_at = datetime.now(timezone.utc)
+    elif failure == 'foreign':
+        independent_api_instance.cluster_id = 11
+        worker.cluster_id = 12
+    else:
+        task = independent_api_instance.distributed_servers.workloads[1]
+        if failure == 'runtime':
+            task.state = ModelInstanceWorkloadStateEnum.FAILED
+        elif task.component:
+            task.component.ready = False
+        else:
+            task.dp_rank_placements[0].ready = False
+    assert model_instances_registry_list([independent_api_instance], rank_workers) == []
+
+
+@pytest.mark.parametrize('mode,count', [('direct', 1), ('worker', 0), ('tunnel', 0)])
+def test_legacy_registry_uses_only_its_inference_owner(rank_workers, mode, count):
+    from gpustack.schemas.models import (
+        DistributedServers,
+        ModelInstanceSubordinateWorker,
+    )
+    from gpustack.schemas.workers import WorkerStateEnum
+
+    rank_workers[2].state = WorkerStateEnum.MAINTENANCE
+    rank_workers[2].proxy_mode = 'tunnel'
+    rank_workers[1].state = WorkerStateEnum.MAINTENANCE
+    rank_workers[1].proxy_mode = mode
+    rank_workers[1].unreachable = True
+    instance = ModelInstance(
+        id=7,
+        model_id=1,
+        worker_id=1,
+        worker_ip='10.0.0.1',
+        port=41000,
+        distributed_servers=DistributedServers(
+            subordinate_workers=[ModelInstanceSubordinateWorker(worker_id=2)]
+        ),
+    )
+    assert len(model_instances_registry_list([instance], rank_workers)) == count
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('connected', [False, True])
+async def test_tunnel_resolver_rechecks_maintenance_path(
+    managed_rank_instance, rank_workers, monkeypatch, connected
+):
+    from types import SimpleNamespace
+    from fastapi import HTTPException
+    from gpustack.gateway import utils
+    from gpustack.schemas.principals import PrincipalType
+    from gpustack.schemas.workers import Worker, WorkerStateEnum
+    from tests.utils.mock import mock_async_session
+
+    worker = rank_workers[1]
+    worker.state, worker.proxy_mode = WorkerStateEnum.MAINTENANCE, 'tunnel'
+    worker.proxy_address = 'http://127.0.0.1:30079' if connected else None
+    principal = SimpleNamespace(kind=PrincipalType.SYSTEM)
+    monkeypatch.setattr(utils, 'async_session', lambda: mock_async_session())
+    monkeypatch.setattr(
+        'gpustack.api.auth.authenticate_worker_by_request_headers',
+        AsyncMock(return_value=principal),
+    )
+    monkeypatch.setattr(utils, '_assert_rank_destination_visible', AsyncMock())
+    monkeypatch.setattr(utils, '_assert_rank_destination_binding', AsyncMock())
+    monkeypatch.setattr(
+        ModelInstance, 'one_by_id', AsyncMock(return_value=managed_rank_instance)
+    )
+    monkeypatch.setattr(Worker, 'one_by_id', AsyncMock(return_value=worker))
+    headers = {utils.router_header_key: 'model-1-7-dp0.static'}
+    if connected:
+        assert await utils.resolve_instance_address_from_model_header(headers) == (
+            worker.ip,
+            41000,
+        )
+    else:
+        with pytest.raises(HTTPException) as error:
+            await utils.resolve_instance_address_from_model_header(headers)
+        assert error.value.status_code == 404
+
+
 def test_registry_list_expands_ranks_and_keeps_lora_identity(
     managed_rank_instance, rank_workers
 ):
