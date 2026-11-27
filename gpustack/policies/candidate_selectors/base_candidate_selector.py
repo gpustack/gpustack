@@ -941,26 +941,25 @@ class ScheduleCandidatesSelector(ABC):
         if non_overcommits_candidates:
             return non_overcommits_candidates
 
-        # Handle overcommit candidates
         if self._model.replicas > 1:
+            # The user pinned the GPUs explicitly, so admit the overcommit as an
+            # INFO event instead of refusing the placement. The event carries the
+            # actual overcommit reason (VRAM, RAM claim, or GPU utilization);
+            # admission does not promise the engine will start.
+            admission_note = (
+                "The deployment is admitted anyway because the GPUs were selected "
+                "explicitly, but the inference engine may still fail to start."
+            )
             event_collector.add(
                 EventLevelEnum.INFO,
                 EVENT_ACTION_MANUAL_MULTI,
-                str(
-                    ListMessageBuilder(
-                        f"Found {len(candidates) - len(non_overcommits_candidates)} candidate, manual scheduling for multi-replica model instances does not allow overcommit or heterogeneous deployment topologies.",
-                    )
-                ),
+                f"{overcommit_msg}\n- {admission_note}",
             )
-            return []
-
-        if best_overcommit_candidate:
+        else:
             event_collector.add(
                 EventLevelEnum.INFO, EVENT_ACTION_MANUAL_MULTI, overcommit_msg
             )
-            return [best_overcommit_candidate]
-
-        return []
+        return [best_overcommit_candidate]
 
     def _manual_select_single_worker_multi_gpu_candidates(
         self,
