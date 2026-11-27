@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from pydantic import ValidationError
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from gpustack.api.exceptions import register_handlers
@@ -53,10 +54,10 @@ def usage_app_and_session():
     "filters",
     [
         pytest.param({}, id="date-range"),
-        pytest.param({"organization_ids": [1]}, id="forbidden-filter"),
+        pytest.param({"organization_ids": [1]}, id="body-validation-before-permission"),
     ],
 )
-async def test_resource_usage_rejects_reversed_dates_before_querying(
+async def test_post_resource_usage_rejects_reversed_dates_during_body_validation(
     path, filters, usage_app_and_session
 ):
     app, session = usage_app_and_session
@@ -85,6 +86,55 @@ async def test_resource_usage_rejects_reversed_dates_before_querying(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "end_date,expected_messages",
+    [
+        pytest.param(
+            "2026-01-02",
+            ["page must be a positive number or -1 (no pagination)"],
+            id="invalid-page-only",
+        ),
+        pytest.param(
+            "2026-01-01",
+            [
+                "end_date must be on or after start_date",
+                "page must be a positive number or -1 (no pagination)",
+            ],
+            id="invalid-date-and-page",
+        ),
+    ],
+)
+async def test_post_resource_usage_preserves_other_body_validation_errors(
+    end_date, expected_messages, usage_app_and_session
+):
+    app, session = usage_app_and_session
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/v2/usage/gpu-instances/breakdown/export",
+            json={
+                "scope": "self",
+                "start_date": "2026-01-02",
+                "end_date": end_date,
+                "group_by": ["date"],
+                "page": 0,
+            },
+        )
+
+    assert response.status_code == 422
+    error = response.json()
+    assert error["code"] == 422
+    assert error["reason"] == "Invalid"
+    assert error["message"].startswith(f"{len(expected_messages)} validation errors:\n")
+    for message in expected_messages:
+        assert message in error["message"]
+    session.exec.assert_not_called()
+    session.execute.assert_not_called()
+    session.stream.assert_not_called()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("path", ["/summary", "/resource-events"])
 @pytest.mark.parametrize(
     "filters,expected_status,expected_reason,expected_message",
@@ -101,7 +151,7 @@ async def test_resource_usage_rejects_reversed_dates_before_querying(
             403,
             "Forbidden",
             "No permission to filter by organization",
-            id="forbidden-filter",
+            id="permission-before-date-validation",
         ),
     ],
 )
@@ -178,3 +228,29 @@ def test_resource_usage_accepts_forward_and_same_day_ranges(request_model, end_d
         start_date=date(2026, 1, 1), end_date=end_date, group_by=["date"]
     )
     assert request.end_date == end_date
+
+
+@pytest.mark.parametrize(
+    "request_model", [ResourceBreakdownRequest, ResourceExportRequest]
+)
+@pytest.mark.parametrize("use_model_validate", [False, True], ids=["init", "validate"])
+def test_resource_usage_models_collect_date_and_page_errors(
+    request_model, use_model_validate
+):
+    values = {
+        "start_date": date(2026, 1, 2),
+        "end_date": date(2026, 1, 1),
+        "group_by": ["date"],
+        "page": 0,
+    }
+
+    with pytest.raises(ValidationError) as exc_info:
+        if use_model_validate:
+            request_model.model_validate(values)
+        else:
+            request_model(**values)
+
+    assert {error["loc"]: error["type"] for error in exc_info.value.errors()} == {
+        ("end_date",): "value_error",
+        ("page",): "value_error",
+    }
