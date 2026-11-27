@@ -25,7 +25,7 @@ from gpustack.policies.scorers.model_file_locality_scorer import (
     ModelFileLocalityScorer,
 )
 from gpustack.policies.scorers.score_chain import CandidateScoreChain
-from gpustack.config.config import Config, get_global_config
+from gpustack.config.config import Config
 from gpustack.policies.base import (
     ModelInstanceScheduleCandidate,
     ScheduleCandidatesScorer,
@@ -75,8 +75,8 @@ from gpustack.schemas.models import (
     get_backend,
     is_gguf_model,
     DistributedServerCoordinateModeEnum,
-    SourceEnum,
     is_omni_model,
+    is_image_or_video_model,
     role_effective_model,
     role_container_resources,
     role_takes_no_accelerator,
@@ -104,7 +104,7 @@ from gpustack.topology.view import TopologyView, build_view
 from gpustack.scheduler.calculator import (
     GPUOffloadEnum,
     calculate_gguf_model_resource_claim,
-    check_diffusers_model_index_from_workers,
+    get_diffusers_model_index_with_workers,
 )
 from gpustack.server.cache_services import resolve_instance_cache_config_safe
 from gpustack.validation.pd.parameters import DIFFER
@@ -121,7 +121,7 @@ from gpustack.server.services import (
 from gpustack.utils.command import find_last_parameter, find_parameter
 from gpustack.utils.envs import should_skip_model_evaluation
 from gpustack.utils.gpu import group_gpu_ids_by_worker
-from gpustack.utils.hub import has_diffusers_model_index
+from gpustack.utils.diffusion import diffusion_model_category
 from gpustack.utils.math import largest_power_of_2_leq
 from gpustack.utils.model_source import get_draft_model_source
 from gpustack.utils.vllm_topology import manual_dp_enabled, vllm_lb_mode
@@ -1484,53 +1484,27 @@ async def evaluate_gguf_model(
 
 
 async def evaluate_diffusion_model(
-    model: Model,
-    workers: Optional[List[Worker]] = None,
-):
-    """
-    Evaluate diffusion model and update model categories.
+    model: Model, workers: Optional[List[Worker]] = None
+) -> bool:
+    """Classify generation artifacts while retaining explicit video declarations."""
+    from gpustack.utils.video import get_video_capabilities, update_video_metadata
 
-    Args:
-        model: Model to evaluate
-        workers: Optional list of workers (for LOCAL_PATH remote read)
-
-    Returns:
-        True if the model is a diffusion model, False otherwise
-    """
-    # vLLM/SGLang support Diffusers (image) models.
-    # If the source (HF/ModelScope/Local Path) contains model_index.json with "_diffusers_version",
-    # classify as IMAGE directly.
-    if model.categories and CategoryEnum.IMAGE not in model.categories:
+    if model.categories and not is_image_or_video_model(model):
         return False
-
-    hf_token = get_global_config().huggingface_token
-
-    # For Hub sources and local files, use hub.py function
-    if model.source in (SourceEnum.HUGGING_FACE, SourceEnum.MODEL_SCOPE):
-        is_diffusers = await asyncio.wait_for(
-            asyncio.to_thread(has_diffusers_model_index, model, token=hf_token),
-            timeout=10,
-        )
-    # For LOCAL_PATH, try local first, then workers
-    elif model.source == SourceEnum.LOCAL_PATH:
-        # Try local read first
-        is_diffusers = await asyncio.wait_for(
-            asyncio.to_thread(has_diffusers_model_index, model, token=hf_token),
-            timeout=10,
-        )
-        # If not found locally and workers are provided, query workers
-        if not is_diffusers and workers:
-            is_diffusers = await asyncio.wait_for(
-                check_diffusers_model_index_from_workers(model, workers),
-                timeout=10,
-            )
-    else:
-        return False
-
-    if is_diffusers:
-        model.categories = [CategoryEnum.IMAGE]
+    update_video_metadata(model)
+    if get_video_capabilities(model) is not None:
+        if not model.categories:
+            model.categories = [CategoryEnum.VIDEO]
         return True
-    return False
+    if CategoryEnum.VIDEO in (model.categories or []):
+        return True
+    index = await get_diffusers_model_index_with_workers(model, workers)
+    if index is None:
+        return False
+    update_video_metadata(model, index)
+    if not model.categories:
+        model.categories = [diffusion_model_category(index)]
+    return True
 
 
 async def prioritize_workers_with_model_files(
@@ -1597,10 +1571,11 @@ async def _evaluate_pretrained_config_core(
     workers: Optional[List[Worker]] = None,
     raise_raw: bool = False,
 ) -> bool:
+    original_meta = model.meta
     # 1) try to evaluate as diffusion model
     try:
-        is_image_category = await evaluate_diffusion_model(model, workers=workers)
-        if is_image_category:
+        is_diffusion = await evaluate_diffusion_model(model, workers=workers)
+        if is_diffusion:
             return True
     except Exception:
         pass
@@ -1654,7 +1629,7 @@ async def _evaluate_pretrained_config_core(
             f"Unsupported architecture: {architectures}. {UNSUPPORTED_MODEL_REMEDY}"
         )
 
-    meta_modified = False
+    meta_modified = model.meta != original_meta
     if not model.meta and (known_meta := get_model_meta(pretrained_config)):
         model.meta = known_meta
         meta_modified = True

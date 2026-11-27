@@ -840,12 +840,16 @@ def validate_sglang_dpa_version(model: Model) -> None:
 
 def sglang_smg_mode(model) -> bool:
     """Use a DP-aware SMG only when the Engine has multiple routing ranks."""
-    from gpustack.schemas.models import BackendEnum, CategoryEnum, get_backend
+    from gpustack.schemas.models import (
+        BackendEnum,
+        get_backend,
+        is_image_or_video_model,
+    )
 
     if (
         get_backend(model) != BackendEnum.SGLANG
         or model.disaggregation is not None
-        or CategoryEnum.IMAGE in (model.categories or [])
+        or is_image_or_video_model(model)
     ):
         return False
     dp, _, _ = sglang_parallelism(model.backend_parameters)

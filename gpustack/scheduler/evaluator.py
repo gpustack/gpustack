@@ -1253,6 +1253,11 @@ async def set_default_spec(
 
     modified = False
     if model_spec_in_catalog:
+        if model_spec_in_catalog.meta:
+            merged_meta = {**model_spec_in_catalog.meta, **(model.meta or {})}
+            if merged_meta != model.meta:
+                model.meta = merged_meta
+                modified = True
         if (
             model_spec_in_catalog.backend_parameters
             and model.backend_parameters is None

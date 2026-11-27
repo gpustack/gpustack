@@ -3,6 +3,8 @@ import os
 import time
 from copy import deepcopy
 from functools import lru_cache
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 import pytest
 from tenacity import retry, stop_after_attempt, wait_fixed
 from gpustack.routes.model_sets import filter_specs_by_gpu
@@ -60,6 +62,37 @@ def _packaged_model_set_specs(catalog_file=None):
         name: model_set.specs
         for name, model_set in _packaged_model_sets(catalog_file).items()
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "catalog_file", ["model-catalog.yaml", "model-catalog-modelscope.yaml"]
+)
+@pytest.mark.parametrize("backend", ["vLLM", "SGLang"])
+async def test_wan22_standard_recipe_matches_the_selected_backend(
+    monkeypatch, catalog_file, backend
+):
+    from gpustack.server import catalog
+
+    catalog_path = pkg_resources.files("gpustack.assets").joinpath(catalog_file)
+    model_set = _packaged_model_sets(str(catalog_path))["Wan2.2-TI2V-5B-Diffusers"]
+    assert {spec.mode for spec in model_set.specs} == {"standard"}
+    monkeypatch.setattr(
+        catalog,
+        "_model_set_entries",
+        AsyncMock(return_value=[SimpleNamespace(id=1, payload=model_set.model_dump())]),
+    )
+    selected = await catalog.get_catalog_spec_by_source_key(
+        None,
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+        [GPUDevice(vendor="nvidia", compute_capability="8.6")],
+        backend,
+    )
+    assert selected is not None and selected.backend == backend
+    assert selected.mode == "standard"
+    assert selected.meta == {"default_width": 1280, "default_height": 704}
+    expected = "--omni" if backend == "vLLM" else "--dit-layerwise-offload=true"
+    assert expected in selected.backend_parameters
 
 
 @pytest.mark.parametrize(
