@@ -82,6 +82,7 @@ def _candidate(worker):
         gpu_indexes=None,
         gpu_addresses=None,
         subordinate_workers=None,
+        auto_parallelism=None,
     )
 
 

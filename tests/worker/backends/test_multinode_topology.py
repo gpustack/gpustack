@@ -1475,3 +1475,105 @@ def test_managed_http_validation_recognizes_native_tls_aliases(option):
         validate_managed_lb_parameters(
             ['--data_parallel_external_lb', f'--{option}=/tmp/model_key']
         )
+
+
+_GIB = 1024**3
+
+
+def test_scheduled_shard_drives_shape_env_and_follower_args():
+    """The stored override is one topology for args, env, and the follower."""
+    from types import SimpleNamespace
+
+    from gpustack.schemas.models import (
+        DistributedServers,
+        ModelInstanceSubordinateWorker,
+        VLLMAutoParallelism,
+    )
+    from tests.utils.model import new_model_instance
+
+    instance = new_model_instance(1, "qwen3-vl", 1, gpu_indexes=[0])
+    instance.worker_ip = "10.0.0.1"
+    instance.ports = [40000, 40001, 40002, 40042, 40063]
+    instance.distributed_servers = DistributedServers(
+        subordinate_workers=[ModelInstanceSubordinateWorker(gpu_indexes=[0])],
+        auto_parallelism=VLLMAutoParallelism(tp=2),
+    )
+    server = object.__new__(VLLMServer)
+    server._model = SimpleNamespace(
+        backend_parameters=[],
+        backend_version=None,
+        image_name="example/runner:cuda",
+        backend="vLLM",
+        categories=[],
+    )
+    server._model_instance = instance
+    server._worker = SimpleNamespace(ip="10.0.0.2", ifname="eth0")
+    server._get_selected_gpu_devices = lambda: []
+
+    meta = _meta("follower", follower_index=0)
+    assert server._resolve_multinode_shape(meta) == "mp_only"
+    env = {}
+    server._set_distributed_env(env, meta)
+    assert "VLLM_DP_MASTER_PORT" not in env
+    assert "VLLM_PORT" not in env
+
+    ctx = server._make_args_context(40000, True, None, meta)
+    arguments = server._build_mp_multinode_arguments(ctx)
+    assert _argument_value(arguments, "--nnodes") == "2"
+    assert _argument_value(arguments, "--node-rank") == "1"
+    assert "--data-parallel-start-rank" not in arguments
+    assert "--headless" in arguments
+
+
+def test_mp_launch_injects_scheduled_shard_instead_of_dp():
+    from gpustack.schemas.models import (
+        ComputedResourceClaim,
+        DistributedServers,
+        ModelInstanceSubordinateWorker,
+        VLLMAutoParallelism,
+    )
+    from gpustack.worker.backends.vllm import get_auto_parallelism_arguments
+    from tests.utils.model import new_model_instance
+
+    instance = new_model_instance(1, "qwen3-vl", 1, gpu_indexes=[0])
+    instance.distributed_servers = DistributedServers(
+        subordinate_workers=[
+            ModelInstanceSubordinateWorker(
+                gpu_indexes=[0],
+                computed_resource_claim=ComputedResourceClaim(vram={0: 10 * _GIB}),
+            )
+        ],
+        auto_parallelism=VLLMAutoParallelism(tp=2),
+    )
+    arguments = get_auto_parallelism_arguments(
+        [],
+        instance,
+        True,
+        _meta("leader"),
+        image_name="example/runner:cuda",
+    )
+    assert arguments == ["--tensor-parallel-size", "2"]
+
+
+def test_mp_launch_without_override_stays_data_parallel():
+    from gpustack.schemas.models import (
+        DistributedServers,
+        ModelInstanceSubordinateWorker,
+    )
+    from gpustack.worker.backends.vllm import get_auto_parallelism_arguments
+    from tests.utils.model import new_model_instance
+
+    instance = new_model_instance(1, "qwen3-vl", 1, gpu_indexes=[0])
+    instance.distributed_servers = DistributedServers(
+        subordinate_workers=[ModelInstanceSubordinateWorker(gpu_indexes=[0])]
+    )
+    arguments = get_auto_parallelism_arguments(
+        [],
+        instance,
+        True,
+        _meta("leader"),
+        image_name="example/runner:cuda",
+    )
+    assert _argument_value(arguments, "--tensor-parallel-size") == "1"
+    assert _argument_value(arguments, "--data-parallel-size") == "2"
+    assert "--pipeline-parallel-size" not in arguments

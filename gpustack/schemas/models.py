@@ -2107,6 +2107,16 @@ class ModelInstanceStopReport(BaseModel):
     restart_count: int = PydanticField(ge=0)
 
 
+class VLLMAutoParallelism(BaseModel):
+    """TP/PP the scheduler chose because a data-parallel replica does not fit.
+
+    Empty means the worker keeps deriving parallelism from the GPU counts.
+    """
+
+    tp: Optional[int] = None
+    pp: Optional[int] = None
+
+
 class DistributedServers(BaseModel):
     # Indicates how the distributed servers coordinate with the main worker.
     mode: DistributedServerCoordinateModeEnum = (
@@ -2134,6 +2144,8 @@ class DistributedServers(BaseModel):
     group_recovery: Optional[bool] = PydanticField(
         default=None, json_schema_extra={"readOnly": True}
     )
+    # Set only for an MP placement whose default DP replica does not fit.
+    auto_parallelism: Optional[VLLMAutoParallelism] = None
     model_config = ConfigDict(from_attributes=True)
 
     @model_validator(mode="before")

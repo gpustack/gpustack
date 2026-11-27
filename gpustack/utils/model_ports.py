@@ -105,7 +105,12 @@ instance's own lifecycle and reservation ledger, not this model's named_ports.
 import logging
 from typing import List, Optional, Tuple
 
-from gpustack.schemas.models import BackendEnum, Model, get_backend
+from gpustack.schemas.models import (
+    BackendEnum,
+    Model,
+    VLLMAutoParallelism,
+    get_backend,
+)
 from gpustack.schemas.pd_modes import PDPortScopeEnum
 from gpustack.utils.command import (
     find_int_parameter,
@@ -116,6 +121,7 @@ from gpustack.utils.sglang_port_layout import sglang_port_layout
 from gpustack.utils.vllm_topology import (
     VLLM_MP_CONNECTING_PORT_COUNT,
     managed_lb_port_requests,
+    merge_auto_parallelism,
     parse_user_parallelism,
     validate_multinode_topology,
     vllm_lb_mode,
@@ -177,6 +183,7 @@ def model_port_requests(
     allocation: List[int],
     *,
     managed: Optional[bool] = None,
+    auto_parallelism: Optional[VLLMAutoParallelism] = None,
 ) -> List[Tuple[str, int, Optional[int]]]:
     """Return named bands in first-fit allocation order, including fixed listeners.
 
@@ -246,9 +253,14 @@ def model_port_requests(
                 tokenized=True,
             )
             if executor == "mp":
-                topology = validate_multinode_topology(
-                    allocation, parse_user_parallelism(parameters, tokenized=True)
-                )
+                user = parse_user_parallelism(parameters, tokenized=True)
+                if auto_parallelism is not None:
+                    user = merge_auto_parallelism(
+                        user,
+                        tp=auto_parallelism.tp,
+                        pp=auto_parallelism.pp,
+                    )
+                topology = validate_multinode_topology(allocation, user)
                 if topology.shape in ("dp_only", "nested"):
                     connecting = VLLM_MP_CONNECTING_PORT_COUNT
                 cross = 3

@@ -22,6 +22,7 @@ from gpustack.schemas.models import (
     PDModeEnum,
     PortBand,
     RoleSpec,
+    VLLMAutoParallelism,
     role_effective_model,
 )
 from gpustack.schemas.pd_modes import (
@@ -737,6 +738,21 @@ def test_mp_connecting_reservation_matches_backend_topology(gpus, parameters, co
     assert ("VLLM_DP_MASTER_PORT" in env) is (count == 10)
     if count == 10:
         assert env["VLLM_DP_MASTER_PORT"] == str(mi.ports[-1])
+
+
+def test_scheduled_mp_shard_reserves_one_connecting_port():
+    manager = _manager()
+    mi = _plain_instance()
+    mi.gpu_indexes = [0]
+    mi.distributed_servers.subordinate_workers = [
+        ModelInstanceSubordinateWorker(worker_id=2, gpu_indexes=[0])
+    ]
+    mi.distributed_servers.auto_parallelism = VLLMAutoParallelism(tp=2)
+
+    manager._assign_ports(mi, _mp_model(), BackendEnum.VLLM)
+
+    assert "_vllm_mp_connecting" not in (mi.named_ports or {})
+    assert len(manager._assigned_ports[mi.id]) == 5
 
 
 def test_mp_only_can_use_five_fragmented_ports():

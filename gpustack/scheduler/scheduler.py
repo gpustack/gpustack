@@ -828,6 +828,7 @@ async def apply_candidate_to_instance(
             if model_instance.distributed_servers is not None
             else None
         ),
+        auto_parallelism=candidate.auto_parallelism,
     )
     if get_backend(model) in (
         BackendEnum.VLLM,

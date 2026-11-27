@@ -943,6 +943,20 @@ def test_manual_dp_port_budget_uses_single_legacy_entry(mode):
     assert port_budget.member_port_requests(model, None, [8]) == [(1, None)]
 
 
+def test_candidate_port_budget_uses_its_scheduled_mp_shard():
+    from gpustack.schemas.models import VLLMAutoParallelism
+
+    model = _model()
+    model.image_name = 'example/runner:cuda'
+
+    requests = port_budget.member_port_requests(
+        model, None, [1, 1], VLLMAutoParallelism(tp=2)
+    )
+
+    assert sum(count for count, _ in requests) == 5
+    assert all(count == 1 for count, _ in requests)
+
+
 def test_running_managed_port_plan_is_not_changed_by_manual_dp_edit():
     from gpustack.utils.model_ports import model_port_requests
 

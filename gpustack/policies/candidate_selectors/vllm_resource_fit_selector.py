@@ -36,6 +36,7 @@ from gpustack.schemas.models import (
     ComputedResourceClaim,
     Model,
     ModelInstanceSubordinateWorker,
+    VLLMAutoParallelism,
 )
 from gpustack.schemas.workers import GPUDevicesStatus, Worker
 from gpustack.config import Config
@@ -48,6 +49,9 @@ from gpustack.utils.command import (
 from gpustack.utils.unit import byte_to_gib
 from gpustack.validation.pd.roles import validate_managed_pd_topology
 from gpustack.utils.vllm_topology import (
+    MultinodeUserParallelism,
+    _user_pinned_parallelism,
+    auto_shard_override,
     parse_user_parallelism,
     validate_multinode_topology,
     vllm_lb_mode,
@@ -308,6 +312,10 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         Get schedule candidates that fit the GPU resources requirement.
         """
 
+        # Subordinate workers on a candidate only keep an id. Shard budgeting
+        # looks the worker back up when a zero reservation is not a capacity.
+        self._workers_by_id = {worker.id: worker for worker in workers}
+
         # Initialize model parameters.
         await self._init_model_parameters(workers)
 
@@ -369,6 +377,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 "hybrid",
             ):
                 candidates = self._validate_managed_candidates(candidates)
+            candidates = self._shard_when_dp_replica_does_not_fit(candidates)
             for candidate in candidates:
                 self._finalize_candidate_ram(candidate)
 
@@ -382,6 +391,311 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
 
         self._set_messages()
         return []
+
+    def _shard_when_dp_replica_does_not_fit(
+        self, candidates: List[ModelInstanceScheduleCandidate]
+    ) -> List[ModelInstanceScheduleCandidate]:
+        """Shard one replica across nodes when the default DP copy does not fit.
+
+        The count-derived MP default is data parallel across workers. That
+        replicates the whole model on every node, while admission only checks
+        the sum of their VRAM. When no node can hold one copy, record a TP/PP
+        override the worker injects at launch.
+        """
+        if (
+            manual_dp_enabled(self._model.env)
+            or vllm_lb_mode(self._model.backend_parameters) != "internal"
+            or resolve_executor_backend(
+                self._model.backend_parameters,
+                self._model.backend_version,
+                self._model.image_name,
+            )
+            != "mp"
+        ):
+            return candidates
+
+        kept: List[ModelInstanceScheduleCandidate] = []
+        for candidate in candidates:
+            rejection, override = self._plan_auto_shard(candidate)
+            if rejection is not None:
+                logger.info(
+                    "Skipping placement for %s: %s", self._model.name, rejection
+                )
+                self._event_collector.add(
+                    EventLevelEnum.INFO,
+                    EVENT_ACTION_AUTO_MULTI_WORKER_MULTI_GPU,
+                    rejection,
+                )
+                continue
+            if override is not None:
+                candidate.auto_parallelism = VLLMAutoParallelism(
+                    tp=override.tp, pp=override.pp
+                )
+                pp = f", pipeline-parallel-size={override.pp}" if override.pp else ""
+                workers = 1 + len(candidate.subordinate_workers or [])
+                self._event_collector.add(
+                    EventLevelEnum.INFO,
+                    EVENT_ACTION_AUTO_MULTI_WORKER_MULTI_GPU,
+                    "A data-parallel replica does not fit on one worker. "
+                    f"Sharding one replica across {workers} workers "
+                    f"with tensor-parallel-size={override.tp}{pp}.",
+                )
+            kept.append(candidate)
+        return kept
+
+    def _plan_auto_shard(
+        self, candidate: ModelInstanceScheduleCandidate
+    ) -> Tuple[Optional[str], Optional[MultinodeUserParallelism]]:
+        """Decide whether this placement keeps DP, stores a shard, or is dropped.
+
+        The first value is the reason a placement cannot run. The second is
+        the TP/PP to inject. Both are ``None`` when the count-derived DP
+        layout stays.
+        """
+        if (
+            not candidate.subordinate_workers
+            or manual_dp_enabled(self._model.env)
+            or vllm_lb_mode(self._model.backend_parameters) != "internal"
+            or resolve_executor_backend(
+                self._model.backend_parameters,
+                self._model.backend_version,
+                self._model.image_name,
+            )
+            != "mp"
+        ):
+            return None, None
+        gpu_per_node, budgets, device_budgets = self._placement_vram_budgets(candidate)
+        try:
+            override = auto_shard_override(
+                gpu_per_node,
+                budgets,
+                self._vram_claim or 0,
+                parse_user_parallelism(self._model.backend_parameters),
+                tp_divisible=self._is_tp_size_divisible,
+                device_budgets=device_budgets,
+            )
+        except ValueError as error:
+            return str(error), None
+        if override is not None:
+            rejection = self._finalize_auto_shard_claims(candidate)
+            if rejection is not None:
+                return rejection, None
+        return None, override
+
+    def _candidate_that_can_shard(
+        self,
+        selected_workers: List[Worker],
+        gpus_per_worker: int,
+        seen_skip_reasons: set,
+        event_message: ListMessageBuilder,
+    ) -> Optional[ModelInstanceScheduleCandidate]:
+        """Return the strongest feasible multi-worker subset.
+
+        Single-worker placement has already run through its own available-VRAM
+        admission path. Retrying width one here could admit the same worker by
+        installed capacity after that check rejected it.
+        """
+        strongest = sorted(
+            selected_workers,
+            key=lambda worker: self._worker_shard_budget(worker),
+            reverse=True,
+        )
+        if self._gpu_count:
+            worker_count = self._gpu_count // gpus_per_worker
+            widths = [worker_count] if 2 <= worker_count <= len(strongest) else []
+        else:
+            widths = range(2, len(strongest) + 1)
+        user = parse_user_parallelism(self._model.backend_parameters)
+        for width in widths:
+            uneven_pipeline = _user_pinned_parallelism(user) and bool(
+                user.pp and user.pp > 1
+            )
+            if uneven_pipeline:
+                workers = strongest[:width]
+            else:
+                per_gpu = -(-(self._vram_claim or 0) // (width * gpus_per_worker))
+                gpu_per_node = [gpus_per_worker] * width
+                workers = []
+                for worker in strongest:
+                    budgets = self._worker_device_budgets(worker)
+                    if not budgets or any(budget < per_gpu for budget in budgets):
+                        continue
+                    claim = {gpu.index: per_gpu for gpu in worker.status.gpu_devices}
+                    ram = self._compute_ram_claim(
+                        claim,
+                        gpu_per_node=gpu_per_node,
+                        node_index=len(workers),
+                    )
+                    message = self._worker_ram_overcommit_message(
+                        worker,
+                        ram,
+                        worker.status.gpu_devices[0].type,
+                    )
+                    if message:
+                        if message not in seen_skip_reasons:
+                            seen_skip_reasons.add(message)
+                            event_message.append(message)
+                        continue
+                    workers.append(worker)
+                    if len(workers) == width:
+                        break
+            if len(workers) < width:
+                continue
+            if sum(self._worker_shard_budget(worker) for worker in workers) < (
+                self._vram_claim or 0
+            ):
+                continue
+            candidate, skip_reason = _create_candidate(
+                self._model,
+                workers,
+                self._gpu_memory_utilization,
+            )
+            if candidate is None:
+                if skip_reason and skip_reason not in seen_skip_reasons:
+                    seen_skip_reasons.add(skip_reason)
+                    event_message.append(skip_reason)
+                return None
+            rejection, _override = self._plan_auto_shard(candidate)
+            if rejection is None:
+                return candidate
+            logger.info("Skipping placement for %s: %s", self._model.name, rejection)
+            self._event_collector.add(
+                EventLevelEnum.INFO,
+                EVENT_ACTION_AUTO_MULTI_WORKER_MULTI_GPU,
+                rejection,
+            )
+        return None
+
+    def _admission_vram(self, workers: List[Worker]) -> int:
+        """VRAM the multi-worker scan counts. Zero utilization counts the card."""
+        utilization = self._gpu_memory_utilization or 1
+        return sum(
+            int(gpu.memory.total * utilization)
+            for worker in workers
+            for gpu in worker.status.gpu_devices
+        )
+
+    def _message_vram(self, workers: List[Worker]) -> int:
+        """VRAM represented by a failure-summary worker combination."""
+        if self._gpu_memory_utilization == 0:
+            return sum(self._worker_shard_budget(worker) for worker in workers)
+        return self._admission_vram(workers)
+
+    def _worker_shard_budget(self, worker: Worker) -> int:
+        return sum(self._worker_device_budgets(worker))
+
+    def _message_worker_combination(
+        self, workers: List[Worker], gpus_per_worker: int
+    ) -> List[Worker]:
+        """Bound failure summaries to the strongest allowed worker subset."""
+        if not self._gpu_count:
+            return list(workers)
+        worker_count = self._gpu_count // gpus_per_worker
+        return sorted(
+            workers,
+            key=lambda worker: self._worker_shard_budget(worker),
+            reverse=True,
+        )[:worker_count]
+
+    def _worker_device_budgets(self, worker: Worker) -> List[int]:
+        """VRAM each GPU on this worker can spend on a shard."""
+        indexes = [gpu.index for gpu in worker.status.gpu_devices]
+        reserved = {
+            gpu.index: int(gpu.memory.total * self._gpu_memory_utilization)
+            for gpu in worker.status.gpu_devices
+        }
+        return self._device_vram_budgets(
+            worker,
+            indexes,
+            reserved,
+            worker.status.gpu_devices[0].type,
+        )
+
+    def _finalize_auto_shard_claims(
+        self, candidate: ModelInstanceScheduleCandidate
+    ) -> Optional[str]:
+        """Apply final non-LLM shard claims after VRAM and RAM admission."""
+        if self._gpu_memory_utilization > 0:
+            return None
+        members = [candidate, *(candidate.subordinate_workers or [])]
+        total_gpus = sum(len(member.gpu_indexes or []) for member in members)
+        if total_gpus <= 0:
+            return None
+        per_gpu = -(-(self._vram_claim or 0) // total_gpus)
+        gpu_per_node = [len(member.gpu_indexes or []) for member in members]
+        workers_by_id = getattr(self, "_workers_by_id", {})
+        workers = [candidate.worker] + [
+            workers_by_id.get(member.worker_id)
+            for member in candidate.subordinate_workers or []
+        ]
+        for index, (member, worker) in enumerate(zip(members, workers)):
+            claim = member.computed_resource_claim
+            if claim is None:
+                continue
+            claim.vram = {gpu_index: per_gpu for gpu_index in member.gpu_indexes or []}
+            claim.ram = self._compute_ram_claim(
+                claim.vram, gpu_per_node=gpu_per_node, node_index=index
+            )
+            if worker is not None:
+                message = self._worker_ram_overcommit_message(
+                    worker, claim.ram, member.gpu_type
+                )
+                if message:
+                    if (
+                        getattr(self, "_selected_gpu_workers", None)
+                        and self._model.replicas == 1
+                    ):
+                        candidate.overcommit = True
+                        self._event_collector.add(
+                            EventLevelEnum.INFO,
+                            EVENT_ACTION_MANUAL_MULTI,
+                            message,
+                        )
+                        continue
+                    return message
+        return None
+
+    def _placement_vram_budgets(
+        self, candidate: ModelInstanceScheduleCandidate
+    ) -> Tuple[List[int], List[int], List[List[int]]]:
+        """GPU counts plus per-node and per-device shard budgets."""
+        members = [candidate, *(candidate.subordinate_workers or [])]
+        workers_by_id = getattr(self, "_workers_by_id", {})
+        workers = [candidate.worker] + [
+            workers_by_id.get(member.worker_id)
+            for member in candidate.subordinate_workers or []
+        ]
+        gpu_per_node = []
+        device_budgets = []
+        for member, worker in zip(members, workers):
+            indexes = list(member.gpu_indexes or [])
+            claim = member.computed_resource_claim
+            reserved = dict((claim.vram or {}) if claim else {})
+            gpu_per_node.append(len(indexes))
+            device_budgets.append(
+                self._device_vram_budgets(worker, indexes, reserved, member.gpu_type)
+            )
+        return (
+            gpu_per_node,
+            [sum(budgets) for budgets in device_budgets],
+            device_budgets,
+        )
+
+    def _device_vram_budgets(
+        self,
+        worker: Optional[Worker],
+        gpu_indexes: List[int],
+        reserved: Dict[int, int],
+        gpu_type: Optional[str],
+    ) -> List[int]:
+        """VRAM each selected GPU can spend on a shard."""
+        if getattr(self, "_gpu_memory_utilization", 0.9) > 0 or worker is None:
+            return [int(reserved.get(index, 0)) for index in gpu_indexes]
+        allocatable = self.get_worker_allocatable_resource(worker, gpu_type).vram
+        if gpu_indexes and all(index in allocatable for index in gpu_indexes):
+            return [int(allocatable[index]) for index in gpu_indexes]
+        totals = self._get_worker_vram(worker)
+        return [int(totals.get(index, reserved.get(index, 0))) for index in gpu_indexes]
 
     def _validate_managed_candidates(
         self, candidates: List[ModelInstanceScheduleCandidate]
@@ -982,7 +1296,7 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
         # Store the optimal combination info to show
         workers_combination: List[Worker] = []
         largest_vram = 0
-        worker_count = 0
+        failed_worker_count = 0
         device_count_per_worker = 0
 
         event_message = ListMessageBuilder([])
@@ -1040,28 +1354,30 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 )
 
                 if self._gpu_count:
-                    # Parallelism is set. Proceed until we match the exact GPU count.
+                    # The returned subset must match this count. Keep later
+                    # workers in the pool so they can replace a rejected one.
                     if gpu_sum < self._gpu_count:
                         continue
-                    elif gpu_sum > self._gpu_count:
-                        break
 
                 if vram_sum >= self._vram_claim:
-                    candidate, skip_reason = _create_candidate(
-                        self._model,
+                    candidate = self._candidate_that_can_shard(
                         selected_workers,
-                        self._gpu_memory_utilization,
+                        gpu_count,
+                        seen_skip_reasons,
+                        event_message,
                     )
-                    if candidate is None:
-                        if skip_reason and skip_reason not in seen_skip_reasons:
-                            seen_skip_reasons.add(skip_reason)
-                            event_message.append(skip_reason)
-                        continue
-                    return [candidate]
-            if vram_sum > largest_vram:
-                workers_combination = selected_workers
-                largest_vram = vram_sum
-                worker_count = len(worker_group)
+                    if candidate is not None:
+                        return [candidate]
+                    gpu_sum = gpu_count * len(selected_workers)
+                    vram_sum = self._admission_vram(selected_workers)
+            message_workers = self._message_worker_combination(
+                selected_workers, gpu_count
+            )
+            message_vram = self._message_vram(message_workers)
+            if message_vram > largest_vram:
+                workers_combination = message_workers
+                largest_vram = message_vram
+                failed_worker_count = len(worker_group) - len(selected_workers)
                 device_count_per_worker = gpu_count
 
         # Nothing can be return, construct scheduling message
@@ -1078,8 +1394,8 @@ class VLLMResourceFitSelector(ScheduleCandidatesSelector):
                 else str(worker_names)
             )
             message = f"The optimal combination {worker_names_msg} provides {byte_to_gib(largest_vram)} GiB of allocatable VRAM."
-            if worker_count - len(workers_combination) > 0:
-                message += f" There are {worker_count - len(workers_combination)} {'workers' if worker_count - len(workers_combination) > 1 else 'worker'} that can provide {device_count_per_worker} {'GPUs' if device_count_per_worker > 1 else 'GPU'}, as the workers in the combination, but some GPUs among them fail to meet requirements."
+            if failed_worker_count > 0:
+                message += f" There are {failed_worker_count} {'workers' if failed_worker_count > 1 else 'worker'} that can provide {device_count_per_worker} {'GPUs' if device_count_per_worker > 1 else 'GPU'}, as the workers in the combination, but some GPUs among them fail to meet requirements."
             event_message.append(message)
 
         event_message.append(
