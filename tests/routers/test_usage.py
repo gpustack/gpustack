@@ -152,7 +152,10 @@ async def test_get_usage_meta_returns_identity_filters_for_admin():
         "input_cached_tokens",
         "total_tokens",
         "api_requests",
+        "image_count",
+        "image_pixels",
     ]
+    assert "image_generation" in [item.key for item in response.operations]
     # user 12 still exists → not deleted; the NULL-id legacy row is deleted.
     assert response.filters.users[0].label == "alice"
     assert response.filters.users[0].deleted is False

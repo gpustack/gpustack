@@ -3,7 +3,7 @@ import functools
 import json
 import logging
 import time
-from typing import Type, Union
+from typing import Optional, Type, Union
 from fastapi import Request, Response, status
 from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
 from jwt import DecodeError, ExpiredSignatureError
@@ -18,7 +18,12 @@ from openai.types.create_embedding_response import (
 )
 from gpustack.api.exceptions import ErrorResponse
 from gpustack.routes.rerank import RerankResponse, RerankUsage
-from gpustack.schemas.images import ImageGenerationChunk, ImagesResponse
+from gpustack.schemas.images import (
+    ImageGenerationChunk,
+    ImagesResponse,
+    compute_image_usage,
+    finished_image_indexes,
+)
 from gpustack.schemas.model_usage import OperationEnum
 from gpustack.schemas.api_keys import ApiKey
 from gpustack.schemas.models import Model
@@ -167,6 +172,7 @@ async def process_request(
         response_body = b"".join([chunk async for chunk in response.body_iterator])
         try:
             usage = None
+            generated_image_count = None
             if (
                 response.headers.get("content-type")
                 .lower()
@@ -176,8 +182,16 @@ async def process_request(
                 response_instance = response_class(**response_dict)
                 if hasattr(response_instance, "usage"):
                     usage = response_instance.usage
+                if isinstance(response_instance, ImagesResponse):
+                    if response_instance.data is not None:
+                        generated_image_count = len(response_instance.data)
 
-            await record_model_usage(request, usage, operation)
+            await record_model_usage(
+                request,
+                usage,
+                operation,
+                generated_image_count=generated_image_count,
+            )
         except Exception as e:
             logger.error(f"Error processing model usage: {e}")
         response = Response(
@@ -227,7 +241,19 @@ async def record_model_usage(
     request: Request,
     usage: Union[CompletionUsage, EmbeddingUsage, RerankUsage, None],
     operation: OperationEnum,
+    generated_image_count: Optional[int] = None,
 ):
+    """Report one completed direct-path inference request to the usage collector.
+
+    Args:
+        request: The inference request; ``request.state`` carries the
+            resolved user / model / api key.
+        usage: The OpenAI-style usage block from the response, if any.
+        operation: The inference operation the request path maps to.
+        generated_image_count: For image generation, the number of images
+            the response returned. ``None`` (e.g. streamed responses) falls
+            back to the ``n`` the request asked for.
+    """
     total_tokens = getattr(usage, 'total_tokens', 0) or 0
     prompt_tokens = getattr(usage, 'prompt_tokens', total_tokens) or total_tokens
     completion_tokens = (
@@ -301,6 +327,11 @@ async def record_model_usage(
         operation=operation,
         organization_id=organization_id,
     )
+    if operation == OperationEnum.IMAGE_GENERATION:
+        metric.image_count, metric.image_pixel_count = compute_image_usage(
+            getattr(request.state, "image_request_params", None),
+            generated_image_count,
+        )
     await accumulate_gateway_metrics([metric])
 
 
@@ -322,8 +353,47 @@ async def handle_streaming_response(
             except Exception as e:
                 logger.error(f"Error processing streaming response: {e}")
                 yield chunk
+        # Reached only when the upstream stream ended on its own; a client
+        # disconnect cancels the generator before this point, so an
+        # abandoned generation is never billed. Image streams are metered
+        # here, exactly once, whether or not the backend sent a usage event:
+        # the images are the billable unit.
+        if operation == OperationEnum.IMAGE_GENERATION:
+            try:
+                await record_model_usage(
+                    request,
+                    getattr(request.state, "image_stream_usage", None),
+                    operation,
+                    generated_image_count=_streamed_image_count(request),
+                )
+            except Exception as e:
+                logger.error(f"Error recording streamed image usage: {e}")
 
     return StreamingResponse(streaming_generator(), headers=response.headers)
+
+
+def _track_streamed_images(request: Request, data: str) -> None:
+    """Remember which images an image generation stream has finished."""
+    try:
+        payload = json.loads(data.strip())
+    except ValueError:
+        return
+    if not isinstance(payload, dict) or "data" not in payload:
+        return
+    finished = getattr(request.state, "streamed_images_finished", None)
+    if finished is None:
+        finished = set()
+        request.state.streamed_images_finished = finished
+    finished.update(finished_image_indexes(payload))
+
+
+def _streamed_image_count(request: Request) -> Optional[int]:
+    """Images an image stream finished, or ``None`` when it carried no image chunks.
+
+    ``None`` lets the metering fall back to the requested ``n``.
+    """
+    finished = getattr(request.state, "streamed_images_finished", None)
+    return None if finished is None else len(finished)
 
 
 async def process_chunk(
@@ -348,6 +418,9 @@ async def process_chunk(
             yield "data: [DONE]\n\n".encode("utf-8")
             continue
 
+        if operation == OperationEnum.IMAGE_GENERATION:
+            _track_streamed_images(request, data)
+
         if '"usage":' in data:
             response_dict = None
             try:
@@ -357,7 +430,12 @@ async def process_chunk(
             response_chunk = response_class(**response_dict)
 
             if is_usage_chunk(response_chunk):
-                await record_model_usage(request, response_chunk.usage, operation)
+                if operation == OperationEnum.IMAGE_GENERATION:
+                    # A client can still drop the stream after this event;
+                    # keep it for the stream-end record instead of billing now.
+                    request.state.image_stream_usage = response_chunk.usage
+                else:
+                    await record_model_usage(request, response_chunk.usage, operation)
 
                 # Fill rate metrics. These are extended info not included in OAI APIs.
                 # llama-box provides them out-of-the-box. Align with other backends here.

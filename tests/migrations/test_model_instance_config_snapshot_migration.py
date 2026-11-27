@@ -26,11 +26,15 @@ def migration(monkeypatch):
     return module
 
 
+def _calls_for(op_method, table):
+    return [c for c in op_method.call_args_list if c.args[0] == table]
+
+
 @pytest.mark.parametrize("dialect", [postgresql.dialect(), mysql.dialect()])
 def test_snapshot_column_is_nullable_portable_json(migration, dialect):
     migration.upgrade()
-    table, column = migration.op.add_column.call_args.args
-    assert table == "model_instances"
+    (call,) = _calls_for(migration.op.add_column, "model_instances")
+    _, column = call.args
     assert column.name == "model_config_snapshot"
     assert column.nullable
     assert column.default is None
@@ -58,8 +62,7 @@ def test_downgrade_only_drops_an_existing_column(
     monkeypatch.setattr(migration, "table_exists", lambda *args: has_table)
     monkeypatch.setattr(migration, "column_exists", lambda *args: has_column)
     migration.downgrade()
-    assert migration.op.drop_column.call_count == int(has_table and has_column)
+    drops = _calls_for(migration.op.drop_column, "model_instances")
+    assert len(drops) == int(has_table and has_column)
     if has_table and has_column:
-        migration.op.drop_column.assert_called_once_with(
-            "model_instances", "model_config_snapshot"
-        )
+        assert drops[0].args == ("model_instances", "model_config_snapshot")
