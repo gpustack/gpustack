@@ -112,12 +112,48 @@ class UsageIdentityCurrent(BaseModel):
 
 
 class UsageIdentity(BaseModel):
-    value: UsageIdentityValue
+    value: Optional[UsageIdentityValue] = Field(default_factory=UsageIdentityValue)
     current: Optional[UsageIdentityCurrent] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_identity(cls, data):
+        if isinstance(data, dict):
+            current_keys = {
+                "user_id",
+                "api_key_id",
+                "route_id",
+                "organization_id",
+                "group_id",
+            }
+            value_keys = {
+                "user_name",
+                "api_key_name",
+                "access_key",
+                "api_key_is_custom",
+                "route_name",
+                "organization_name",
+                "organization_kind",
+                "group_name",
+            }
+            data = dict(data)
+            if "current" not in data and any(k in data for k in current_keys):
+                data["current"] = {k: data[k] for k in current_keys if k in data}
+            if "value" not in data:
+                data["value"] = {k: data[k] for k in value_keys if k in data}
+        return data
 
 
 class UsageFilterItem(BaseModel):
-    identity: UsageIdentity
+    identity: UsageIdentity = Field(default_factory=UsageIdentity)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_filter_item(cls, data):
+        if isinstance(data, dict):
+            if "identity" not in data:
+                return {"identity": data}
+        return data
 
 
 class UsageFilterOption(UsageFilterItem):
