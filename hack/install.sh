@@ -104,8 +104,8 @@ function package_chart() {
   # into a failed build.
   #
   # Whether they satisfy it is helm's answer, not a test of our own — `helm
-  # dependency list` reports each dependency as `ok`, `missing` or `wrong
-  # version`. Asking only whether charts/ is non-empty is not enough: a moved
+  # dependency list` reports valid dependencies as `ok` or `unpacked`.
+  # Asking only whether charts/ is non-empty is not enough: a moved
   # pin with a stale tgz still sitting there packages the old dependency and
   # says `Successfully packaged`, and nothing before a running cluster would
   # show it.
@@ -114,7 +114,7 @@ function package_chart() {
   # refuses a repository that was never `helm repo add`-ed.
   local unsatisfied
   if ! unsatisfied=$(helm dependency list "${chart_path}" 2>/dev/null |
-    awk 'NR > 1 && NF && $NF != "ok" { print $1 }'); then
+    awk 'NR > 1 && NF && $NF != "ok" && $NF != "unpacked" { print $1 }'); then
     # No answer is not the same as "they are fine": vendor rather than package
     # whatever happens to be sitting in charts/.
     unsatisfied="(could not read the chart's dependencies)"

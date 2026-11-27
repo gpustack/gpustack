@@ -69,8 +69,8 @@ If you set `higress-core.enabled=false`, install a compatible Higress instance b
 # Add the Higress Helm repository
 helm repo add higress.io https://higress.io/helm-charts
 
-# Install higress-core v2.1.9
-helm install higress higress.io/higress-core -n higress-system --create-namespace --version 2.1.9
+# Install higress-core v2.2.6
+helm install higress higress.io/higress-core -n higress-system --create-namespace --version 2.2.6
 ```
 
 Verify the IngressClass is available:
@@ -93,7 +93,7 @@ If you need to customize Higress parameters, refer to the [Higress documentation
 | defaultDataDir                           | /var/lib/gpustack                 | Host data directory path for worker nodes                                 |
 | enableWorkers                            | true                              | Enable worker nodes                                                       |
 | clusterDomain                            | cluster.local                     | Kubernetes cluster service domain suffix                                  |
-| global.hub                               | docker.io                         | Container registry host for every image in the release; see private-registry note |
+| global.hub                               | docker.io                         | Default container registry host; see the private registry section       |
 | global.nodeSelector                      | {}                                | Default nodeSelector for every component; replaced by server/worker value |
 | image.repository                         | gpustack/gpustack                 | Image repo with namespace; see note below                                 |
 | image.tag                                | null                              | Image tag; **required** — published charts carry it, a checkout must state it |
@@ -183,14 +183,14 @@ worker:
 
 ### Pulling Images From a Private Registry
 
-To pull all images (gpustack server/worker and higress-plugins, the bundled higress-core gateway/controller/pilot, and the gpustack-operator with the Kueue / NFD / CSI charts under it) from a mirrored private registry, override `global.hub`:
+To pull the GPUStack server/worker, higress-plugins, bundled Higress gateway/controller/pilot, and operator images from a mirrored private registry, override `global.hub`:
 
 ```bash
 helm install -n gpustack-system gpustack-server oci://registry-1.docker.io/gpustack/gpustack-chart --create-namespace \
   --set global.hub=myregistry.example.com
 ```
 
-One value covers every image. `higress-core` reads `global.hub` natively (the Istio convention it inherits), and the `gpustack-operator` chart — along with the Kueue / NFD / CSI charts vendored under it — accepts it as an alias for the `global.imageRegistry` its own tree uses.
+`higress-core` uses `global.hub` for the gateway, controller, and pilot. The `gpustack-operator` chart and its Kueue, NFD, and CSI dependencies accept it as an alias for `global.imageRegistry`. If you enable Promtail or the Higress built-in Plugin Server, configure their [private image repositories separately](../../docs/installation/air-gapped.md#optional-higress-images-for-helm).
 
 The `image.repository` values include the namespace (e.g. `gpustack/gpustack`), so `global.hub` only needs the registry host. Mirrors that flatten namespaces are not covered by it: those need the per-image `repository` values overridden individually.
 

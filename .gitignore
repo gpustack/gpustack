@@ -172,12 +172,10 @@ __pycache__/
 # kubernetes config
 kubeconfig
 
-# Helm chart dependencies. Both are outputs of `helm dependency update`, which
-# CI runs after patching the dependency versions, so neither is a source. Every
-# dependency is pinned to an exact version, so Chart.lock adds no resolution
-# information that Chart.yaml does not already carry — tracking it only creates
-# a second place to forget when a dependency is bumped.
-charts/gpustack-chart/charts/
+# Helm dependency downloads and the generated lockfile. The local Higress chart
+# is checked in to keep the GPUStack mirror image paths.
+charts/gpustack-chart/charts/*
+!charts/gpustack-chart/charts/higress-core/
 charts/gpustack-chart/Chart.lock
 
 # Others

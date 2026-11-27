@@ -131,7 +131,7 @@ function Package-Chart {
     else {
         $unsatisfied = @($listed |
             Select-Object -Skip 1 |
-            Where-Object { $_.Trim() -ne "" -and ($_ -split '\s+')[-1] -ne "ok" })
+            Where-Object { $_.Trim() -ne "" -and ($_.Trim() -split '\s+')[-1] -notin @("ok", "unpacked") })
     }
     if ($unsatisfied.Count -gt 0) {
         GPUStack.Log.Info "vendoring the chart's dependencies"
