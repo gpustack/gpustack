@@ -121,6 +121,52 @@ async def test_a_non_matching_search_counts_nothing(engine):
     assert (page.pagination.total, page.pagination.totalPage) == (0, 0)
 
 
+async def _sized_page(engine, page, per_page):
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        return await GPUInstanceType.paginated_by_query(
+            session=session, page=page, per_page=per_page
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("page, per_page", [(1, 0), (1, -1), (2, -5), (-1, 0)])
+async def test_a_non_positive_page_size_returns_every_row_on_one_page(
+    engine, page, per_page
+):
+    # A page size below one means "no pagination", as the in-memory lists
+    # (clusters, model sets, draft models) already treat it.
+    await _seed(engine, "a", "b", "c")
+
+    result = await _sized_page(engine, page, per_page)
+
+    assert sorted(i.name for i in result.items) == ["a", "b", "c"]
+    assert (result.pagination.total, result.pagination.totalPage) == (3, 1)
+
+
+@pytest.mark.asyncio
+async def test_a_non_positive_page_size_on_an_empty_table_has_no_pages(engine):
+    result = await _sized_page(engine, 1, 0)
+
+    assert result.items == []
+    assert (result.pagination.total, result.pagination.totalPage) == (0, 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "page, per_page, expected_count, total_page",
+    [(1, 2, 2, 2), (2, 2, 1, 2), (-1, 100, 3, 1)],
+)
+async def test_a_positive_page_size_still_paginates(
+    engine, page, per_page, expected_count, total_page
+):
+    await _seed(engine, "a", "b", "c")
+
+    result = await _sized_page(engine, page, per_page)
+
+    assert len(result.items) == expected_count
+    assert (result.pagination.total, result.pagination.totalPage) == (3, total_page)
+
+
 #
 # The needle is a LIKE pattern, so its wildcards have to be escaped or the search
 # means something the user did not type — and something the watch stream, which
