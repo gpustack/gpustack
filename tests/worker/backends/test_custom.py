@@ -32,13 +32,13 @@ def create_custom_workload(monkeypatch):
         env=None,
         log_collection=False,
         trace_endpoint=None,
-        enable_engine_tracing=None,
+        deployment_env=None,
         return_container=False,
     ):
         backend = CustomServer.__new__(CustomServer)
         backend._model_spec = SimpleNamespace(
             image_name=model_image,
-            enable_engine_tracing=enable_engine_tracing,
+            env=deployment_env,
             disaggregation=(DisaggregationSpec(mode=mode) if disaggregated else None),
             roles=[
                 RoleSpec(
@@ -52,6 +52,7 @@ def create_custom_workload(monkeypatch):
             ],
         )
         backend._model = SimpleNamespace(**vars(backend._model_spec))
+        backend._model.env = dict(env or {})
         backend._model.image_name = (
             router_image or (model_image if router_backend is None else None) or image
         )
@@ -313,7 +314,7 @@ def test_managed_vllm_router_tracing_falls_back_on_missing_python_entrypoint(
     "overrides",
     [
         {"trace_endpoint": None},
-        {"enable_engine_tracing": False},
+        {"deployment_env": {"GPUSTACK_DISABLE_ENGINE_TRACING": "1"}},
         {"router_command": "vllm-router"},
         {"command": ["tini", "--"]},
         {"arguments": ["custom-launcher", "vllm-router"]},

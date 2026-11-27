@@ -1077,11 +1077,6 @@ class ModelSpecBase(SQLModel, ModelSource):
     backend_parameters: Optional[List[str]] = Field(sa_type=JSON, default=None)
     image_name: Optional[str] = None
     run_command: Optional[str] = Field(sa_type=Text, default=None)
-    enable_engine_tracing: Optional[bool] = Field(
-        default=None,
-        description="Set false to skip automatic engine and PD Router tracing at launch. "
-        "Otherwise follow the global tracing configuration.",
-    )
     # Whether this deployment's inference server implements the Anthropic
     # Messages API itself, letting the gateway forward an inbound /v1/messages
     # untouched instead of translating it to /v1/chat/completions. False, the

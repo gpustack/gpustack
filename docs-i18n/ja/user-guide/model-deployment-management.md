@@ -183,7 +183,6 @@ replicas: 1
 | `backend_parameters` | [`Backend Parameters`](#backend-parameters) |
 | `image_name` | 組み込みまたはカスタムバックエンドのコンテナーイメージ。組み込みバックエンドでは `backend_version` と排他的です |
 | `run_command` | 組み込みの vLLM/SGLang では初期引数、カスタムバックエンドでは完全なコマンド |
-| `enable_engine_tracing` | `false` に設定すると、次回起動時にこのデプロイのエンジンとマネージド PD Router の自動トレースが無効になります。ゲートウェイと Worker のトレースは引き続きグローバル設定に従います。 |
 | `native_anthropic_api` | `Native Anthropic API` |
 | `env` | [`Environment Variables`](#environment-variables) |
 | `restart_on_error` | [`Auto-Restart On Error`](#auto-restart-on-error) |

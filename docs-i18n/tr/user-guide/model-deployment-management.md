@@ -187,7 +187,6 @@ Dosyadaki her alan, dağıtım formunda ayarladığınız bir şeydir. Aşağıd
 | `backend_parameters` | [`Backend Parameters`](#backend-parameters) |
 | `image_name` | Yerleşik veya özel bir arka uç için kapsayıcı görüntüsü; yerleşik arka uçlar için `backend_version` ile birbirini dışlayan |
 | `run_command` | Yerleşik vLLM veya SGLang için başlangıç argümanları veya özel bir arka uç için tam komut |
-| `enable_engine_tracing` | `false` olarak ayarlandığında bu dağıtımın motorları ve yönetilen PD Router için bir sonraki başlatmada otomatik izleme kapatılır. Ağ geçidi ve Worker genel izleme ayarlarını kullanmaya devam eder. |
 | `native_anthropic_api` | `Native Anthropic API` |
 | `env` | [`Environment Variables`](#environment-variables) |
 | `restart_on_error` | [`Auto-Restart On Error`](#auto-restart-on-error) |

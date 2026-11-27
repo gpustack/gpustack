@@ -126,6 +126,8 @@ When log export is enabled, the Server and Workers write one JSON stream to the 
 
 For standard vLLM and SGLang launches, GPUStack automatically configures enabled log export (`vLLM >= 0.10.1`, `SGLang >= 0.5.9`) and trace export on managed runner images (`vLLM >= 0.17.0`, `SGLang >= 0.5.12`). Managed PD Router recipes apply their supported observability defaults. Older or custom images keep their existing launch behavior and continue to work with explicit telemetry settings, which always take precedence.
 
+To skip automatic tracing for one deployment’s engines and managed PD Router, set `GPUSTACK_DISABLE_ENGINE_TRACING=1` under **Advanced Options → Environment Variables** on the deployment and restart its instances. Gateway and Worker tracing still follow the global settings. Remove the variable to restore automatic engine tracing on the next launch.
+
 Each tracing component sends spans directly to the selected receiver. The log endpoint must be reachable from the components that export logs. The trace endpoint must be reachable from the Server, Workers, gateways, and inference containers that export traces. The ingest connection uses plaintext gRPC, so use an address on a trusted network. Switching to an external receiver or disabling tracing stops built-in Tempo.
 
 ### Configure Docker

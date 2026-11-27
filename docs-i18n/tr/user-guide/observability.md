@@ -130,6 +130,8 @@ Günlük aktarımı etkin olduğunda Sunucu ve Worker'lar kapsayıcı konsoluna 
 
 Standart vLLM ve SGLang başlatmalarında GPUStack, etkinleştirilen günlük aktarımını (`vLLM >= 0.10.1`, `SGLang >= 0.5.9`) ve yönetilen runner görüntülerinde iz aktarımını (`vLLM >= 0.17.0`, `SGLang >= 0.5.12`) otomatik olarak yapılandırır. Yönetilen PD Router tarifleri, destekledikleri varsayılan gözlemlenebilirlik ayarlarını uygular. Eski veya özel görüntüler mevcut başlatma davranışını korur ve açıkça belirtilen telemetri ayarlarıyla çalışmaya devam eder; açık ayarlar her zaman önceliklidir.
 
+Tek bir dağıtımın motorları ve yönetilen PD Router için otomatik izlemeyi kapatmak üzere dağıtımın ortam değişkenlerine `GPUSTACK_DISABLE_ENGINE_TRACING=1` ekleyip örnekleri yeniden başlatın. Ağ geçidi ve Worker genel izleme ayarlarını kullanmaya devam eder. Değişkeni kaldırdığınızda bir sonraki başlatmada otomatik izleme geri gelir.
+
 Her izleme bileşeni span'leri doğrudan seçilen alıcıya gönderir. Günlük aktaran bileşenler günlük uç noktasına ulaşabilmelidir. İz aktaran Sunucu, Worker'lar, ağ geçitleri ve çıkarım kapsayıcıları iz uç noktasına ulaşabilmelidir. Alım bağlantısı şifresiz gRPC kullanır, bu nedenle güvenilen bir ağdaki adresi kullanın. Harici bir alıcıya geçmek veya izlemeyi devre dışı bırakmak yerleşik Tempo'yu durdurur.
 
 ### Docker'ı Yapılandırma { #configure-docker }

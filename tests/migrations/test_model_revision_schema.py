@@ -253,31 +253,3 @@ def test_v231_bundle_applies_snapshot_and_lookup_indexes(lookup_migration, monke
     migration.op.drop_column.assert_called_once_with(
         'model_instances', 'model_config_snapshot'
     )
-
-
-def test_engine_tracing_migration_preserves_existing_deployments():
-    from alembic.config import Config
-    from alembic.migration import MigrationContext
-    from alembic.operations import Operations
-    from alembic.script import ScriptDirectory
-
-    cfg = Config()
-    cfg.set_main_option(
-        "script_location",
-        str(Path(__file__).resolve().parents[2] / "gpustack/migrations"),
-    )
-    migration = ScriptDirectory.from_config(cfg).get_revision("70fb3c1852e9").module
-    with (
-        sa.create_engine("sqlite://").begin() as conn,
-        Operations.context(MigrationContext.configure(conn)),
-    ):
-        conn.exec_driver_sql("CREATE TABLE models (id INTEGER PRIMARY KEY)")
-        conn.exec_driver_sql("INSERT INTO models VALUES (1)")
-        migration.upgrade()
-        migration.upgrade()
-        assert conn.exec_driver_sql(
-            "SELECT id, enable_engine_tracing FROM models"
-        ).one() == (1, None)
-        migration.downgrade()
-        migration.downgrade()
-        assert [c["name"] for c in sa.inspect(conn).get_columns("models")] == ["id"]

@@ -187,7 +187,6 @@ replicas: 1
 | `backend_parameters` | [`Backend Parameters`](#backend-parameters) |
 | `image_name` | 内置或自定义后端的容器镜像；对于内置后端，与 `backend_version` 互斥 |
 | `run_command` | 内置 vLLM 或 SGLang 的初始参数，或自定义后端的完整命令 |
-| `enable_engine_tracing` | 设为 `false` 可在下次启动时关闭该部署的引擎及托管 PD Router 的自动追踪。网关和 Worker 的追踪仍遵循全局设置。 |
 | `native_anthropic_api` | `Native Anthropic API` |
 | `env` | [`Environment Variables`](#environment-variables) |
 | `restart_on_error` | [`Auto-Restart On Error`](#auto-restart-on-error) |

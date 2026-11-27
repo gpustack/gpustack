@@ -31,7 +31,6 @@ REVISION_FIELDS = (
     "backend_parameters",
     "image_name",
     "run_command",
-    "enable_engine_tracing",
     "native_anthropic_api",
     "generic_proxy",
     "env",

@@ -1083,7 +1083,6 @@ def test_entry_fields_are_pinned():
         "backend_parameters",
         "image_name",
         "run_command",
-        "enable_engine_tracing",
         "native_anthropic_api",
         "env",
         "restart_on_error",

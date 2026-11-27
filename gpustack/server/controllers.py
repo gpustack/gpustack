@@ -2307,10 +2307,6 @@ async def model_spec_digest(
         if independent_backends and field in ROLE_BACKEND_FIELDS:
             continue
         value = getattr(model, field, None)
-        # Only opting out changes the launch shape. Inheriting the global
-        # setting keeps the digest of deployments created before this field.
-        if field == "enable_engine_tracing" and value is not False:
-            continue
         if field == "backend_version" and backend_version is not _UNSET:
             value = backend_version
         if field == "roles":

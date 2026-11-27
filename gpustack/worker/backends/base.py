@@ -1025,7 +1025,11 @@ class InferenceServer(ABC):
         return env
 
     def _engine_trace_endpoint(self) -> Optional[str]:
-        if self._model.enable_engine_tracing is False:
+        # A PD role may replace its environment. Read the deployment's intent
+        # before role projection so every managed engine and Router honors it.
+        deployment = self._model_spec or self._model
+        disabled = (deployment.env or {}).get("GPUSTACK_DISABLE_ENGINE_TRACING", "")
+        if disabled.strip().lower() in {"1", "true"}:
             return None
         return self._config.effective_trace_otlp_endpoint
 
