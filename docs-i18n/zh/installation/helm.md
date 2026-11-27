@@ -235,15 +235,15 @@ higress-core:
         memory: 4096Mi
       limits:
         cpu: 4000m
-        memory: 8192Mi   # 内存持续攀升则继续调高
+        memory: 8192Mi   # raise further if memory keeps climbing
     autoscaling:
       enabled: true
-      minReplicas: 2    # HPA 会忽略 `replicas`；此处保持 >= 2
+      minReplicas: 2    # the HPA ignores `replicas`; keep this >= 2
       maxReplicas: 5
       targetCPUUtilizationPercentage: 80
 ```
 
-#### 按图片请求做容量规划
+#### 按图片请求做容量规划 { #sizing-for-image-requests }
 
 路由与连接负载是内存占用的稳定部分，造成尖峰的是请求大小。检查或改写请求的网关插件都会整体缓冲请求体，因此内存随在途请求字节——并发数乘以请求体大小——增长。携带 base64 编码图片的请求是最常见的触发场景：JSON 里每张图片占其文件大小的 1.33 倍。
 
@@ -281,7 +281,7 @@ Chart 自管的 Worker 已正确接线：`worker.enabled=true` 且未设置 `wor
 - **由 Helm 安装、没有注册 manifest 的 Worker：** 在 Server 所在集群部署一个 worker-only release。它与 Server release 位于同一命名空间，因此不能再渲染该 release 已拥有的 Secret：设置 `imagePullSecret.create: false`，并让 `registrationTokenSecretName` 指向 Server 的 `registration-token` Secret（`worker.enabled` 默认 `false`，而 `server`/`higress-core` 默认启用，三者同样必须显式声明）：
 
 ```yaml
-# Server 所在集群内 worker-only Release 的 values.yaml
+# values.yaml for a worker-only release in the server's cluster
 server:
   enabled: false
 higress-core:
