@@ -188,6 +188,99 @@ async def test_auto_single_worker_candidate_has_gpu_type(config):
     assert candidates[0].gpu_type == "cann"
 
 
+def _device_addresses(worker):
+    return {gpu.index: gpu.network.inet for gpu in worker.status.gpu_devices}
+
+
+async def _select_manual_candidates(config, workers, gpu_ids, model_instances):
+    model = new_model(
+        id=1,
+        name="manual_gpu_addresses",
+        replicas=1,
+        huggingface_repo_id="test/manual-gpu-addresses",
+        backend=BackendEnum.ASCEND_MINDIE.value,
+        cpu_offloading=False,
+        gpu_selector=GPUSelector(gpu_ids=gpu_ids, gpus_per_replica=2 * len(workers)),
+    )
+    selector = AscendMindIEResourceFitSelector(
+        config,
+        model,
+        model_instances,
+        resource_view=ResourceView(model_instances),
+    )
+    pretrained = PretrainedConfig(
+        num_hidden_layers=2,
+        hidden_size=2048,
+        num_attention_heads=16,
+        num_key_value_heads=16,
+        head_dim=128,
+        max_position_embeddings=8192,
+        vocab_size=32768,
+    )
+    with (
+        patch(
+            "gpustack.policies.candidate_selectors.base_candidate_selector.get_pretrained_config_with_workers",
+            new=AsyncMock(return_value=pretrained),
+        ),
+        patch(
+            "gpustack.policies.candidate_selectors.ascend_mindie_resource_fit_selector.get_model_weight_size",
+            return_value=1024**3,
+        ),
+    ):
+        return await selector.select_candidates(workers)
+
+
+@pytest.mark.asyncio
+async def test_manual_gpu_addresses_follow_gpu_indexes_across_workers(config):
+    # A claim on card 2 ranks card 3 first when the selected cards are sorted by
+    # free memory. The rank table still has to pair each index with its own IP.
+    main, subordinate = linux_ascend_1_910b_64gx8(), linux_ascend_2_910b_64gx8()
+    busy = ModelInstance(
+        id=9,
+        name="busy-0",
+        model_id=2,
+        model_name="busy",
+        worker_id=main.id,
+        worker_name=main.name,
+        gpu_type="cann",
+        gpu_indexes=[2],
+        computed_resource_claim=ComputedResourceClaim(vram={2: 1024**3}, ram=0),
+    )
+
+    candidates = await _select_manual_candidates(
+        config,
+        [main, subordinate],
+        [f"{w.name}:cann:{i}" for w in (main, subordinate) for i in (2, 3)],
+        [busy],
+    )
+
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    addresses = _device_addresses(main)
+    assert candidate.gpu_addresses == [addresses[i] for i in candidate.gpu_indexes]
+    sw = candidate.subordinate_workers[0]
+    addresses = _device_addresses(subordinate)
+    assert sw.gpu_addresses == [addresses[i] for i in sw.gpu_indexes]
+
+
+@pytest.mark.asyncio
+async def test_manual_gpu_addresses_cover_only_the_used_devices(config):
+    worker = linux_ascend_1_910b_64gx8()
+
+    candidates = await _select_manual_candidates(
+        config,
+        [worker],
+        [f"{worker.name}:cann:{i}" for i in (1, 2, 3, 4)],
+        [],
+    )
+
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    assert len(candidate.gpu_indexes) == 2
+    addresses = _device_addresses(worker)
+    assert candidate.gpu_addresses == [addresses[i] for i in candidate.gpu_indexes]
+
+
 def expected_candidate(
     worker_id, worker_name, gpu_indexes, vram, subworkers=None, ram=None
 ):
