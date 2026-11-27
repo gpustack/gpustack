@@ -2222,3 +2222,60 @@ def test_hybrid_getter_checks_watch_worker_and_local_fences(hybrid_instance, cha
         )
         is None
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('upstream_status', [200, 405, 503])
+async def test_video_delete_is_forwarded_once_with_original_method_and_result(
+    upstream_status,
+):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock
+
+    payload = {'id': 'native-video', 'deleted': upstream_status == 200}
+    upstream = SimpleNamespace(
+        status=upstream_status,
+        headers={'content-type': 'application/json'},
+        content=SimpleNamespace(
+            iter_chunked=lambda _: ScriptedBody([(0, json.dumps(payload).encode())])
+        ),
+        close=MagicMock(),
+    )
+    transport = SimpleNamespace(request=AsyncMock(return_value=upstream))
+    app = _build_worker_app(40000)
+    app.state.http_client = app.state.http_client_no_proxy = transport
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url='http://worker'
+    ) as client:
+        result = await client.delete('/v1/videos/native-video?source=playground')
+    assert result.status_code == upstream_status
+    assert result.json() == payload
+    transport.request.assert_awaited_once()
+    forwarded = transport.request.await_args.kwargs
+    assert forwarded['method'] == 'DELETE'
+    assert (
+        forwarded['url']
+        == 'http://127.0.0.1:40000/v1/videos/native-video?source=playground'
+    )
+    upstream.close.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_video_delete_still_requires_worker_proxy_authentication():
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from fastapi import HTTPException
+
+    async def deny():
+        raise HTTPException(status_code=403, detail='Worker proxy credentials required')
+
+    app = _build_worker_app(40000)
+    app.dependency_overrides[worker_proxy_auth] = deny
+    upstream = SimpleNamespace(request=AsyncMock())
+    app.state.http_client = app.state.http_client_no_proxy = upstream
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url='http://worker'
+    ) as client:
+        result = await client.delete('/v1/videos/native-video')
+    assert result.status_code == 403
+    upstream.request.assert_not_awaited()

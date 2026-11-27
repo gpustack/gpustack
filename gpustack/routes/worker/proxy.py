@@ -205,7 +205,7 @@ def _filter_response_headers(resp_headers) -> List[Tuple[str, str]]:
 
 @router.api_route(
     "/proxy/{path:path}",
-    methods=["GET", "POST", "OPTIONS", "HEAD"],
+    methods=["GET", "POST", "DELETE", "OPTIONS", "HEAD"],
 )
 async def proxy(path: str, request: Request):  # noqa: C901
     worker_ip_getter: Callable[[], str] = request.app.state.worker_ip_getter

@@ -633,7 +633,8 @@ def model_instance_endpoints(
         return []
     workloads = get_model_instance_workloads(instance)
     if workloads is None:
-        port = (instance.ports or [instance.port])[0]
+        # The reservation list may start with a connector port.
+        port = instance.port or (instance.ports or [None])[0]
         return (
             [
                 ModelInstanceEndpoint(

@@ -431,8 +431,10 @@ async def parse_form_data(request: Request) -> Tuple[aiohttp.FormData, str, bool
         model_name = form.get("model")
         stream = to_bool(form.get("stream"))
 
-        form_data = aiohttp.FormData()
-        for key, value in form.items():
+        # Keep text-only multipart requests multipart: some inference engines
+        # do not parse application/x-www-form-urlencoded request bodies.
+        form_data = aiohttp.FormData(default_to_multipart=True)
+        for key, value in form.multi_items():
             if isinstance(value, UploadFile):
                 form_data.add_field(
                     key,

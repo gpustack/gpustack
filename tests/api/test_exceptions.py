@@ -1,6 +1,6 @@
 import logging
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 import httpx
 import pytest
 
@@ -10,11 +10,55 @@ from gpustack.api.exceptions import (
     OpenAIAPIException,
     http_exception_factory,
     register_handlers,
+    request_error_log_path,
     raise_if_response_error,
     BadRequestException,
     InternalServerErrorException,
     NotFoundException,
 )
+from gpustack.api.middlewares import RequestTimeMiddleware
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("handled", [True, False])
+@pytest.mark.parametrize(
+    "method, suffix", [("GET", ""), ("GET", "/content"), ("DELETE", "")]
+)
+async def test_video_id_is_omitted_from_error_logs(handled, method, suffix, caplog):
+    app = FastAPI()
+    app.add_middleware(RequestTimeMiddleware)
+    register_handlers(app)
+
+    @app.api_route(f"/v1/videos/{{video_id}}{suffix}", methods=[method])
+    async def video_route(video_id: str):
+        if handled:
+            raise InternalServerErrorException("Video unavailable")
+        raise RuntimeError("Video unavailable")
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.request(
+            method, f"/v1/videos/gpustack_7-12_engine-task{suffix}"
+        )
+
+    assert response.status_code == 500
+    assert f"/v1/videos/{{video_id}}{suffix}" in caplog.text
+    assert "gpustack_7-12_engine-task" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "path, expected",
+    [
+        ("/v1/videos/gpustack_7-provider-3_engine-task", "/v1/videos/{video_id}"),
+        ("/v1/videos/video_old-reference", "/v1/videos/{video_id}"),
+        ("/v1/videos/sync", "/v1/videos/sync"),
+    ],
+)
+def test_video_error_log_path_keeps_static_routes(path, expected):
+    request = Request({"type": "http", "path": path, "headers": []})
+
+    assert request_error_log_path(request) == expected
 
 
 @pytest.mark.parametrize(
