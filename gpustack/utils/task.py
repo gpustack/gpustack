@@ -2,7 +2,6 @@ import asyncio
 from functools import partial
 import logging
 import threading
-import time
 from typing import Callable, Optional
 from gpustack.utils.process import threading_stop_event
 
@@ -32,8 +31,8 @@ def run_periodically(
     if stop_event is None:
         stop_event = threading.Event()
 
-    if initial_delay > 0:
-        time.sleep(initial_delay)
+    if initial_delay > 0 and stop_event.wait(initial_delay):
+        return
 
     while not stop_event.is_set():
         try:
@@ -42,7 +41,7 @@ def run_periodically(
             logger.error(f"Error running {func.__name__}: {e}")
             if stop_event.is_set():
                 break
-        time.sleep(interval)
+        stop_event.wait(interval)
 
 
 def run_periodically_in_thread(
