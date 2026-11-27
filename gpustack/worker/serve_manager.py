@@ -5129,18 +5129,46 @@ class ServeManager(ContainerLogPersister):
         observed = (
             (mi.restart_count or 0) if label is None else safe_int(label, default=-1)
         )
+        if observed < 0:
+            logger.warning(
+                "Cannot report Router CPU rejection for instance %s: "
+                "invalid workload restart-count label %r (%s)",
+                mi.id,
+                label,
+                message,
+            )
+            return
         current = self._clientset.model_instances.get(id=mi.id, use_cache=False)
-        if (
-            observed < 0
-            or observed != (current.restart_count or 0)
-            or current.worker_id != self._worker_id
-        ):
+        current_generation = current.restart_count or 0
+        if observed != current_generation or current.worker_id != self._worker_id:
+            logger.debug(
+                "Ignoring stale Router CPU rejection for instance %s: generation %s "
+                "on Worker %s, current generation %s on Worker %s (%s)",
+                mi.id,
+                observed,
+                self._worker_id,
+                current_generation,
+                current.worker_id,
+                message,
+            )
             return
         update = ModelInstanceUpdate.model_validate(current.model_dump())
         update.restart_count = observed
         update.state = ModelInstanceStateEnum.ERROR
         update.state_message = message
-        self._clientset.model_instances.update(id=mi.id, model_update=update)
+        try:
+            self._clientset.model_instances.update(id=mi.id, model_update=update)
+        except HTTPException as exc:
+            if exc.status_code != 409:
+                raise
+            logger.debug(
+                "Server declined Router CPU rejection for instance %s at generation %s: "
+                "%s (%s)",
+                mi.id,
+                observed,
+                exc.message,
+                message,
+            )
 
     def _report_model_instance(self, mi: ModelInstance, **fields):
         """Keep the observed round attached to local runtime state reports."""

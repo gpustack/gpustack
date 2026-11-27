@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1949,6 +1950,24 @@ def test_legacy_stop_guard_round_trips_in_existing_json_column(dialect):
     )
     assert restored == servers
     assert restored.workloads is None
+
+
+@pytest.mark.parametrize('dialect', [mysql.dialect(), postgresql.dialect()])
+def test_router_rejection_reads_single_worker_from_existing_json(dialect):
+    legacy = json.dumps(
+        {'router_cpu_rejection': {'worker_id': 1, 'message': 'OutOfcpu'}}
+    )
+    column = ModelInstance.__table__.c.distributed_servers.type
+    read = column.result_processor(dialect, None)
+
+    restored = read(legacy)
+
+    assert restored.router_cpu_rejection.worker_ids == [1]
+    assert restored.router_cpu_rejection.message == 'OutOfcpu'
+    assert not restored.router_cpu_rejection.retry_pending
+    stored = column.bind_processor(dialect)(restored)
+    assert json.loads(stored)['router_cpu_rejection']['worker_ids'] == [1]
+    assert read(stored) == restored
 
 
 def _sg_component(kind='sglang_engine', worker_id=1, **fields):

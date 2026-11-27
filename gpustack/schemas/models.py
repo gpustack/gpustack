@@ -2109,6 +2109,17 @@ class RouterCPURejection(BaseModel):
     message: str
     retry_pending: bool = False
 
+    @model_validator(mode="before")
+    @classmethod
+    def read_legacy_worker_id(cls, value: Any) -> Any:
+        if (
+            isinstance(value, dict)
+            and "worker_ids" not in value
+            and "worker_id" in value
+        ):
+            return {**value, "worker_ids": [value["worker_id"]]}
+        return value
+
 
 class DistributedServers(BaseModel):
     # Indicates how the distributed servers coordinate with the main worker.

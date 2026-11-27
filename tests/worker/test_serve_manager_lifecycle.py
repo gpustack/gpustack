@@ -2799,17 +2799,19 @@ def test_failed_state_write_keeps_workload_without_tracked_process(manager):
 
 @pytest.mark.parametrize('manager', [1], indirect=True)
 @pytest.mark.parametrize(
-    'observed, current, report',
+    'observed, current, response_code, log',
     [
-        ('3', 3, True),
-        ('2', 3, False),
-        ('3', 4, False),
-        (None, 4, False),
-        (None, 3, True),
+        ('3', 3, 200, None),
+        ('2', 3, None, 'Ignoring stale Router CPU rejection'),
+        ('3', 4, None, 'Ignoring stale Router CPU rejection'),
+        (None, 4, None, 'Ignoring stale Router CPU rejection'),
+        (None, 3, 200, None),
+        ('invalid', 3, None, 'invalid workload restart-count label'),
+        ('3', 3, 409, 'Server declined Router CPU rejection'),
     ],
 )
 def test_router_cpu_report_uses_observed_workload_generation(
-    manager, observed, current, report
+    manager, observed, current, response_code, log, caplog
 ):
     serve, client = manager
     instance = _instance()
@@ -2826,11 +2828,21 @@ def test_router_cpu_report_uses_observed_workload_generation(
         state_message="Node didn't have enough resource: cpu, requested: 2000",
         labels={} if observed is None else {WORKLOAD_RESTART_COUNT_LABEL: observed},
     )
-    with patch('gpustack.worker.serve_manager.get_workload', return_value=workload):
+    if response_code == 409:
+        client.model_instances.update.side_effect = HTTPException(
+            409, 'Conflict', 'CPU rejection does not match the active Router'
+        )
+    with (
+        patch('gpustack.worker.serve_manager.get_workload', return_value=workload),
+        caplog.at_level('DEBUG', logger='gpustack.worker.serve_manager'),
+    ):
         serve.sync_model_instances_state()
 
-    client.model_instances.get.assert_called_with(id=instance.id, use_cache=False)
-    if report:
+    if observed == 'invalid':
+        client.model_instances.get.assert_not_called()
+    else:
+        client.model_instances.get.assert_called_with(id=instance.id, use_cache=False)
+    if response_code is not None:
         client.model_instances.update.assert_called_once()
         updated = client.model_instances.update.call_args.kwargs['model_update']
         assert updated.restart_count == 3
@@ -2839,6 +2851,10 @@ def test_router_cpu_report_uses_observed_workload_generation(
     else:
         client.model_instances.update.assert_not_called()
     serve._update_model_instance.assert_not_called()
+    if log is not None:
+        assert log in caplog.text
+        assert 'OutOfcpu:' in caplog.text
+        assert 'Failed to sync model instance' not in caplog.text
 
 
 def test_failed_state_write_cancels_queued_recovery_of_running_workload(manager):
