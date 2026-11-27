@@ -376,7 +376,9 @@ async def test_pending_instance_keeps_gpu_count_validation_after_manual_dp_edit(
         vllm_resource_fit_selector, 'estimate_model_vram', AsyncMock(return_value=0)
     )
     monkeypatch.setattr(
-        vllm_resource_fit_selector, 'estimate_offloaded_lookup_bytes', lambda *_: 0
+        vllm_resource_fit_selector,
+        'estimate_offloaded_lookup_bytes_from_weights',
+        AsyncMock(return_value=0),
     )
     monkeypatch.setattr(
         scheduler, 'pick_highest_score_candidate', lambda found: next(iter(found), None)
