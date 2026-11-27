@@ -1675,3 +1675,22 @@ def test_smg_endpoint_rejects_a_missing_component(managed_rank_instance):
     assert len(model_instance_endpoints(instance)) == 1
     instance.distributed_servers.workloads[-1].component = None
     assert model_instance_endpoints(instance) == []
+
+
+@pytest.mark.parametrize("api_port, expected", [(40000, 40000), (None, 30000)])
+def test_unmanaged_instance_uses_api_port_before_reserved_ports(api_port, expected):
+    from gpustack.schemas.models import ModelInstanceStateEnum
+    from gpustack.utils.model_instance_workers import model_instance_endpoints
+
+    instance = ModelInstance(
+        id=7,
+        model_id=1,
+        worker_id=1,
+        state=ModelInstanceStateEnum.RUNNING,
+        port=api_port,
+        ports=[30000, 40000],
+    )
+
+    (endpoint,) = model_instance_endpoints(instance)
+
+    assert endpoint.port == expected

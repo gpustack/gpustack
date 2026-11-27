@@ -4,6 +4,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 import httpx
 import logging
+import re
 from pydantic import BaseModel
 
 
@@ -242,6 +243,13 @@ openai_api_error_responses = {
 }
 
 
+def request_error_log_path(request: Request) -> str:
+    """Keep video task references out of application error logs."""
+    return re.sub(
+        r"(?<=/v1/videos/)(?:gpustack_|video_)[^/]+", "{video_id}", request.url.path
+    )
+
+
 def register_handlers(app: FastAPI):
     @app.exception_handler(HTTPException)
     async def http_exception_handler(request: Request, exc: HTTPException):
@@ -252,7 +260,7 @@ def register_handlers(app: FastAPI):
                 exc.status_code,
                 exc.reason,
                 exc.message,
-                request.url.path,
+                request_error_log_path(request),
                 request.method,
             )
         return JSONResponse(

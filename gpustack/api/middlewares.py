@@ -16,7 +16,7 @@ from openai.types.audio.transcription_create_response import (
 from openai.types.create_embedding_response import (
     Usage as EmbeddingUsage,
 )
-from gpustack.api.exceptions import ErrorResponse
+from gpustack.api.exceptions import ErrorResponse, request_error_log_path
 from gpustack.routes.rerank import RerankResponse, RerankUsage
 from gpustack.schemas.images import ImageGenerationChunk, ImagesResponse
 from gpustack.schemas.model_usage import OperationEnum
@@ -65,7 +65,7 @@ class RequestTimeMiddleware(BaseHTTPMiddleware):
             logger.exception(
                 "Unhandled exception in request %s %s",
                 request.method,
-                request.url.path,
+                request_error_log_path(request),
             )
             response = JSONResponse(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

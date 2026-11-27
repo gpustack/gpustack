@@ -1072,6 +1072,7 @@ def test_the_mount_reaches_the_container_read_only():
     from gpustack.worker.pd_injection import PDInjection
 
     class _Stub:
+        _model = _model()
         _model_path = None
 
         def _pd_injection(self):
@@ -1097,6 +1098,7 @@ def test_host_files_generate_read_only_kubernetes_file_volumes(monkeypatch, mirr
     )
 
     class _Stub:
+        _model = _model()
         _model_path = "/models/model/config.json"
 
         def _pd_injection(self):

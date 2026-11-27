@@ -5523,3 +5523,50 @@ def test_managed_command_preserves_tokenized_option_values(option, value, equal)
         'serve',
         *arguments,
     ]
+
+
+def _configured_video_storage_env(
+    monkeypatch,
+    tmp_path,
+    *,
+    model_env=None,
+    worker_env=None,
+    backend="vLLM",
+    categories=("video",),
+    mirrored=False,
+):
+    monkeypatch.setattr(
+        "gpustack.worker.backends.base.runtime_envs.GPUSTACK_RUNTIME_DEPLOY_MIRRORED_DEPLOYMENT",
+        mirrored,
+    )
+    monkeypatch.setattr(
+        "gpustack.worker.backends.base.filter_env_vars",
+        lambda _env: dict(worker_env or {}),
+    )
+    server = _StubServer.__new__(_StubServer)
+    server._model = types.SimpleNamespace(
+        categories=list(categories),
+        backend=backend,
+        env=model_env,
+    )
+    server._model_instance = types.SimpleNamespace(id=4)
+    server._config = types.SimpleNamespace(data_dir=str(tmp_path))
+    server._should_disable_cuda_compat = lambda: False
+    return server._get_configured_env()
+
+
+@pytest.mark.parametrize("backend", ["vLLM", "SGLang"])
+def test_video_uses_native_storage_defaults(monkeypatch, tmp_path, backend):
+    env = _configured_video_storage_env(monkeypatch, tmp_path, backend=backend)
+    assert "VLLM_OMNI_SERVER_STORAGE__PATH" not in env
+    assert "VLLM_OMNI_SERVER_STORAGE__FILE_TTL" not in env
+    assert not (tmp_path / "outputs").exists()
+
+
+def test_video_respects_explicit_native_storage_config(monkeypatch, tmp_path):
+    storage = {
+        "VLLM_OMNI_SERVER_STORAGE__PATH": "/custom/videos",
+        "VLLM_OMNI_SERVER_STORAGE__FILE_TTL": "60",
+    }
+    env = _configured_video_storage_env(monkeypatch, tmp_path, model_env=storage)
+    assert {key: env[key] for key in storage} == storage
