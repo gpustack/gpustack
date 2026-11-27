@@ -187,10 +187,21 @@ async def request_to_worker(
         return resp, body if body else None
 
 
+# SSE fields that describe the event whose ``data:`` line follows. A blank line
+# ends an event, so terminating one of these on its own would dispatch an event
+# without data and drop its name from the data that comes next. A comment line
+# (``:``) can sit between them and the data, so it gets the same treatment.
+_SSE_EVENT_PREFIX_FIELDS = ("event:", "id:", "retry:", ":")
+
+
 def _process_stream_line(line_bytes: bytes) -> str:
     """Process a line of bytes to ensure it is properly formatted for streaming."""
     line = line_bytes.decode("utf-8").strip()
-    return line + "\n\n" if line else ""
+    if not line:
+        return ""
+    if line.startswith(_SSE_EVENT_PREFIX_FIELDS):
+        return line + "\n"
+    return line + "\n\n"
 
 
 async def _stream_response_chunks(
