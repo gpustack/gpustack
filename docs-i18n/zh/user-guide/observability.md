@@ -124,6 +124,8 @@ Tempo 会在定期清理时移除过期的块。保留时间控制块的保留�
 
 部署详情中的 `Request Tracing` 标签页初始搜索最近 24 小时。查看 Trace 需要组织 Owner 角色或平台管理员权限。GPUStack 应用与部署指标相同的模型可见性规则。可以逐页查看结果，或粘贴 GPUStack 或 Tempo 中显示的请求 ID 或 Trace ID 进行搜索。如果配置了日志上报，可以从请求详情复制请求 ID 并到日志后端查询。使用外部 Tempo 时，通过 `GPUSTACK_TRACE_QUERY_URL` 或 `tracing.queryURL` 配置查询端点。
 
+使用外部 Tempo 时，每套 GPUStack 必须使用独立的 Tempo 实例或租户。若多套 GPUStack 共用一个 Tempo 集群，请将每套 GPUStack 的写入端点和查询端点都路由到各自的专属租户。模型 ID 仅在本套 GPUStack 内唯一，共享租户可能导致用户看到另一套 GPUStack 中相同模型 ID 的请求。
+
 启用日志上报后，Server 和 Worker 将日志以单一 JSON 流写入容器控制台。Alloy 同时读取该日志流和受支持格式的引擎日志。要检查丢弃的记录，请查看 Alloy 的 `otelcol_processor_filter_logs_filtered_total` 指标中的 `engine_format` 或 `higress_format` 组件。引擎过滤器会丢弃缺少可识别日志前缀的独立纯文本行。
 
 对于标准 vLLM 和 SGLang 启动方式，GPUStack 会自动配置已启用的日志上报（`vLLM >= 0.10.1`、`SGLang >= 0.5.9`）以及受管 Runner 镜像的 Trace 上报（`vLLM >= 0.17.0`、`SGLang >= 0.5.12`）。托管 PD Router 配方应用各自支持的可观测性默认设置。旧版本或自定义镜像保持原有启动行为，并继续支持显式遥测配置，且显式设置始终优先。
