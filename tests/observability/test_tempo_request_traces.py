@@ -1050,6 +1050,10 @@ async def test_pages_resume_partial_trace_after_late_arrivals(
     )
     assert [row.request_id for row in page.items] == ["old-2"]
 
+    # A newer request arrives in the very trace being resumed.
+    (late_request,) = _candidate_batches(_candidate(1, 103 * _NS))
+    late_request["scopeSpans"][0]["spans"][0]["spanId"] = "0000000000000004"
+    older_requests.append(late_request)
     candidates.remove(old)
     for index in range(competing_traces):
         late_trace = _candidate(index + 3, 102 * _NS + 500_000_000 - index)
@@ -1072,6 +1076,39 @@ async def test_pages_resume_partial_trace_after_late_arrivals(
         client, "http://tempo", 42, position=position, **options
     )
     assert [row.trace_id for row in page.items] == ["2"]
+    assert page.next_cursor is None
+
+
+@pytest.mark.asyncio
+async def test_legacy_partial_cursor_finishes_trace_in_request_id_order():
+    candidate = _candidate(1, 102 * _NS)
+    batches = [
+        _span(
+            "gpustack.worker",
+            span_id,
+            None,
+            "proxy",
+            102,
+            1,
+            **{"gpustack.model_id": 42, "gpustack.request_id": request_id},
+        )
+        for span_id, request_id in [(1, "C"), (2, "B"), (3, "A")]
+    ]
+    client = _paged_tempo_client([candidate], {"1": batches})
+    position = TracePagePosition(start=1, end=200, before=103, partial="1", offset=1)
+    for expected in ("B", "A"):
+        page = await search_request_trace_page(
+            client,
+            "http://tempo",
+            42,
+            position=position,
+            page_size=1,
+            identifier=None,
+            outcome=None,
+            instance_id=None,
+            no_engine=False,
+        )
+        assert [row.request_id for row in page.items] == [expected]
     assert page.next_cursor is None
 
 

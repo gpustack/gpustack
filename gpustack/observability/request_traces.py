@@ -112,6 +112,7 @@ class RequestTracePage(BaseModel):
 
 
 _TraceId = Annotated[str, StringConstraints(pattern=f"^{TRACE_ID}$")]
+_SpanId = Annotated[str, StringConstraints(pattern=f"^{SPAN_ID}$")]
 
 
 class TracePagePosition(BaseModel):
@@ -124,6 +125,8 @@ class TracePagePosition(BaseModel):
         default_factory=list, max_length=_LEGACY_CURSOR_ID_LIMIT
     )
     partial: Optional[_TraceId] = None
+    after_request: Optional[Tuple[int, _SpanId]] = None
+    # Accepted while finishing a partial trace from an offset-based cursor.
     offset: int = Field(default=0, ge=0)
 
     @field_serializer("seen", when_used="json")
@@ -822,6 +825,10 @@ async def _exact_trace_candidate(
     return None
 
 
+def _request_key(row: RequestTraceRecord) -> Tuple[int, str]:
+    return row.started_at_ms, row.entry_span_id or ""
+
+
 @dataclass
 class _RowFilter:
     model_id: int
@@ -854,11 +861,7 @@ class _RowFilter:
                 and (self.instance_id is None or row.instance_id == self.instance_id)
                 and (not self.no_engine or not row.has_engine)
             ),
-            key=lambda row: (
-                row.started_at_ms,
-                row.request_id or "",
-                row.entry_span_id,
-            ),
+            key=_request_key,
             reverse=True,
         )
 
@@ -881,12 +884,23 @@ def _page_from_candidates(
 ) -> RequestTracePage:
     cursor = position.encode()
     items: List[RequestTraceRecord] = []
-    partial, offset = position.partial, position.offset
+    partial = position.partial
     for trace in candidates:
         started, trace_id = key = _candidate_key(trace)
         rows = filters.rows(trace)
-        if trace_id == partial:
-            rows = rows[offset:]
+        legacy_offset = position.offset if trace_id == partial else 0
+        if trace_id == partial and position.after_request is not None:
+            rows = [row for row in rows if _request_key(row) < position.after_request]
+        elif legacy_offset:
+            rows.sort(
+                key=lambda row: (
+                    row.started_at_ms,
+                    row.request_id or "",
+                    row.entry_span_id,
+                ),
+                reverse=True,
+            )
+            rows = rows[legacy_offset:]
         if trace_id != partial or position.boundary is None:
             before = max(
                 position.start + 1,
@@ -902,11 +916,15 @@ def _page_from_candidates(
         items.extend(rows[:remaining])
         if len(rows) > remaining:
             position.partial = trace_id
-            position.offset = (offset if trace_id == partial else 0) + remaining
+            position.after_request = (
+                _request_key(items[-1]) if remaining and not legacy_offset else None
+            )
+            position.offset = legacy_offset + remaining if legacy_offset else 0
             return RequestTracePage(
                 items=items, cursor=cursor, next_cursor=position.encode()
             )
     position.partial = None
+    position.after_request = None
     position.offset = 0
     return RequestTracePage(
         items=items,
