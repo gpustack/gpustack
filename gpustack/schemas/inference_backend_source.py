@@ -394,10 +394,15 @@ async def reconcile_backend(
             if backend.version_configs and backend.version_configs.root:
                 for version, ver_config in backend.version_configs.root.items():
                     config_data = ver_config.model_dump()
-                    if config_data.get("built_in_frameworks"):
-                        config_data["custom_framework"] = config_data[
-                            "built_in_frameworks"
-                        ][0]
+                    frameworks = config_data.get("built_in_frameworks")
+                    if frameworks is not None:
+                        # ``is not None``, not truthiness: a source version
+                        # declaring no framework normalizes to [], and a
+                        # row left carrying that marker would stay
+                        # source-owned on a source nobody syncs any more —
+                        # marked but unfixed by every later reconcile.
+                        if frameworks:
+                            config_data["custom_framework"] = frameworks[0]
                         config_data["built_in_frameworks"] = None
                     converted_versions[version] = VersionConfig(**config_data)
             flag_modified(backend, "version_configs")

@@ -647,6 +647,13 @@ async def test_reconcile_backend_smart_merge_and_cleanup():
         assert bar is not None
         assert bar.backend_source == BackendSourceEnum.CUSTOM
         assert bar.enabled is False
+        # The downgrade unmarks every carried version — the framework-less
+        # ones normalizing to [] included — so no source-owned entry stays
+        # frozen on a row no sync manages any more.
+        assert all(
+            config.built_in_frameworks is None
+            for config in bar.version_configs.root.values()
+        )
 
         # baz was disabled but carried a hand-added version, which no in-use
         # check covers → also converted rather than deleted, versions intact.
