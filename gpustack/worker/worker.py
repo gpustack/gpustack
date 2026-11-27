@@ -448,9 +448,11 @@ class Worker:
         app.state.record_successful_inference = (
             self._serve_manager.record_successful_inference
         )
-        app.add_middleware(BaseHTTPMiddleware, dispatch=proxy.set_port_from_model_name)
         if self._config.effective_trace_otlp_endpoint:
             app.add_middleware(proxy.WorkerProxyTracingMiddleware)
+        # Starlette executes the last-added middleware first. Resolve the
+        # local workload before tracing so every exported span has its identity.
+        app.add_middleware(BaseHTTPMiddleware, dispatch=proxy.set_port_from_model_name)
         app.include_router(
             route_config.router,
             prefix=default_versioned_prefix,

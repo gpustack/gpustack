@@ -14,7 +14,6 @@ from typing import (
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse, JSONResponse
 from starlette.background import BackgroundTask
-from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from gpustack.api.auth import worker_proxy_auth
@@ -75,7 +74,7 @@ def _is_event_stream(content_type: Optional[str]) -> bool:
 
 
 class WorkerProxyTracingMiddleware:
-    """Trace routed inference across Worker lookup, auth and response relay."""
+    """Trace resolved inference across Worker auth and response relay."""
 
     def __init__(self, app: ASGIApp):
         self.app = app
@@ -89,8 +88,9 @@ class WorkerProxyTracingMiddleware:
             await self.app(scope, receive, send)
             return
         tracer = getattr(scope["app"].state, "inference_tracer", None)
-        headers = Headers(scope=scope)
-        if tracer is None or router_header_key not in headers:
+        state = scope.get("state", {})
+        endpoint = state.get("model_instance_endpoint")
+        if tracer is None or endpoint is None:
             await self.app(scope, receive, send)
             return
         await trace_inference_http(
@@ -100,7 +100,11 @@ class WorkerProxyTracingMiddleware:
             send,
             tracer,
             "POST inference proxy",
-            {"http.request.method": "POST"},
+            {
+                "http.request.method": "POST",
+                "gpustack.model_id": endpoint.model_id,
+                "gpustack.model_instance_id": endpoint.instance_id,
+            },
         )
 
 

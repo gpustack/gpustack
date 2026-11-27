@@ -19,6 +19,7 @@ import pytest
 from aiohttp import ClientSession, web
 from fastapi import FastAPI, Request
 from httpx import ASGITransport, AsyncClient
+from starlette.middleware import Middleware
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -215,7 +216,9 @@ async def test_worker_trace_reaches_engine_and_covers_proxy_stream(
         42, 7, 1, 9900, instance_name="llm-7"
     )
     if trace_enabled:
-        app.add_middleware(worker_proxy.WorkerProxyTracingMiddleware)
+        app.user_middleware.append(
+            Middleware(worker_proxy.WorkerProxyTracingMiddleware)
+        )
     tracer = provider.get_tracer(__name__)
     app.state.inference_tracer = tracer if trace_enabled else None
     monkeypatch.setattr(envs, "PROXY_TTFT_TIMEOUT", 0.02)
