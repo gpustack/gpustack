@@ -10,6 +10,8 @@ from gpustack import envs
 from gpustack.gateway.labels_annotations import managed_labels
 from gpustack.gateway.utils import (
     RoutePrefix,
+    async_video_regexes,
+    cleanup_generic_proxy_router,
     cleanup_generic_proxy_router_spec_diff,
     cleanup_model_mapper,
     diff_proxies,
@@ -20,14 +22,19 @@ from gpustack.gateway.utils import (
     generic_proxy_router_diff_spec,
     get_expected_match_list,
     higress_metadata_equal,
+    ingress_rule_for_model,
+    is_video_route,
     mirror_from_anchor_ingress,
     model_instance_registry,
     model_instances_registry_list,
     provider_proxy_plugin_spec,
     provider_registry,
+    route_alias_enabled,
     route_rule_ingress_names,
+    video_category,
 )
 from gpustack.schemas.models import ModelInstance
+from gpustack.schemas.model_routes import ModelRoute
 from gpustack.gateway.client.extensions_higress_io_v1_api import (
     WasmPluginMatchRule,
     WasmPluginSpec,
@@ -607,6 +614,140 @@ def test_included_proxy_route_off_has_no_proxy_paths():
     )
     paths = [p.path for p in ingress.spec.rules[0].http.paths]
     assert not any("model/proxy" in p for p in paths)
+
+
+# --- Asynchronous video ----------------------------------------------------
+
+
+def _ingress_regexes():
+    return [path.path for path in ingress_rule_for_model().http.paths]
+
+
+def _ingress_matches(path: str) -> bool:
+    # Envoy matches a route regex against the whole path.
+    return any(re.fullmatch(pattern, path) for pattern in _ingress_regexes())
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/v1/videos",  # async create
+        "/v1/videos/gpustack_2-7_video_abc",  # status / cancel, as the client sends it
+        "/v1/videos/video_abc",  # status / cancel, as the router rewrites it
+        "/v1/videos/gpustack_2-provider-5_video_abc/content",
+        "/v1/videos/video_abc/content",
+        "/v1/videos/sync",  # synchronous generation
+    ],
+)
+def test_model_ingress_routes_every_video_path(path):
+    """The whole video family rides the model ingress, so a create's body
+    resolves the model and a follow-up stays on the route the router picked."""
+    assert _ingress_matches(path)
+
+
+@pytest.mark.parametrize(
+    "path, target, origin, upstream",
+    [
+        (
+            "/v1/videos/gpustack_2-7_video_abc",
+            "2-7",
+            "video_abc",
+            "/v1/videos/video_abc",
+        ),
+        (
+            "/v1/videos/gpustack_2-provider-5_video_abc/content",
+            "2-provider-5",
+            "video_abc",
+            "/v1/videos/video_abc/content",
+        ),
+    ],
+)
+def test_video_regexes_split_the_id_and_render_the_native_path(
+    path, target, origin, upstream
+):
+    """``target`` is the route id plus the instance, as ``targetPatterns``
+    spell it; ``origin`` is the engine's own id, and ``path`` is what the
+    upstream must receive in its place."""
+    matched = [rule for rule in async_video_regexes if re.match(rule["regex"], path)]
+    assert len(matched) == 1
+    match = re.match(matched[0]["regex"], path)
+    assert (match["target"], match["origin"]) == (target, origin)
+    assert re.sub(r"\{([a-z]+)\}", lambda m: match[m[1]], matched[0]["path"]) == (
+        upstream
+    )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/v1/videos",  # the create: body-driven, never a follow-up
+        "/v1/videos/sync",
+        "/v1/videos/gpustack_2-7_video_abc/extra",  # no operation this shape names
+        "/v1/videos/gpustack_2-7_",  # no native id
+        "/model/proxy/2/v1/videos/gpustack_2-7_video_abc",  # the alias spelling
+    ],
+)
+def test_video_regexes_leave_everything_else_alone(path):
+    assert not any(re.match(rule["regex"], path) for rule in async_video_regexes)
+
+
+def test_every_video_upstream_path_stays_on_the_model_ingress():
+    """The router rewrites ``:path`` before the route match, so the path it
+    writes has to be one the model ingress routes -- or the follow-up falls
+    through to the Server with an id the Server cannot read."""
+    for rule in async_video_regexes:
+        assert _ingress_matches(rule["path"].replace("{origin}", "video_abc"))
+
+
+@pytest.mark.parametrize(
+    "generic_proxy, categories, expected",
+    [
+        (True, [], True),
+        (False, [video_category], True),
+        (True, ["llm", video_category], True),
+        (False, ["llm"], False),
+        # the row is gone by the time the reconcile reads it
+        (None, None, False),
+    ],
+)
+def test_alias_entry_follows_generic_proxy_or_video_category(
+    generic_proxy, categories, expected
+):
+    """Generic proxy addresses a route by id; a video route's follow-ups
+    name it by id inside the job id. Either needs the mapping, and nothing
+    else does."""
+    route = (
+        None
+        if generic_proxy is None
+        else ModelRoute(
+            id=7, name="r", generic_proxy=generic_proxy, categories=categories
+        )
+    )
+
+    assert route_alias_enabled(route) is expected
+    assert is_video_route(route) is (bool(categories) and video_category in categories)
+
+
+@pytest.mark.asyncio
+async def test_cleanup_keeps_a_video_route_alias_without_generic_proxy():
+    """The startup prune must not retire the entry a video route's
+    follow-ups resolve through just because generic proxy is off."""
+    live = _empty_router_spec()
+    live = generic_proxy_router_diff_spec(live, 1, "plain-route")
+    live = generic_proxy_router_diff_spec(live, 2, "video-route")
+    live = generic_proxy_router_diff_spec(live, 3, "gone-route")
+    routes = [
+        ModelRoute(id=1, name="plain-route", generic_proxy=False, categories=[]),
+        ModelRoute(id=2, name="video-route", generic_proxy=False, categories=["video"]),
+    ]
+
+    ensure = AsyncMock()
+    with patch("gpustack.gateway.utils.ensure_wasm_plugin", ensure):
+        await cleanup_generic_proxy_router(routes, api=object(), namespace="gpustack")
+
+    assert ensure.await_count == 1
+    spec_diff = ensure.await_args.kwargs["spec_diff"]
+    assert _alias_mapping(spec_diff(live)) == {"2": "video-route"}
 
 
 def test_lora_destinations_reuse_instance_registries():

@@ -228,14 +228,28 @@ openai_model_prefixes: List[RoutePrefix] = [
         ]
     ),
     RoutePrefix(["/rerank"], additional_versions=["/v2"]),
-    # Synchronous video generation (vLLM-Omni / SGLang diffusion,
-    # multipart in, raw video bytes out). The gateway treats it as an
-    # OpenAI-style model route: the request body carries ``model``, so
-    # model-name resolution and mapping apply, while ai-proxy passes it
-    # through untouched (no ApiName is registered for it upstream, which
-    # also means neither the multipart body nor the binary response is
-    # ever buffered by the gateway).
-    RoutePrefix(["/videos/sync"]),
+    # Video generation (vLLM-Omni / SGLang Diffusion), synchronous and
+    # asynchronous alike. The gateway treats the whole family as an
+    # OpenAI-style model route: the request body of either create carries
+    # ``model``, so model-name resolution and mapping apply.
+    #
+    # ``/videos/sync`` (multipart in, raw video bytes out) is passed through
+    # by ai-proxy untouched -- no ApiName is registered for it upstream,
+    # which also means neither the multipart body nor the binary response is
+    # ever buffered by the gateway. ``/videos`` is the asynchronous protocol:
+    # POST creates a job whose id only means something on the instance that
+    # created it, and the follow-ups (GET /videos/{id}, GET
+    # /videos/{id}/content, DELETE /videos/{id}) carry nothing but that id.
+    # generic-proxy-router makes the id self-routing (``async_video_regexes``)
+    # and gpustack-lb pins the follow-ups to the creating instance.
+    #
+    # Both spellings are listed, as ``anthropic_model_exact`` lists
+    # ``/messages`` and ``/messages/count_tokens``: the plugins'
+    # ``enableOnPathSuffix`` lists are exact-suffix matches, where
+    # ``/v1/videos/sync`` is not ``/v1/videos``. On the Server the two split
+    # the other way: ``/videos`` has its own router, ``/videos/sync`` rides
+    # the generic model proxy (``routes/openai.py``).
+    RoutePrefix(["/videos", "/videos/sync"]),
     # The Jev/System One decision API (decision-category deployments:
     # vLLM's /v1/systemone or any Jev-compatible server). Same dispatch
     # shape as the video route: the body carries ``model`` (the route
@@ -248,6 +262,78 @@ openai_model_prefixes: List[RoutePrefix] = [
 anthropic_model_exact: List[RoutePrefix] = [
     RoutePrefix(["/messages", "/messages/count_tokens", "/complete"]),
 ]
+
+
+# Self-routing asynchronous video job IDs, rendered into
+# generic-proxy-router's ``defaultConfig`` (``videoRegexes`` and
+# ``videoIdRewriteOnRouteNamePrefix``). Deployment-level like the plugin's
+# ``aliasNameMapping``: nothing here is per route. Which routes take part is
+# decided by that mapping -- a route id resolves to a model name only for a
+# route that has an entry (``route_alias_enabled``) -- and by the route name
+# check below, which limits the response rewrite to GPUStack model routes.
+#
+# A job's native id only exists on the instance that created it, and the
+# OpenAI SDK's follow-ups carry nothing but the id: no model, no header. So
+# the gateway makes the id self-describing when the create response passes
+# through,
+#
+#     gpustack_<route-id>-<instance-id>_<native-id>
+#     gpustack_<route-id>-provider-<id>_<native-id>
+#
+# The route id is the ``aliasNameMapping`` key -- the same one
+# ``/model/proxy/{id}`` resolves through -- and the target is what the
+# plugin's ``targetPatterns`` make of the serving cluster's service name. The
+# pattern defaults are GPUStack's own registry naming (``model-<model>-
+# <instance>`` -> the instance id, ``provider-<id>`` kept whole), shared with
+# gpustack-lb, which reads every candidate through the same rules to match
+# the pin a follow-up carries; nothing is rendered while the naming holds.
+#
+# On the way back in, a regex below extracts the two halves: the route id
+# selects the model (for the route match and for ext-auth), the path is
+# rewritten to the native id for the upstream, and the target is published
+# for gpustack-lb as a pin onto the one instance that can answer. GET and
+# DELETE only: the create is body-driven (``model`` is in the body) and
+# needs no regex. The named groups ``target`` and ``origin`` and the
+# ``{origin}`` placeholder are the plugin's contract.
+async_video_regexes: List[Dict[str, str]] = [
+    {
+        "regex": r"^/v1/videos/gpustack_(?P<target>[^_]+)_(?P<origin>[^/]+)$",
+        "path": "/v1/videos/{origin}",
+    },
+    {
+        "regex": r"^/v1/videos/gpustack_(?P<target>[^_]+)_(?P<origin>[^/]+)/content$",
+        "path": "/v1/videos/{origin}/content",
+    },
+]
+
+# The model category of a deployment that serves the OpenAI video protocol
+# (SGLang Diffusion, vLLM-Omni). A route of such a deployment takes part in
+# self-routing video job IDs whether or not generic proxy is on: a follow-up
+# carries no model name, so the route id inside the id has to resolve
+# through ``aliasNameMapping`` or the request has no route to match.
+video_category = "video"
+
+
+def is_video_route(model_route: Optional[ModelRoute]) -> bool:
+    """Whether the route serves a video-generation deployment. ``None`` (the
+    row is gone by the time the reconcile reads it) is not one."""
+    if model_route is None:
+        return False
+    return video_category in (getattr(model_route, "categories", None) or [])
+
+
+def route_alias_enabled(model_route: Optional[ModelRoute]) -> bool:
+    """Whether the route needs an ``aliasNameMapping`` entry.
+
+    Generic proxy makes ``/model/proxy/{route_id}/...`` addressable by route
+    id. A video route needs the same entry for its job follow-ups, whose
+    self-routing id names the route by id (``async_video_regexes``).
+    """
+    if model_route is None:
+        return False
+    return bool(getattr(model_route, "generic_proxy", False)) or is_video_route(
+        model_route
+    )
 
 
 def get_default_mcpbridge_ref(
@@ -2001,8 +2087,12 @@ def generic_proxy_router_diff_spec(
     Other entries stay untouched. Returns None if the plugin doesn't exist yet
     — init handles that.
 
-    Pass ``route_name=None`` to remove the alias for this route (e.g. when
-    generic_proxy is toggled off or the route is deleted).
+    The entry serves two callers of the plugin's path-driven mode: the
+    ``/model/proxy/{route_id}/...`` spelling of generic proxy, and the
+    route-id half of a self-routing video job id (``async_video_regexes``).
+    Pass ``route_name=None`` to remove the alias for this route (neither
+    applies any more: generic proxy is off and the route is not a video
+    route, or the route is deleted).
 
     Do NOT touch defaultConfigDisable here — flipping it rewrites Envoy's
     filter chain and tears down every live connection. Only the mapping
@@ -2050,14 +2140,13 @@ async def cleanup_generic_proxy_router(
     namespace: str,
     api: Optional[ExtensionsHigressIoV1Api] = None,
 ):
-    """Prune generic-proxy router entries to those for existing generic_proxy routes.
+    """Prune generic-proxy router entries to those of the routes that need one:
+    generic_proxy routes and video routes (``route_alias_enabled``).
 
     Pass ``api`` from a periodic caller to reuse its client; the ad-hoc
     one built from ``k8s_config`` is scoped to the call.
     """
-    expected_route_ids = {
-        route.id for route in routes if getattr(route, "generic_proxy", False)
-    }
+    expected_route_ids = {route.id for route in routes if route_alias_enabled(route)}
     if api is not None:
         await ensure_wasm_plugin(
             api=api,

@@ -239,15 +239,15 @@ higress-core:
         memory: 4096Mi
       limits:
         cpu: 4000m
-        memory: 8192Mi   # メモリが上昇し続ける場合はさらに引き上げる
+        memory: 8192Mi   # raise further if memory keeps climbing
     autoscaling:
       enabled: true
-      minReplicas: 2    # HPA は `replicas` を無視します。2 以上を維持してください
+      minReplicas: 2    # the HPA ignores `replicas`; keep this >= 2
       maxReplicas: 5
       targetCPUUtilizationPercentage: 80
 ```
 
-#### 画像リクエストのサイジング
+#### 画像リクエストのサイジング { #sizing-for-image-requests }
 
 ルートと接続の負荷はメモリ使用量の安定した部分です。スパイクの原因はリクエストサイズです。リクエストを検査・書き換えるゲートウェイプラグインはそれぞれリクエストボディ全体をバッファするため、メモリは処理中のリクエストバイト（同時リクエスト数 × ボディサイズ）に比例して増えます。base64 エンコードされた画像を含むリクエストが、最もよくある到達経路です。JSON 内では画像 1 枚がファイルサイズの 1.33 倍を占めます。
 
@@ -285,7 +285,7 @@ Chart 管理のワーカーは正しく構成されています。`worker.enable
 - **登録 manifest なしで Helm からインストールしたワーカー:** サーバーのクラスターに worker-only リリースを用意します。サーバー リリースと同じ名前空間に置かれるため、そのリリースが既に所有する Secret を描画してはいけません。`imagePullSecret.create: false` を設定し、`registrationTokenSecretName` をサーバーの `registration-token` Secret に向けてください（`worker.enabled` はデフォルトで `false`、`server` と `higress-core` はデフォルトで有効なため、この 3 つも明示する必要があります）:
 
 ```yaml
-# サーバーのクラスターにある worker-only リリースの values.yaml
+# values.yaml for a worker-only release in the server's cluster
 server:
   enabled: false
 higress-core:

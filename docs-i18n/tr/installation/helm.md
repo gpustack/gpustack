@@ -239,15 +239,15 @@ higress-core:
         memory: 4096Mi
       limits:
         cpu: 4000m
-        memory: 8192Mi   # bellek artmayı sürdürüyorsa daha da yükseltin
+        memory: 8192Mi   # raise further if memory keeps climbing
     autoscaling:
       enabled: true
-      minReplicas: 2    # HPA `replicas` değerini yok sayar; bunu >= 2 tutun
+      minReplicas: 2    # the HPA ignores `replicas`; keep this >= 2
       maxReplicas: 5
       targetCPUUtilizationPercentage: 80
 ```
 
-#### Resim İstekleri İçin Boyutlandırma
+#### Resim İstekleri İçin Boyutlandırma { #sizing-for-image-requests }
 
 Rota ve bağlantı yükü, bellek ayak izinin sabit kısmıdır; ani artışın nedeni istek boyutudur. İsteği inceleyen veya yeniden yazan ağ geçidi eklentileri isteğin gövdesinin tamamını arabelleğe alır; bu yüzden bellek işlemdeki istek baytlarıyla (eşzamanlılık × gövde boyutu) ölçeklenir. Buna en sık ulaşılan yol base64 kodlu resimler taşıyan isteklerdir: JSON içinde her resim dosya boyutunun 1,33 katı yer kaplar.
 
@@ -285,7 +285,7 @@ Kontrol yolunu ağ geçidinden ayırmak için çalışanları sunucuya doğrudan
 - **Kayıt manifestosu olmadan Helm ile kurulan çalışanlar:** sunucunun kümesinde worker-only bir sürüm. Sunucu sürümüyle aynı ad alanında yaşar; bu nedenle o sürümün zaten sahip olduğu Secret'ları render etmemelidir: `imagePullSecret.create: false` ayarlayın ve `registrationTokenSecretName` ile sunucunun `registration-token` Secret'ını gösterin (`worker.enabled` varsayılan olarak `false`, `server` ve `higress-core` ise `true` olduğundan bu üçünü de açıkça belirtmek gerekir):
 
 ```yaml
-# Sunucunun kümesindeki worker-only sürümü için values.yaml
+# values.yaml for a worker-only release in the server's cluster
 server:
   enabled: false
 higress-core:
