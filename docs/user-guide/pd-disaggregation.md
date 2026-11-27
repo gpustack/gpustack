@@ -201,8 +201,7 @@ While configuration changes are pending, failed group members are not
 automatically restarted, even with **Restart on error** enabled. Healthy members
 keep running, but the deployment becomes unavailable if a required role has no
 ready members. The configuration-change notice explains that automatic recovery
-is paused. A deployment with a scaling schedule resumes that schedule when
-started; it may wait for an active scheduling window before creating instances.
+is paused.
 
 Scaling changes each role's instance count without restarting the whole group,
 provided no configuration changes are pending. Router behavior depends on
