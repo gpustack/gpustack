@@ -39,7 +39,6 @@ from .histogram_bounds import (
     is_first_bucket_estimate,
     requires_bound_check,
     trend_ceilings,
-    trend_first_bucket_ceilings,
 )
 from .ingress import collect_ingress_metric
 from . import config as query_config
@@ -838,7 +837,7 @@ class _Collection:
         return points
 
     def apply_histogram_first_bucket_trends(
-        self, metric, percentiles, summary_ceilings, rows, *, exact_zero, failed
+        self, metric, percentiles, rows, *, exact_zero, failed
     ):
         points = self.histogram_first_bucket_points(rows, exact_zero=exact_zero)
         censored, incomplete = False, False
@@ -855,10 +854,8 @@ class _Collection:
                 ):
                     line.points[index] = timestamp, None
                     censored = True
-                elif sample not in points and key in summary_ceilings:
-                    incomplete |= is_first_bucket_estimate(
-                        value, summary_ceilings[key], quantile
-                    )
+                elif value is not None and sample not in points:
+                    incomplete = True
         if incomplete:
             self.histogram_bounds_unavailable(metric, failed)
         elif censored:
@@ -921,7 +918,6 @@ class _Collection:
             self.apply_histogram_first_bucket_trends(
                 metric,
                 percentiles,
-                trend_first_bucket_ceilings(groups),
                 rows,
                 exact_zero=exact_zero,
                 failed=failed,

@@ -316,9 +316,10 @@ def build_histogram_query(
         raise ValueError('Invalid histogram statistic')
     labels = scope.grouping if group_by is None else tuple(group_by)
     operation = 'increase' if summary else 'rate'
+    config = query_config.get_query_config()
 
-    def part(suffix, grouping):
-        raw = query_config.get_query_config().query(
+    def part(suffix):
+        raw = config.query(
             profile,
             'histogram',
             operation,
@@ -327,21 +328,27 @@ def build_histogram_query(
             selector=scope.selector(),
             window_seconds=seconds,
         )
-        return _reduce(scope.guard(raw, seconds if summary else None), scope, grouping)
+        return scope.guard(raw, seconds if summary else None)
 
     if statistic == 'avg':
-        return query_config.get_query_config().query(
+        return config.query(
             profile,
             'histogram',
             'avg',
-            sum=part('sum', labels),
-            count=part('count', labels),
+            sum=_reduce(part('sum'), scope, labels),
+            count=_reduce(part('count'), scope, labels),
         )
-    return query_config.get_query_config().query(
+    count = config.query(
+        profile, 'histogram', 'positive_count', expression=part('count')
+    )
+    buckets = config.query(
+        profile, 'histogram', 'observed_buckets', buckets=part('bucket'), count=count
+    )
+    return config.query(
         profile,
         'histogram',
         statistic,
-        buckets=part('bucket', labels + ('le',)),
+        buckets=_reduce(buckets, scope, labels + ('le',)),
     )
 
 
@@ -431,7 +438,10 @@ def build_histogram_cdf_query(
 
         declaration = query_config.get_query_config()
         finite = rate('bucket', selector)
-        count = rate('count', scope.selector())
+        counts = rate('count', scope.selector())
+        count = declaration.query(
+            profile, 'histogram', 'positive_count', expression=counts
+        )
         infinite = rate('bucket', scope.selector({'le': '+Inf'}))
         paired = declaration.query(
             profile,
@@ -453,10 +463,18 @@ def build_histogram_cdf_query(
                 paired=paired,
                 count=count,
                 finite_population=declaration.query(
-                    profile, 'histogram', 'bucket_population', expression=finite
+                    profile,
+                    'histogram',
+                    'bucket_population',
+                    expression=finite,
+                    count=counts,
                 ),
                 infinite_population=declaration.query(
-                    profile, 'histogram', 'bucket_population', expression=infinite
+                    profile,
+                    'histogram',
+                    'bucket_population',
+                    expression=infinite,
+                    count=counts,
                 ),
                 grouping=', '.join(scope.grouping),
                 upper_bound=str(bound),

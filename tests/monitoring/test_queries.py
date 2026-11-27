@@ -3,8 +3,12 @@
 import importlib
 import importlib.util
 import math
+import os
+import shutil
+import subprocess
 
 import pytest
+import yaml
 
 
 def _queries():
@@ -35,6 +39,72 @@ def test_range_histogram_keeps_pd_roles_and_current_source_guards():
     for label in module.SOURCE_LABELS:
         assert label in query
     assert 'max_over_time' not in query
+
+
+def test_promql_percentile_and_cdf_use_only_observed_histogram_cohorts(tmp_path):
+    promtool = os.environ.get('PROMTOOL') or shutil.which('promtool')
+    if not promtool:
+        pytest.skip('promtool is required to evaluate the histogram queries')
+    module = _queries()
+    scope = module.MetricQueryScope(1, 9, (12, 13), ('decode',))
+    family = 'gpustack:time_to_first_token_seconds'
+    scrape_status = 'gpustack:runtime_metrics_scrape_status'
+    inputs = []
+    for identity, bounds, values in (
+        (12, ('0.01', '0.02', '+Inf'), '0+15x4'),
+        (13, ('0.005', '0.01', '+Inf'), '0x4'),
+    ):
+        labels = (
+            f'cluster_id="1",model_id="9",model_instance_id="{identity}",role="decode",'
+            'restart_count="0",source_kind="legacy",source_name="legacy",worker_id="2"'
+        )
+        inputs += [
+            {'series': f'{family}_count{{{labels}}}', 'values': values},
+            {
+                'series': f'gpustack:model_instance_source_info{{{labels}}}',
+                'values': '1x4',
+            },
+            {
+                'series': f'{scrape_status}{{{labels},status="success"}}',
+                'values': '1x4',
+            },
+        ] + [
+            {'series': f'{family}_bucket{{{labels},le="{bound}"}}', 'values': values}
+            for bound in bounds
+        ]
+    percentile = module.build_histogram_query(family, scope, 'p50', 60)
+    cdf = module.build_histogram_cdf_query(family, [(scope, 0.02, ('0.02',))], 60)
+    samples = [
+        (percentile, '{role="decode"}', 0.005),
+        (cdf, '{role="decode",histogram_upper_bound="0.02"}', 1),
+    ]
+    fixture = tmp_path / 'histogram.yaml'
+    fixture.write_text(
+        yaml.safe_dump(
+            {
+                'fuzzy_compare': True,
+                'evaluation_interval': '15s',
+                'tests': [
+                    {
+                        'interval': '15s',
+                        'input_series': inputs,
+                        'promql_expr_test': [
+                            {
+                                'expr': query,
+                                'eval_time': '60s',
+                                'exp_samples': [{'labels': labels, 'value': value}],
+                            }
+                            for query, labels, value in samples
+                        ],
+                    }
+                ],
+            }
+        )
+    )
+    result = subprocess.run(
+        [promtool, 'test', 'rules', str(fixture)], capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_whole_window_summary_preserves_old_epoch_presence():

@@ -71,9 +71,11 @@ profiles:
       p50: histogram_quantile(0.5, ${buckets})
       p95: histogram_quantile(0.95, ${buckets})
       p99: histogram_quantile(0.99, ${buckets})
+      positive_count: (${expression}) > 0
+      observed_buckets: (${buckets}) and ignoring (le) (${count})
       trend_component: >-
         label_replace((${expression}), "histogram_component", "${part}", "__name__", ".*")
-      bucket_population: max without (le) (${expression})
+      bucket_population: (max without (le) (${expression})) unless ((${count}) == 0)
       canonical_bucket: >-
         (max without (le) (${expression})) ==
         (min without (le) (${expression}))

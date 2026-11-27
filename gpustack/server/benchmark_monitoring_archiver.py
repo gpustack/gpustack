@@ -21,6 +21,7 @@ from gpustack.monitoring.benchmark_payload import (
     decode_payload,
     encode_payload,
 )
+from gpustack.monitoring.histogram_bounds import QUANTILES
 from gpustack.monitoring.time_range import MonitoringInterval
 from gpustack.schemas.benchmark import Benchmark
 from gpustack.schemas.benchmark_monitoring import (
@@ -87,6 +88,18 @@ def _merge_line(current, previous, start, end):
     return line
 
 
+def _unbounded_percentile_gaps(metric):
+    for line in metric.series:
+        if line.statistic in QUANTILES:
+            key = _series_key(line)
+            bounded = {at for at, _ in line.lower_bounds or ()}
+            yield from (
+                (key, at)
+                for at, value in line.points
+                if value is None and at not in bounded
+            )
+
+
 def _merge_metric(current, previous, start, end, *, same_window):
     if current.status == 'restricted':
         return current.model_copy(
@@ -111,6 +124,15 @@ def _merge_metric(current, previous, start, end, *, same_window):
     if metric.status in ('query_error', 'no_data') and _has_observation(metric):
         if previous and previous.status in ('available', 'stale', 'no_observations'):
             metric.status, metric.reason = previous.status, previous.reason
+    if (
+        metric.reason is None
+        and previous
+        and previous.reason == 'histogram_first_bucket_unresolved'
+        and not set(_unbounded_percentile_gaps(previous)).isdisjoint(
+            _unbounded_percentile_gaps(metric)
+        )
+    ):
+        metric.reason = previous.reason
     return metric
 
 

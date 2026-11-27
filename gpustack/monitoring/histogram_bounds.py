@@ -77,14 +77,6 @@ def trend_ceilings(groups: Mapping[object, dict]) -> Dict[object, float]:
     }
 
 
-def trend_first_bucket_ceilings(groups: Mapping[object, dict]) -> Dict[object, float]:
-    return {
-        key: bound
-        for key in trend_ceilings(groups)
-        if (bound := first_bucket_ceiling(groups[key]['profiles'])) is not None
-    }
-
-
 def ceiling_scopes(
     scope: MetricQueryScope, ceilings: Mapping[object, float], buckets: Sequence[dict]
 ) -> List[Tuple[MetricQueryScope, float, Tuple[str, ...]]]:
