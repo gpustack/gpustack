@@ -10,6 +10,8 @@ GPUStack, `/v1` uç noktasında [OpenAI uyumlu API'ler](https://platform.openai.
 
 GPUStack'te dağıtılan modelleri, OpenAI uyumlu API'yi destekleyen herhangi bir uygulama veya çerçeveyle, yalnızca GPUStack'in OpenAI uyumlu uç noktasına işaret ederek entegre edebilir ve kullanabilirsiniz.
 
+GPUStack Server, ses transkripsiyonu ve görsel düzenleme gibi multipart çıkarım isteklerini iletirken ortak ayrıştırıcı, yalnızca metin içeren formların multipart biçimini ve yinelenen alanları korur.
+
 ### Desteklenen Uç Noktalar { #supported-endpoints }
 
 Aşağıdaki API uç noktaları desteklenir:
@@ -48,6 +50,32 @@ curl http://your_gpustack_server_url/v1/chat/completions \
     "stream": true
   }'
 ```
+
+### Video üretimi { #video-generation }
+
+Asenkron video görevleri, SGLang Diffusion ve vLLM-Omni gibi OpenAI video protokolünü destekleyen çıkarım motorlarında kullanılabilir.
+
+| Yöntem | Uç nokta | Amaç |
+| --- | --- | --- |
+| POST | `/v1/videos` | `application/json` veya `multipart/form-data` ile eşzamansız bir görev oluşturur. Model rotasını `model`, istem metnini `prompt` alanında belirtin. |
+| POST | `/v1/videos/sync` | Eşzamanlı oluşturmayı uygulayan motorlar için multipart uyumluluk uç noktasıdır. Oluşturulan videoyu aynı yanıtta almak için model rotasını `model` alanında ve motorun desteklediği motora özgü parametreleri istekte belirtin. |
+| GET | `/v1/videos/{video_id}` | Görev durumunu ve motor sağlıyorsa ilerlemeyi getirir. |
+| GET | `/v1/videos/{video_id}/content` | Üretim tamamlandıktan sonra videoyu indirir. |
+| DELETE | `/v1/videos/{video_id}` | Görevi oluşturan örnekte görevi iptal eder veya siler. İptal ve dosya temizliği motora bağlıdır. |
+
+Video üretim dağıtımları `video` model kategorisini kullanır. Kullanılabilir video rotalarını listelemek için `GET /v1/models?categories=video` kullanın. Video anlama modelleri `llm` kategorisinde kalır ve Chat Completions API'yi kullanır.
+
+Yeni kategoriyi kullanmadan önce Server ve Worker bileşenlerini birlikte yükseltin. Auto dağıtımları, dağıtım adından bağımsız olarak bilinen Diffusers video işlem hatlarını `model_index.json` üzerinden tanır. Mevcut `image` seçimleri dahil açıkça seçilen kategoriler korunur. Arka plan işlemi `video` dağıtımlarının yetenek meta verilerini yeniler ve başarısız erişimleri artan bekleme süreleriyle tekrar dener. Mevcut dağıtımlar veya bilinmeyen işlem hatları için gerektiğinde açıkça `Video` seçin.
+
+Kategori, referans görseli veya video desteği belirtmez; bu girdiler seçilen modele bağlıdır.
+
+Eşzamansız video uç noktaları (`/v1/videos`, `/v1/videos/{video_id}`, `/v1/videos/{video_id}/content`) ve eşzamanlı uç nokta (`/v1/videos/sync`) Higress model Ingress üzerinden yönlendirilir. Bunun için Higress ağ geçidi modunun etkin olması gerekir. Hem GPUStack tarafından yönetilen örnekler hem de OpenAI video protokolünü destekleyen harici sağlayıcılar model rotaları üzerinden sunulabilir.
+
+Durumu sorgulamak, videoyu indirmek veya görevi silmek için GPUStack'in döndürdüğü tam video kimliğini kullanın. Oluşturma yanıtı Higress'ten geçerken ağ geçidi motorun özgün görev kimliğini kendi yönlendirmesini taşıyan bir kimlik olarak sarmalar: yönetilen örnekler için `gpustack_<route_id>-<instance_id>_<origin_video_id>`, harici sağlayıcılar için `gpustack_<route_id>-provider-<provider_id>_<origin_video_id>`. Sonraki istekler rotayı çözümler, ağ geçidi `ext-auth` üzerinden kimlik doğrulama ve yetkilendirme yapar ve görevi oluşturan örneğe ya da sağlayıcıya sabitler. Örnek silinirse veya motor görevi kaybederse istek HTTP 404 döndürebilir.
+
+MiniMax H3 dağıtımlarında API istemcileri hedef motorun kendi parametrelerini doğrudan gönderir: SGLang Diffusion `task`, `conditions` ve `target` alanlarını; vLLM-Omni ise `extra_params` ile motora özgü referans alanlarını (`image_reference`, `video_reference`, `audio_reference`, `frame_indices`) kullanır. Video Playground, `POST /v1/videos` isteğini göndermeden önce form değerlerini seçilen hedefin özgün parametrelerine dönüştürür.
+
+Video Playground istemci tarafında görseller için 1 MiB ve videolar için 2 MiB yükleme sınırı uygular. API istekleri seçilen çıkarım motorunun kısıtlamalarına tabidir. HTTP(S) referanslarını çıkarım motoru alır ve doğrular; özel ağ adreslerine erişim motorun ağ erişimine ve ilkelerine bağlıdır.
 
 ## Anthropic Uyumlu API'ler { #anthropic-compatible-apis }
 

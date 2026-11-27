@@ -10,6 +10,8 @@ GPUStack は `/v1` エンドポイントで [OpenAI 互換 API](https://platform
 
 OpenAI 互換 API をサポートするアプリケーションやフレームワークで、接続先を GPUStack の OpenAI 互換エンドポイントに指定するだけで、デプロイしたモデルを統合・利用できます。
 
+GPUStack Server が音声の文字起こしや画像編集などの multipart 推論リクエストをプロキシする際、共通パーサーはテキストのみのフォームも multipart のまま扱い、同じ名前のフィールドを保持します。
+
 ### 対応エンドポイント { #supported-endpoints }
 
 次の API エンドポイントに対応しています。
@@ -48,6 +50,32 @@ curl http://your_gpustack_server_url/v1/chat/completions \
     "stream": true
   }'
 ```
+
+### 動画生成 { #video-generation }
+
+SGLang Diffusion や vLLM-Omni など、OpenAI 動画プロトコルを実装した推論エンジンでは非同期の動画タスクを利用できます。
+
+| メソッド | エンドポイント | 用途 |
+| --- | --- | --- |
+| POST | `/v1/videos` | `application/json` または `multipart/form-data` で非同期タスクを作成します。`model` にモデルルート、`prompt` にプロンプトを指定します。 |
+| POST | `/v1/videos/sync` | 同期生成を実装しているエンジン向けの multipart 互換エンドポイントです。`model` にモデルルートを指定し、エンジンが対応するネイティブパラメーターを送ると、同じレスポンスで生成済みの動画を取得できます。 |
+| GET | `/v1/videos/{video_id}` | タスクの状態と、エンジンが提供する進捗を取得します。 |
+| GET | `/v1/videos/{video_id}/content` | 生成が完了した動画をダウンロードします。 |
+| DELETE | `/v1/videos/{video_id}` | タスクを作成したインスタンスでキャンセルまたは削除します。キャンセルとファイルの削除は推論エンジンが処理します。 |
+
+動画生成のデプロイは `video` モデルカテゴリーを使用します。`GET /v1/models?categories=video` で利用可能な動画ルートを取得できます。動画理解モデルは引き続き `llm` カテゴリーに属し、Chat Completions API を使用します。
+
+新しいカテゴリーを使用する前に Server と Worker を一緒に更新してください。Auto デプロイはデプロイ名に依存せず、`model_index.json` から既知の Diffusers 動画パイプラインを識別します。既存の `image` を含む明示的なカテゴリー選択は保持されます。バックグラウンド処理は `video` デプロイの機能メタデータを更新し、取得失敗時はバックオフして再試行します。既存のデプロイや未知のパイプラインには、必要に応じて `Video` を明示的に選択してください。
+
+カテゴリー自体は参照画像や参照動画への対応を示しません。入力への対応は選択したモデルに依存します。
+
+非同期動画エンドポイント（`/v1/videos`、`/v1/videos/{video_id}`、`/v1/videos/{video_id}/content`）と同期エンドポイント（`/v1/videos/sync`）は、いずれも Higress のモデル Ingress 経由でルーティングされます。利用するには Higress ゲートウェイモードを有効にする必要があります。GPUStack 管理インスタンスと OpenAI 動画プロトコルに対応する外部プロバイダーの双方をモデルルート経由で提供できます。
+
+状態確認、コンテンツのダウンロード、タスクの削除には、GPUStack が返した完全な動画 ID を使用します。作成レスポンスが Higress を通過する際、ゲートウェイはエンジンのネイティブタスク ID を自己ルーティング ID としてラップします（管理インスタンスは `gpustack_<route_id>-<instance_id>_<origin_video_id>`、外部プロバイダーは `gpustack_<route_id>-provider-<provider_id>_<origin_video_id>`）。後続リクエストはルートを解決し、ゲートウェイの `ext-auth` で認証・認可したうえで作成元のインスタンスまたはプロバイダーへ固定転送します。インスタンスが削除された場合や上流エンジンがタスクを失った場合は、HTTP 404 が返ることがあります。
+
+MiniMax H3 のデプロイでは、API 呼び出し元は対象エンジンのネイティブパラメーターを直接送信します。SGLang Diffusion は `task`、`conditions`、`target` を使用し、vLLM-Omni は `extra_params` とエンジン固有の参照フィールド（`image_reference`、`video_reference`、`audio_reference`、`frame_indices`）を使用します。Video Playground は `POST /v1/videos` を送信する前に、画面の入力内容を選択したエンジンのネイティブパラメーターへ変換します。
+
+Video Playground のクライアント側アップロード上限は、画像 1 MiB、動画 2 MiB です。API リクエストは選択した推論エンジンの制約に従います。HTTP(S) 参照は推論エンジンが取得して検証し、プライベートアドレスにアクセスできるかどうかはエンジンのネットワークアクセスとポリシーによって決まります。
 
 ## Anthropic 互換 API { #anthropic-compatible-apis }
 

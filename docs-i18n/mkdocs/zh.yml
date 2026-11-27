@@ -24,6 +24,7 @@ nav_translations:
   Playground: 体验中心
   Chat: 对话
   Image: 图像
+  Video: 视频
   Audio: 音频
   Embedding: 向量嵌入
   Rerank: 重排序

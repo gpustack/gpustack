@@ -10,6 +10,8 @@ GPUStack 在 `/v1` 端点提供 [OpenAI 兼容 API](https://platform.openai.com/
 
 支持 OpenAI 兼容 API 的应用或框架，只需将端点指向 GPUStack，即可接入并使用 GPUStack 上部署的模型。
 
+GPUStack Server 代理音频转录、图片编辑等 multipart 推理请求时，共用解析器会保留纯文本表单的 multipart 格式和重复字段。
+
 ### 支持的端点 { #supported-endpoints }
 
 支持以下 API 端点：
@@ -48,6 +50,32 @@ curl http://your_gpustack_server_url/v1/chat/completions \
     "stream": true
   }'
 ```
+
+### 视频生成 { #video-generation }
+
+支持 OpenAI 视频协议的推理引擎可以使用异步视频任务，例如 SGLang Diffusion 和 vLLM-Omni。
+
+| 方法 | 端点 | 用途 |
+| --- | --- | --- |
+| POST | `/v1/videos` | 使用 `application/json` 或 `multipart/form-data` 创建异步任务。在 `model` 中指定模型路由，在 `prompt` 中填写提示词。 |
+| POST | `/v1/videos/sync` | 该 multipart 兼容接口仅适用于实现了同步生成的推理引擎。在 `model` 中指定模型路由，传入引擎支持的原生参数，即可在同一次响应中获取生成的视频。 |
+| GET | `/v1/videos/{video_id}` | 查询任务状态，以及推理引擎提供的进度。 |
+| GET | `/v1/videos/{video_id}/content` | 下载生成完成的视频。 |
+| DELETE | `/v1/videos/{video_id}` | 在创建任务的实例上取消或删除任务。取消和文件清理由推理引擎处理。 |
+
+视频生成部署使用 `video` 模型类别，可通过 `GET /v1/models?categories=video` 列出可用的视频路由。视频理解模型仍属于 `llm` 类别，使用 Chat Completions API。
+
+使用新类别前，应同步升级 Server 和 Worker。Auto 部署通过 `model_index.json` 识别已知 Diffusers 视频管线，不依赖部署名称。显式选择的类别（包括已有的 `image`）保持不变。后台协调只刷新 `video` 部署的能力元数据，读取失败时按退避间隔重试。已有部署或未知管线需要使用视频功能时，请显式选择 `Video`。
+
+类别本身不代表模型支持参考图片或视频，这些输入仍取决于所选模型。
+
+异步视频接口（`/v1/videos`、`/v1/videos/{video_id}`、`/v1/videos/{video_id}/content`）以及同步接口（`/v1/videos/sync`）均通过 Higress 模型 Ingress 路由，因此需要启用 Higress 网关模式。GPUStack 托管实例和实现 OpenAI 视频协议的外部模型提供商均可通过模型路由提供服务。
+
+查询状态、下载内容或删除任务时，请使用 GPUStack 返回的完整视频 ID。创建任务的响应经过 Higress 时，网关会将引擎原生任务 ID 包装为自路由 ID：托管实例格式为 `gpustack_<route_id>-<instance_id>_<origin_video_id>`，外部提供商格式为 `gpustack_<route_id>-provider-<provider_id>_<origin_video_id>`。后续请求会据此解析模型路由、经网关 `ext-auth` 完成鉴权，并固定转发到创建任务的实例或提供商。实例已删除或上游引擎丢失任务时，请求可能返回 HTTP 404。
+
+对于 MiniMax H3 部署，API 调用方需直接传入目标引擎的原生参数：SGLang Diffusion 使用 `task`、`conditions` 和 `target`，vLLM-Omni 使用 `extra_params` 及引擎专用参考字段（`image_reference`、`video_reference`、`audio_reference`、`frame_indices`）。Video Playground 会在发送 `POST /v1/videos` 前，将界面参数自动转换为对应目标引擎的原生参数。
+
+Video Playground 在前端限制上传大小：图片 1 MiB、视频 2 MiB。API 请求遵循目标推理引擎的约束。HTTP(S) 参考素材由推理引擎获取和校验，能否访问私网地址取决于引擎的网络访问权限和策略。
 
 ## Anthropic 兼容 API { #anthropic-compatible-apis }
 

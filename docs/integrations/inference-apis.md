@@ -6,6 +6,8 @@ GPUStack provides [OpenAI-compatible APIs](https://platform.openai.com/docs/api-
 
 You can integrate and use models deployed on GPUStack with any application or framework that supports the OpenAI-compatible API, simply by pointing it to GPUStack's OpenAI-compatible endpoint.
 
+When the GPUStack Server proxies multipart inference requests, including audio transcriptions and image edits, the shared parser keeps text-only forms as multipart and preserves repeated fields.
+
 ### Supported Endpoints
 
 The following API endpoints are supported:
@@ -44,6 +46,36 @@ curl http://your_gpustack_server_url/v1/chat/completions \
     "stream": true
   }'
 ```
+
+### Video generation
+
+Asynchronous jobs are available on inference engines that implement the OpenAI
+video protocol, such as SGLang Diffusion and vLLM-Omni.
+
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| POST | `/v1/videos` | Create an asynchronous job with `application/json` or `multipart/form-data`. Supply the model route in `model` and the text in `prompt`. |
+| POST | `/v1/videos/sync` | Multipart compatibility endpoint for engines that implement synchronous generation. Supply the model route in `model` and native parameters supported by the engine to receive the generated video in the same response. |
+| GET | `/v1/videos/{video_id}` | Retrieve status and the engine's progress, when available. |
+| GET | `/v1/videos/{video_id}/content` | Download the generated video after the job is completed. |
+| DELETE | `/v1/videos/{video_id}` | Cancel or delete the task on the creating instance. The engine controls cancellation and file cleanup. |
+
+Video-generation deployments use the `video` model category. Use
+`GET /v1/models?categories=video` to list available video routes. Video understanding
+models remain in the `llm` category and use the Chat Completions API.
+
+Upgrade the Server and Workers together before using the new category. Auto deployments classify known Diffusers video pipelines from `model_index.json`, independently of the deployment name. Explicit categories, including existing `image` selections, are preserved. Background reconciliation refreshes capabilities for `video` deployments and retries unavailable metadata with backoff. Select `Video` explicitly for an existing deployment or an unknown pipeline when needed.
+
+The category does not declare support for reference images or videos; those inputs
+still depend on the selected model.
+
+Asynchronous video endpoints (`/v1/videos`, `/v1/videos/{video_id}`, `/v1/videos/{video_id}/content`) and the synchronous endpoint (`/v1/videos/sync`) are routed through the Higress model ingress. This requires Higress gateway mode to be enabled. Both GPUStack-managed instances and external providers that implement the OpenAI video protocol can be served through model routes.
+
+Use the full video ID returned by GPUStack to check status, download content, or delete a task. When a creation response passes through Higress, the gateway wraps the engine's native task ID as a self-routing ID: `gpustack_<route_id>-<instance_id>_<origin_video_id>` for managed instances or `gpustack_<route_id>-provider-<provider_id>_<origin_video_id>` for external providers. Follow-up requests resolve the route, authenticate and authorize through gateway `ext-auth`, and pin to the creating instance or provider. When the instance is gone or the upstream engine has lost the task, a request can return HTTP 404.
+
+For MiniMax H3 deployments, API callers send the target engine's native request parameters directly: SGLang Diffusion uses `task`, `conditions`, and `target`, while vLLM-Omni uses `extra_params` and engine-specific reference fields (`image_reference`, `video_reference`, `audio_reference`, `frame_indices`). The Video Playground translates its form controls into the selected target's native parameters before sending `POST /v1/videos`.
+
+The Video Playground applies client-side upload limits of 1 MiB for images and 2 MiB for videos. API requests follow the selected inference engine's constraints. HTTP(S) references are fetched and validated by the inference engine, and the engine's network access and policies determine whether it can fetch private addresses.
 
 ## Anthropic-Compatible APIs
 
