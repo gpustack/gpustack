@@ -136,7 +136,7 @@ Tempo 会在定期清理时移除过期的块。保留时间控制块的保留�
 2. 若要将 Trace 上报到外部接收端，请在 Server 和每个独立 Worker 上设置 `GPUSTACK_TRACE_OTLP_ENDPOINT=<collector-host>:4317`。如需让远程 Worker 使用内置 Tempo，请参见[为现有 Docker Worker 启用追踪](../upgrade/cluster.md#enable-tracing-on-existing-docker-workers)。
 3. 将 `<collector-host>` 替换为这些容器可访问的名称或地址。用 `docker run -e` 传入环境变量，或在 Compose 文件的 `environment` 中设置，再重新创建容器。
 
-Docker 在同一个 GPUStack 容器中启动 Tempo 和 Alloy。Tempo 将 WAL 和块存放在 `<data_dir>/tempo` 下，查询和 OTLP 写入默认均仅监听回环地址（`127.0.0.1`）。Trace 文件的生命周期随 Server 数据卷。若要调整块保留时间，请在 Server 上设置 `GPUSTACK_BUILTIN_TEMPO_RETENTION`，然后重新创建容器。如需在可信网络中接收来自远程 Worker 的 OTLP Span，请在 Server 上设置 `GPUSTACK_BUILTIN_TEMPO_OTLP_LISTEN_ADDRESS`。
+Docker 在同一个 GPUStack 容器中启动 Tempo 和 Alloy。Tempo 将 WAL 和块存放在 `<data_dir>/tempo` 下，查询和 OTLP 写入默认均仅监听回环地址（`127.0.0.1`）。独立的 Docker Worker 会自动通过 Server 已认证的追踪写入 API 转发本机 Worker 和引擎的 Span，无需对外暴露 `4317` 端口。Trace 文件的生命周期随 Server 数据卷。若要调整块保留时间，请在 Server 上设置 `GPUSTACK_BUILTIN_TEMPO_RETENTION`，然后重新创建容器。如需改为在可信网络中直接接收远程 Worker 的 OTLP Span，请在 Server 上设置 `GPUSTACK_BUILTIN_TEMPO_OTLP_LISTEN_ADDRESS`。
 
 ### 配置 Helm { #configure-helm }
 

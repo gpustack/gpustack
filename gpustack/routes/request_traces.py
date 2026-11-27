@@ -1,9 +1,10 @@
+import asyncio
 import base64
 import time
 from typing import Annotated, List, Optional
 
 import aiohttp
-from fastapi import APIRouter, Depends, Path, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -209,3 +210,68 @@ async def get_trace(
         raise NotFoundException(message="Request trace not found")
     await _populate_request_metrics(session, ctx, model_id, [detail.request])
     return detail
+
+
+_MAX_TRACE_INGEST_BYTES = 4 * 1024 * 1024
+_TRACE_INGEST_TIMEOUT = 5
+
+
+async def ingest_worker_traces(request: Request) -> Response:
+    """Forward authenticated Worker OTLP/protobuf trace batches to local Tempo."""
+    cfg = get_global_config()
+    ingest_url = cfg.get_trace_ingest_url() if cfg else None
+    if not ingest_url:
+        raise ServiceUnavailableException("Trace ingest is not configured")
+
+    content_type = (
+        request.headers.get("content-type", "").partition(";")[0].strip().lower()
+    )
+    if content_type != "application/x-protobuf":
+        raise HTTPException(
+            status_code=415, detail="Expected application/x-protobuf payload"
+        )
+    content_encoding = request.headers.get("content-encoding", "").strip().lower()
+    if content_encoding not in ("", "gzip"):
+        raise HTTPException(
+            status_code=415, detail="Unsupported content-encoding for trace ingest"
+        )
+
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > _MAX_TRACE_INGEST_BYTES:
+            raise HTTPException(status_code=413, detail="Trace batch is too large")
+
+    client: Optional[aiohttp.ClientSession] = getattr(
+        request.app.state, "http_client_no_proxy", None
+    )
+    if client is None:
+        raise ServiceUnavailableException("Trace ingest client is unavailable")
+
+    headers = {"Content-Type": "application/x-protobuf"}
+    if content_encoding:
+        headers["Content-Encoding"] = content_encoding
+
+    try:
+        async with client.post(
+            ingest_url,
+            data=bytes(body),
+            headers=headers,
+            allow_redirects=False,
+            timeout=aiohttp.ClientTimeout(total=_TRACE_INGEST_TIMEOUT),
+        ) as resp:
+            resp_body = await resp.read()
+            media_type = (
+                resp.headers.get("Content-Type", "application/x-protobuf")
+                .partition(";")[0]
+                .strip()
+            )
+            return Response(
+                content=resp_body,
+                status_code=resp.status,
+                media_type=media_type or "application/x-protobuf",
+            )
+    except (aiohttp.ClientError, asyncio.TimeoutError):
+        raise ServiceUnavailableException(
+            "Trace ingest service is unavailable"
+        ) from None

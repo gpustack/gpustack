@@ -663,6 +663,7 @@ class WorkerRegistrationPublic(WorkerPublic):
     token: str
     worker_uuid: str
     worker_config: Optional["PredefinedConfigNoDefaults"] = None
+    trace_proxy_enabled: bool = False
 
 
 WorkersPublic = PaginatedList[WorkerPublic]

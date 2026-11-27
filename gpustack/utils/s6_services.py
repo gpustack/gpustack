@@ -94,6 +94,7 @@ trace_storage_services = S6Services(
         "tempo",
         [
             "builtin_tempo_otlp_port",
+            "builtin_tempo_otlp_http_port",
             "builtin_tempo_http_port",
             "builtin_tempo_grpc_port",
         ],

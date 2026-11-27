@@ -72,7 +72,10 @@ def test_builtin_tempo_config_and_service(tmp_path, monkeypatch):
         "grpc_listen_port": 9095,
     }
     receiver = config["distributor"]["receivers"]["otlp"]["protocols"]
-    assert receiver == {"grpc": {"endpoint": "127.0.0.1:13417"}}
+    assert receiver == {
+        "grpc": {"endpoint": "127.0.0.1:13417"},
+        "http": {"endpoint": "127.0.0.1:4318"},
+    }
     assert config["storage"]["trace"] == {
         "backend": "local",
         "blocklist_poll": "1m",
@@ -85,7 +88,7 @@ def test_builtin_tempo_config_and_service(tmp_path, monkeypatch):
         port
         for port, service_name in prerun.ports_for_services(cfg).items()
         if service_name == "tempo"
-    } == {13417, 13200, 9095}
+    } == {13417, 4318, 13200, 9095}
     with pytest.raises(Exception, match="Port conflict: 9095"):
         prerun.ports_for_services(cfg.model_copy(update={"port": 9095}))
 
@@ -99,7 +102,8 @@ def test_builtin_tempo_config_and_service(tmp_path, monkeypatch):
     assert tempo.prepare_builtin_tempo(remote)
     remote_config = yaml.safe_load((run_dir / "tempo" / "config.yaml").read_text())
     assert remote_config["distributor"]["receivers"]["otlp"]["protocols"] == {
-        "grpc": {"endpoint": "10.0.0.5:13417"}
+        "grpc": {"endpoint": "10.0.0.5:13417"},
+        "http": {"endpoint": "127.0.0.1:4318"},
     }
 
     external = cfg.model_copy(update={"trace_otlp_endpoint": "collector:4317"})

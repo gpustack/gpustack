@@ -381,6 +381,7 @@ class Config(WorkerConfig, BaseSettings):
     trace_query_tls_dir: Optional[str] = None
     builtin_tempo_otlp_listen_address: str = "127.0.0.1"
     builtin_tempo_otlp_port: int = Field(default=4317, gt=0, le=65535)
+    builtin_tempo_otlp_http_port: int = Field(default=4318, gt=0, le=65535)
     builtin_tempo_http_port: int = Field(default=3200, gt=0, le=65535)
     builtin_tempo_grpc_port: int = Field(default=9095, gt=0, le=65535)
     builtin_prometheus_port: int = 19090
@@ -423,6 +424,7 @@ class Config(WorkerConfig, BaseSettings):
     _derive_auth_cache_key = None
     _jwt_secret_key_user_provided = False
     _data_dir_was_fresh = False
+    _local_trace_proxy_endpoint: Optional[str] = None
 
     model_config = SettingsConfigDict(
         env_prefix="GPUSTACK_",
@@ -1130,6 +1132,12 @@ class Config(WorkerConfig, BaseSettings):
             return f"http://127.0.0.1:{self.builtin_tempo_http_port}"
         return None
 
+    def get_trace_ingest_url(self) -> Optional[str]:
+        """Return the local Tempo OTLP/HTTP ingest URL when built-in Tempo is active."""
+        if self.use_builtin_tempo():
+            return f"http://127.0.0.1:{self.builtin_tempo_otlp_http_port}/v1/traces"
+        return None
+
     @property
     def effective_trace_otlp_endpoint(self) -> Optional[str]:
         """Resolve the receiver for span producers in this deployment."""
@@ -1144,7 +1152,7 @@ class Config(WorkerConfig, BaseSettings):
             if ":" in host:
                 host = f"[{host}]"
             return f"{host}:{self.builtin_tempo_otlp_port}"
-        return self.trace_otlp_endpoint
+        return self.trace_otlp_endpoint or self._local_trace_proxy_endpoint
 
     def _is_both_role(self) -> bool:
         """

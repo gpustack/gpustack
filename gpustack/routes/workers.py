@@ -989,6 +989,10 @@ async def create_worker(user: CurrentUserDep, worker_in: WorkerCreate):
                 worker_dump["worker_config"] = (
                     PredefinedConfigNoDefaults.model_validate(worker_config)
                 )
+                global_config = get_global_config()
+                worker_dump["trace_proxy_enabled"] = bool(
+                    global_config and global_config.get_trace_ingest_url()
+                )
                 return WorkerRegistrationPublic.model_validate(worker_dump)
             except Exception as e:
                 await session.rollback()

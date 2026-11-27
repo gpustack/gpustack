@@ -44,6 +44,7 @@ from gpustack.utils.network import (
 )
 from gpustack.client import ClientSet
 from gpustack.logging import set_worker_log_identity, setup_logging, uvicorn_log_config
+from gpustack.observability.trace_proxy import LocalOTLPTraceProxy
 from gpustack.observability.tracing import inference_tracing
 from gpustack.utils.process import add_signal_handlers_in_loop
 from gpustack.utils.system_check import check_glibc_version
@@ -179,6 +180,7 @@ class Worker:
             worker_id_getter=self.worker_id,
             clientset_getter=self.clientset,
         )
+        self._trace_proxy: Optional[LocalOTLPTraceProxy] = None
 
         migrate_worker_name(cfg)
 
@@ -206,6 +208,30 @@ class Worker:
         self._worker_name = worker_list.items[0].name
         self._worker_uuid = worker_list.items[0].worker_uuid
         set_worker_log_identity(self._worker_id, self._cluster_id, self._worker_name)
+
+    def _start_trace_proxy_if_needed(self) -> None:
+        if (
+            self._config.disable_tracing
+            or self._config.trace_otlp_endpoint
+            or self._config.use_builtin_tempo()
+            or not self._worker_manager.trace_proxy_enabled
+        ):
+            return
+        try:
+            proxy = LocalOTLPTraceProxy(
+                server_url=self._config.get_server_url(),
+                headers=self._clientset.headers,
+            )
+            self._config._local_trace_proxy_endpoint = proxy.start()
+            self._trace_proxy = proxy
+        except Exception as e:
+            logger.warning(f"Failed to start local OTLP trace proxy: {e}")
+
+    def _stop_trace_proxy(self) -> None:
+        self._config._local_trace_proxy_endpoint = None
+        if self._trace_proxy is not None:
+            self._trace_proxy.stop()
+            self._trace_proxy = None
 
     def _create_async_task(self, coro):
         self._async_tasks.append(asyncio.create_task(coro))
@@ -270,99 +296,108 @@ class Worker:
 
         await self._register()
         self._config.reload_worker_config(self._default_config)
-        self.log_worker_config()
-        if self._exporter_enabled:
-            # Start the runtime metrics cacher.
-            _runtime_metrics_aggregator = RuntimeMetricsAggregator(
-                cache=self._runtime_metrics_cache,
-                worker_id_getter=self.worker_id,
-                clientset=self._clientset,
+        self._start_trace_proxy_if_needed()
+        try:
+            self.log_worker_config()
+            if self._exporter_enabled:
+                # Start the runtime metrics cacher.
+                _runtime_metrics_aggregator = RuntimeMetricsAggregator(
+                    cache=self._runtime_metrics_cache,
+                    worker_id_getter=self.worker_id,
+                    clientset=self._clientset,
+                )
+                run_periodically_in_thread(_runtime_metrics_aggregator.aggregate, 3, 30)
+                run_periodically_in_thread(self._exporter.refresh_worker_identity, 15)
+
+                # Start the metric exporter with retry.
+                run_periodically_in_thread(self._exporter.start, 15)
+
+            # Monitor the ip change, if not fixed.
+            if self._config.worker_ip is None or self._config.worker_ifname is None:
+                # Check worker ip change every 15 seconds.
+                run_periodically_in_thread(self._check_worker_ip_change, 15)
+
+            # Send heartbeat to the server every WORKER_HEARTBEAT_INTERVAL seconds.
+            run_periodically_in_thread(self._heartbeat, envs.WORKER_HEARTBEAT_INTERVAL)
+
+            # Report the worker node status to the server every WORKER_STATUS_SYNC_INTERVAL seconds.
+            run_periodically_in_thread(
+                self._worker_manager.sync_worker_status,
+                envs.WORKER_STATUS_SYNC_INTERVAL,
             )
-            run_periodically_in_thread(_runtime_metrics_aggregator.aggregate, 3, 30)
-            run_periodically_in_thread(self._exporter.refresh_worker_identity, 15)
 
-            # Start the metric exporter with retry.
-            run_periodically_in_thread(self._exporter.start, 15)
+            # Start the worker server to expose APIs.
+            self._create_async_task(self._serve_apis())
 
-        # Monitor the ip change, if not fixed.
-        if self._config.worker_ip is None or self._config.worker_ifname is None:
-            # Check worker ip change every 15 seconds.
-            run_periodically_in_thread(self._check_worker_ip_change, 15)
-
-        # Send heartbeat to the server every WORKER_HEARTBEAT_INTERVAL seconds.
-        run_periodically_in_thread(self._heartbeat, envs.WORKER_HEARTBEAT_INTERVAL)
-
-        # Report the worker node status to the server every WORKER_STATUS_SYNC_INTERVAL seconds.
-        run_periodically_in_thread(
-            self._worker_manager.sync_worker_status, envs.WORKER_STATUS_SYNC_INTERVAL
-        )
-
-        # Start the worker server to expose APIs.
-        self._create_async_task(self._serve_apis())
-
-        inference_backend_manager = InferenceBackendManager(self._clientset)
-        # Start InferenceBackend listener to cache backend data
-        self._create_async_task(inference_backend_manager.start_listener())
-        # Trigger cache refresh
-        registration.determine_default_registry(
-            self._config.system_default_container_registry
-        )
-
-        self._serve_manager._inference_backend_manager = inference_backend_manager
-        run_periodically_in_thread(
-            self._serve_manager.sync_model_instances_state,
-            envs.MODEL_INSTANCE_HEALTH_CHECK_INTERVAL,
-        )
-        # Use a short fixed loop interval so that per-model intervals
-        # shorter than the global default can still be honoured.
-        run_periodically_in_thread(
-            self._serve_manager.sync_model_instances_inference_health,
-            10,
-        )
-        run_periodically_in_thread(
-            self._workload_cleaner.cleanup_orphan_workloads, 120, 15
-        )
-        run_periodically_in_thread(self._benchmark_manager.sync_benchmark_state, 3, 15)
-        run_periodically_in_thread(
-            self._cache_service_manager.sync_cache_service_instances_state, 3, 3
-        )
-        # Ahead of the instance loops above by one pass: the catalog decides
-        # what those loops launch and probe.
-        run_periodically_in_thread(self._cache_provider_manager.sync, 60)
-
-        self._create_async_task(self._serve_manager.watch_models())
-        self._create_async_task(self._serve_manager.watch_model_instances_event())
-        self._create_async_task(self._serve_manager.watch_model_instances())
-        self._create_async_task(self._benchmark_manager.watch_benchmarks_event())
-        self._create_async_task(
-            self._cache_service_manager.watch_cache_service_instances_event()
-        )
-
-        model_file_manager = ModelFileManager(
-            worker_id=self._worker_id, clientset=self._clientset, cfg=self._config
-        )
-        self._create_async_task(model_file_manager.watch_model_files())
-
-        if self._config.proxy_mode == ModelInstanceProxyModeEnum.TUNNEL:
-            docker_sock = Path("/var/run/docker.sock")
-            sockets = [str(docker_sock)] if docker_sock.exists() else []
-            # Start websocket proxy message client to handle CONNECT_REQUEST from server
-            self._message_client = MessageClient(
-                server_endpoint=self._config.get_server_url(),
-                client_id=uuid.UUID(self.worker_uuid()),
-                cidrs=[f"{self.worker_ip()}/32"] if self.worker_ip() else [],
-                unix_sockets=sockets,
-                authenticator=BearerTokenAuthenticator(headers=self._clientset.headers),
+            inference_backend_manager = InferenceBackendManager(self._clientset)
+            # Start InferenceBackend listener to cache backend data
+            self._create_async_task(inference_backend_manager.start_listener())
+            # Trigger cache refresh
+            registration.determine_default_registry(
+                self._config.system_default_container_registry
             )
-            self._create_async_task(self._message_client.run())
-        else:
-            self._message_client = None
 
-        # wait for a while to let other tasks start
-        await asyncio.sleep(0.5)
-        logger.info("GPUStack worker startup completed.")
+            self._serve_manager._inference_backend_manager = inference_backend_manager
+            run_periodically_in_thread(
+                self._serve_manager.sync_model_instances_state,
+                envs.MODEL_INSTANCE_HEALTH_CHECK_INTERVAL,
+            )
+            # Use a short fixed loop interval so that per-model intervals
+            # shorter than the global default can still be honoured.
+            run_periodically_in_thread(
+                self._serve_manager.sync_model_instances_inference_health,
+                10,
+            )
+            run_periodically_in_thread(
+                self._workload_cleaner.cleanup_orphan_workloads, 120, 15
+            )
+            run_periodically_in_thread(
+                self._benchmark_manager.sync_benchmark_state, 3, 15
+            )
+            run_periodically_in_thread(
+                self._cache_service_manager.sync_cache_service_instances_state, 3, 3
+            )
+            # Ahead of the instance loops above by one pass: the catalog decides
+            # what those loops launch and probe.
+            run_periodically_in_thread(self._cache_provider_manager.sync, 60)
 
-        await asyncio.gather(*self._async_tasks)
+            self._create_async_task(self._serve_manager.watch_models())
+            self._create_async_task(self._serve_manager.watch_model_instances_event())
+            self._create_async_task(self._serve_manager.watch_model_instances())
+            self._create_async_task(self._benchmark_manager.watch_benchmarks_event())
+            self._create_async_task(
+                self._cache_service_manager.watch_cache_service_instances_event()
+            )
+
+            model_file_manager = ModelFileManager(
+                worker_id=self._worker_id, clientset=self._clientset, cfg=self._config
+            )
+            self._create_async_task(model_file_manager.watch_model_files())
+
+            if self._config.proxy_mode == ModelInstanceProxyModeEnum.TUNNEL:
+                docker_sock = Path("/var/run/docker.sock")
+                sockets = [str(docker_sock)] if docker_sock.exists() else []
+                # Start websocket proxy message client to handle CONNECT_REQUEST from server
+                self._message_client = MessageClient(
+                    server_endpoint=self._config.get_server_url(),
+                    client_id=uuid.UUID(self.worker_uuid()),
+                    cidrs=[f"{self.worker_ip()}/32"] if self.worker_ip() else [],
+                    unix_sockets=sockets,
+                    authenticator=BearerTokenAuthenticator(
+                        headers=self._clientset.headers
+                    ),
+                )
+                self._create_async_task(self._message_client.run())
+            else:
+                self._message_client = None
+
+            # wait for a while to let other tasks start
+            await asyncio.sleep(0.5)
+            logger.info("GPUStack worker startup completed.")
+
+            await asyncio.gather(*self._async_tasks)
+        finally:
+            self._stop_trace_proxy()
 
     async def _serve_apis(self):
         """

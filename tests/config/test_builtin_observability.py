@@ -141,6 +141,18 @@ def test_effective_trace_endpoint_does_not_probe_advertise_address(
     )
 
     assert cfg.effective_trace_otlp_endpoint == "127.0.0.1:4317"
+    assert cfg.get_trace_ingest_url() == "http://127.0.0.1:4318/v1/traces"
+
+    worker_cfg = Config(
+        data_dir=str(tmp_path / "worker-data"),
+        server_url="http://server:80",
+        token="registration-token",
+    )
+    assert worker_cfg.effective_trace_otlp_endpoint is None
+    worker_cfg._local_trace_proxy_endpoint = "127.0.0.1:49152"
+    assert worker_cfg.effective_trace_otlp_endpoint == "127.0.0.1:49152"
+    worker_cfg.disable_tracing = True
+    assert worker_cfg.effective_trace_otlp_endpoint is None
 
 
 @pytest.mark.parametrize("value", ["not-an-ip", "127.0.0.1:4317", "0.0.0.0/0"])

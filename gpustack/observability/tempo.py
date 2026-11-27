@@ -78,6 +78,9 @@ def prepare_builtin_tempo(cfg: Config) -> bool:
                             "grpc": {
                                 "endpoint": f"{otlp_host}:{cfg.builtin_tempo_otlp_port}"
                             },
+                            "http": {
+                                "endpoint": f"{loopback}:{cfg.builtin_tempo_otlp_http_port}"
+                            },
                         },
                     },
                 },

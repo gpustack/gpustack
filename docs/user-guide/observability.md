@@ -132,7 +132,7 @@ Each tracing component sends spans directly to the selected receiver. The log en
 2. To export traces to an external receiver, set `GPUSTACK_TRACE_OTLP_ENDPOINT=<collector-host>:4317` on the Server and each separate Worker. To use built-in Tempo with remote Workers, see [Enable Tracing on Existing Docker Workers](../upgrade/cluster.md#enable-tracing-on-existing-docker-workers).
 3. Replace `<collector-host>` with a name or address reachable from those containers. Pass the variables with `docker run -e` or under `environment` in your Compose file, then recreate the containers.
 
-Docker runs Tempo and Alloy inside the GPUStack container. Tempo stores its WAL and blocks under `<data_dir>/tempo` and listens on loopback (`127.0.0.1`) by default for both queries and OTLP ingest. Trace files follow the lifecycle of the Server data volume. To change block retention, set `GPUSTACK_BUILTIN_TEMPO_RETENTION` on the Server and recreate its container. To accept OTLP spans from remote Workers on a trusted network, set `GPUSTACK_BUILTIN_TEMPO_OTLP_LISTEN_ADDRESS` on the Server.
+Docker runs Tempo and Alloy inside the GPUStack container. Tempo stores its WAL and blocks under `<data_dir>/tempo` and listens on loopback (`127.0.0.1`) by default for both queries and OTLP ingest. Separate Docker Workers automatically forward local Worker and engine spans to the Server's authenticated trace ingest API without exposing port `4317`. Trace files follow the lifecycle of the Server data volume. To change block retention, set `GPUSTACK_BUILTIN_TEMPO_RETENTION` on the Server and recreate its container. To accept direct OTLP spans from remote Workers on a trusted network instead, set `GPUSTACK_BUILTIN_TEMPO_OTLP_LISTEN_ADDRESS` on the Server.
 
 ### Configure Helm
 

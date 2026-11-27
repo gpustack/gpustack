@@ -132,7 +132,7 @@ Tempo は定期クリーンアップで保持期間を過ぎたブロックを�
 2. 外部レシーバーにトレースを送る場合は、サーバーと個別に起動する各ワーカーに `GPUSTACK_TRACE_OTLP_ENDPOINT=<collector-host>:4317` を設定します。リモートワーカーで組み込み Tempo を使う場合は、[既存の Docker ワーカーでトレースを有効にする](../upgrade/cluster.md#enable-tracing-on-existing-docker-workers)を参照してください。
 3. `<collector-host>` をコンテナーから到達できる名前またはアドレスに置き換えます。`docker run -e` または Compose ファイルの `environment` で変数を渡し、コンテナーを再作成します。
 
-Docker は GPUStack コンテナー内で Tempo と Alloy を実行します。Tempo は WAL とブロックを `<data_dir>/tempo` 配下に保存し、クエリーと OTLP 取り込みの両方をデフォルトでループバック（`127.0.0.1`）のみで待ち受けます。トレースファイルは、サーバーのデータボリュームのライフサイクルに従います。ブロックの保持期間を変更するには、サーバーに `GPUSTACK_BUILTIN_TEMPO_RETENTION` を設定し、コンテナーを再作成します。信頼できるネットワーク上のリモートワーカーから OTLP スパンを受け付けるには、サーバーに `GPUSTACK_BUILTIN_TEMPO_OTLP_LISTEN_ADDRESS` を設定します。
+Docker は GPUStack コンテナー内で Tempo と Alloy を実行します。Tempo は WAL とブロックを `<data_dir>/tempo` 配下に保存し、クエリーと OTLP 取り込みの両方をデフォルトでループバック（`127.0.0.1`）のみで待ち受けます。個別に実行する Docker ワーカーは、ポート `4317` を公開せずに、認証済みのサーバーのトレース取り込み API を経由してワーカーとエンジンのスパンを自動転送します。トレースファイルは、サーバーのデータボリュームのライフサイクルに従います。ブロックの保持期間を変更するには、サーバーに `GPUSTACK_BUILTIN_TEMPO_RETENTION` を設定し、コンテナーを再作成します。代わりに信頼できるネットワーク上のリモートワーカーから直接 OTLP スパンを受け付けるには、サーバーに `GPUSTACK_BUILTIN_TEMPO_OTLP_LISTEN_ADDRESS` を設定します。
 
 ### Helm の設定 { #configure-helm }
 
