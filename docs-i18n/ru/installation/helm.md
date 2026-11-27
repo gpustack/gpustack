@@ -239,15 +239,15 @@ higress-core:
         memory: 4096Mi
       limits:
         cpu: 4000m
-        memory: 8192Mi   # увеличьте ещё, если память продолжает расти
+        memory: 8192Mi   # raise further if memory keeps climbing
     autoscaling:
       enabled: true
-      minReplicas: 2    # HPA игнорирует `replicas`; держите не меньше 2
+      minReplicas: 2    # the HPA ignores `replicas`; keep this >= 2
       maxReplicas: 5
       targetCPUUtilizationPercentage: 80
 ```
 
-#### Планирование ёмкости под запросы с картинками
+#### Планирование ёмкости под запросы с картинками { #sizing-for-image-requests }
 
 Нагрузка от маршрутов и соединений — постоянная часть потребления; резкий рост даёт размер запроса. Плагины шлюза, которые просматривают или переписывают запрос, буферизуют тело запроса целиком, поэтому память растёт вместе с байтами запросов в обработке — число одновременных запросов, умноженное на размер тела. Чаще всего до этого доходят запросы с картинками в base64: в JSON каждая картинка занимает в 1,33 раза больше своего размера.
 
@@ -285,7 +285,7 @@ higress-core:
 - **Воркеры, установленные Helm без манифеста регистрации:** worker-only релиз в кластере сервера. Он живёт в том же пространстве имён, что и релиз сервера, поэтому не должен рендерить Secret, которые уже принадлежат этому релизу: задайте `imagePullSecret.create: false` и укажите в `registrationTokenSecretName` Secret сервера `registration-token` (`worker.enabled` по умолчанию `false`, а `server` и `higress-core` по умолчанию включены, поэтому все три тоже нужно указать явно):
 
 ```yaml
-# values.yaml для worker-only релиза в кластере сервера
+# values.yaml for a worker-only release in the server's cluster
 server:
   enabled: false
 higress-core:

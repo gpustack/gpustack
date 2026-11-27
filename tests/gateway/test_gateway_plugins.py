@@ -1,5 +1,6 @@
 import pytest
 import logging
+import re
 from pathlib import Path
 from urllib.parse import urlparse
 from urllib.request import url2pathname
@@ -26,9 +27,18 @@ from gpustack.gateway import (
     ai_statistics_override,
     ai_statistics_plugin,
     ext_auth_plugin,
+    generic_proxy_router_plugin,
+    generic_proxy_router_spec_diff,
+    model_pre_route_plugin,
     transformer_plugin,
 )
 from gpustack.gateway.ext_auth import ext_auth_override
+from gpustack.gateway.utils import (
+    async_video_regexes,
+    fallback_ingress_name,
+    model_route_ingress_name,
+    model_route_ingress_prefix,
+)
 
 
 def _manifest_suffix(name: str) -> str:
@@ -635,6 +645,97 @@ class TestExtAuthPluginOverrides:
             self._ext_auth(
                 {"gpustack-ext-auth": {"config": {"local_auth": {"enable": False}}}}
             )
+
+
+class TestSetHeaderPreRouteVideo:
+    """The pre-route plugin writes X-GPUStack-Model-Instance only on paths
+    its suffix or prefix list matches; a Worker in WORKER/TUNNEL proxy mode
+    needs that header to pick the local inference port. Mirror the plugin's
+    match (``HasSuffix`` over ``enableOnPathSuffix``, ``HasPrefix`` over
+    ``enableOnPathPrefix``) so every video request reaches the engine."""
+
+    def _spec(self):
+        return model_pre_route_plugin(cfg=make_cfg("http://127.0.0.1:30080"))[1]
+
+    def _enabled(self, path):
+        config = self._spec().defaultConfig
+        return path.endswith(tuple(config["enableOnPathSuffix"])) or path.startswith(
+            tuple(config["enableOnPathPrefix"])
+        )
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/v1/videos",
+            "/model/proxy/2/v1/videos",
+            "/v1/videos/gpustack_2-7_video_abc",
+            "/v1/videos/video_abc",
+            "/v1/videos/video_abc/content",
+        ],
+    )
+    def test_every_video_request_carries_the_instance_header(self, path):
+        assert self._enabled(path)
+
+    def test_the_follow_ups_are_a_prefix_not_a_suffix(self):
+        # "/v1/videos" as a suffix stops at the endpoint; the job id follows it.
+        assert not "/v1/videos/video_abc".endswith("/v1/videos")
+        assert "/v1/videos/" in self._spec().defaultConfig["enableOnPathPrefix"]
+
+
+class TestGenericProxyRouterVideo:
+    """Self-routing asynchronous video job IDs. The router wraps a create's
+    response ``id`` with the route and the serving instance and resolves a
+    follow-up's id back into a model, a native path and an instance pin; the
+    Server cannot do either for traffic that rides the model ingress, since
+    the follow-ups carry no model name."""
+
+    def _spec(self):
+        cfg = make_cfg("http://127.0.0.1:30080")
+        return generic_proxy_router_plugin(cfg=cfg)[1]
+
+    def test_renders_the_video_regexes_with_their_route_name_prefix(self):
+        # The plugin rejects one key without the other; both come from here.
+        spec = self._spec()
+        assert spec.defaultConfig["videoRegexes"] == async_video_regexes
+        assert spec.defaultConfig["videoIdRewriteOnRouteNamePrefix"] == [
+            model_route_ingress_prefix
+        ]
+
+    def test_route_name_prefix_is_the_model_route_ingress_prefix(self):
+        # Envoy names a route after its ingress; the digits after the prefix
+        # are the route id the wrapped id carries and the plugin looks up in
+        # aliasNameMapping.
+        assert model_route_ingress_prefix == "ai-route-route-"
+        assert re.fullmatch(
+            re.escape(model_route_ingress_prefix) + r"[0-9]+(\.fallback)?\.internal",
+            model_route_ingress_name(12),
+        )
+        assert re.fullmatch(
+            re.escape(model_route_ingress_prefix) + r"[0-9]+(\.fallback)?\.internal",
+            fallback_ingress_name(model_route_ingress_name(12)),
+        )
+
+    def test_video_paths_are_body_driven_too(self):
+        # The create has no regex: it is an ordinary model request whose
+        # body names the route, which is what ``enableOnPathSuffix`` gates.
+        suffixes = self._spec().defaultConfig["enableOnPathSuffix"]
+        assert "/v1/videos" in suffixes
+        assert "/v1/videos/sync" in suffixes
+
+    def test_init_diff_refreshes_the_video_keys_from_the_factory(self):
+        # Not on the preserve list: a stale or hand-edited value on the live
+        # CR is replaced on the next start, unlike aliasNameMapping.
+        live = self._spec()
+        live.defaultConfig = {
+            **live.defaultConfig,
+            "videoRegexes": [{"regex": "stale", "path": "stale"}],
+            "videoIdRewriteOnRouteNamePrefix": ["stale-"],
+        }
+        result = generic_proxy_router_spec_diff(live, self._spec())
+        assert result.defaultConfig["videoRegexes"] == async_video_regexes
+        assert result.defaultConfig["videoIdRewriteOnRouteNamePrefix"] == [
+            model_route_ingress_prefix
+        ]
 
 
 class TestDeprecatedGatewayEnvs:

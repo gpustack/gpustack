@@ -4976,19 +4976,22 @@ async def ensure_route_generic_proxy_router_config(
     model_route: ModelRoute,
     effective_name: str,
     extensions_api: ExtensionsHigressIoV1Api,
-    generic_proxy_enabled: bool,
+    alias_enabled: bool,
 ):
     """
-    Reconcile the single aliasNameMapping entry that maps /model/proxy/<route_id>/...
-    to this route's effective model name. When ``generic_proxy_enabled`` is False
-    (generic proxy disabled or route deleted), the entry is removed and other
-    routes are untouched.
+    Reconcile the single aliasNameMapping entry that maps this route's id to
+    its effective model name. The entry is what ``/model/proxy/<route_id>/...``
+    resolves through, and what the route-id half of a self-routing video job
+    id resolves through (``mcp_handler.async_video_regexes``); the caller
+    decides whether either applies (``mcp_handler.route_alias_enabled``).
+    When ``alias_enabled`` is False the entry is removed and other routes are
+    untouched.
 
     ``effective_name`` is the fully-qualified model name including the
     Org name prefix (e.g. ``org1/qwen3-0.6b``) for non-platform Orgs;
     platform Org keeps the unprefixed ``model_route.name``.
     """
-    route_name = effective_name if generic_proxy_enabled else None
+    route_name = effective_name if alias_enabled else None
     await mcp_handler.ensure_wasm_plugin(
         api=extensions_api,
         name=mcp_handler.gpustack_generic_proxy_router_name,
@@ -5145,13 +5148,18 @@ async def sync_gateway(
     )
     # Generic-proxy router: inject x-higress-llm-model when /model/proxy/<id>/
     # is hit, so the existing main ingress header matcher + fallback chain apply.
+    # A video route needs the same entry for its job follow-ups, whose
+    # self-routing id names the route by id and carries no model of its own.
+    # Read off the fresh row: the category sync that makes a route a video
+    # route lands as a route update the event payload may predate.
     await ensure_route_generic_proxy_router_config(
         cfg=cfg,
         model_route=model_route,
         effective_name=effective_name,
         extensions_api=extensions_api,
-        generic_proxy_enabled=(
-            event_type != EventType.DELETED and bool(model_route.generic_proxy)
+        alias_enabled=(
+            event_type != EventType.DELETED
+            and mcp_handler.route_alias_enabled(model_route_from_db)
         ),
     )
 
