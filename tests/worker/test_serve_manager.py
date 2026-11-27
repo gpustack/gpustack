@@ -216,7 +216,21 @@ def test_subordinate_health_check_waits_for_start(state, mode):
     instance = new_model_instance(1, "distributed", 1, worker_id=1, state=state)
     instance.distributed_servers = DistributedServers(
         mode=mode,
-        subordinate_workers=[ModelInstanceSubordinateWorker(worker_id=2)],
+        # The member has been launched, so a missing workload is a failure
+        # rather than the expected absence before its first launch.
+        subordinate_workers=[
+            ModelInstanceSubordinateWorker(
+                worker_id=2, state=ModelInstanceStateEnum.INITIALIZING
+            )
+        ],
+    )
+    waits_for_start = (
+        mode == DistributedServerCoordinateModeEnum.INITIALIZE_LATER
+        and state
+        in (
+            ModelInstanceStateEnum.INITIALIZING,
+            ModelInstanceStateEnum.DOWNLOADING,
+        )
     )
     clientset.model_instances.list.return_value = SimpleNamespace(items=[instance])
     with (
@@ -227,10 +241,7 @@ def test_subordinate_health_check_waits_for_start(state, mode):
     ):
         manager.sync_model_instances_state()
 
-    if mode == DistributedServerCoordinateModeEnum.INITIALIZE_LATER and state in (
-        ModelInstanceStateEnum.INITIALIZING,
-        ModelInstanceStateEnum.DOWNLOADING,
-    ):
+    if waits_for_start:
         get.assert_not_called()
         update.assert_not_called()
     else:
