@@ -328,3 +328,35 @@ def test_local_otlp_trace_proxy_cleans_up_after_start_failure(monkeypatch, owns_
     assert proxy.endpoint is None
     server.stop.assert_called_once()
     assert client.close.call_count == int(owns_client)
+
+
+def test_worker_reuses_trace_proxy_port_after_restart(monkeypatch, tmp_path):
+    from gpustack.worker.worker import Worker
+
+    server = MagicMock()
+    server.add_insecure_port.return_value = 49152
+    monkeypatch.setattr(
+        "gpustack.observability.trace_proxy.grpc.server", lambda *a, **kw: server
+    )
+    monkeypatch.setattr("gpustack.observability.trace_proxy.httpx.Client", MagicMock())
+
+    for port in (0, 49152):
+        worker = Worker.__new__(Worker)
+        worker._config = SimpleNamespace(
+            data_dir=str(tmp_path),
+            disable_tracing=False,
+            trace_otlp_endpoint=None,
+            use_builtin_tempo=lambda: False,
+            get_server_url=lambda: "http://testserver",
+            _local_trace_proxy_endpoint=None,
+        )
+        worker._clientset = SimpleNamespace(headers={})
+        worker._worker_manager = SimpleNamespace(trace_proxy_enabled=True)
+        worker._trace_proxy = None
+
+        try:
+            worker._start_trace_proxy_if_needed()
+            server.add_insecure_port.assert_called_with(f"127.0.0.1:{port}")
+            assert worker._config._local_trace_proxy_endpoint == "127.0.0.1:49152"
+        finally:
+            worker._stop_trace_proxy()

@@ -2,12 +2,14 @@
 
 from concurrent import futures
 import logging
+from pathlib import Path
 from typing import Mapping, Optional
 
 import grpc
 import httpx
 
 from gpustack.ssl_context import make_ssl_context
+from gpustack.utils.atomic_file import write_text_atomically
 from gpustack.utils.network import use_proxy_env_for_url
 
 logger = logging.getLogger(__name__)
@@ -49,11 +51,13 @@ class LocalOTLPTraceProxy:
         headers: Mapping[str, str],
         *,
         port: int = 0,
+        port_file: Optional[Path] = None,
         client: Optional[httpx.Client] = None,
     ):
         self._ingest_url = f"{server_url.rstrip('/')}/v2/traces/otlp"
         self._headers = {**headers, "Content-Type": "application/x-protobuf"}
         self._requested_port = port
+        self._port_file = port_file
         self._owns_client = client is None
         self._client = client
         self._executor: Optional[futures.ThreadPoolExecutor] = None
@@ -67,6 +71,13 @@ class LocalOTLPTraceProxy:
     def start(self) -> str:
         if self._server is not None and self._endpoint is not None:
             return self._endpoint
+        port = self._requested_port
+        if not port and self._port_file is not None:
+            # Running engines keep their OTLP endpoint across Worker restarts.
+            try:
+                port = int(self._port_file.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                pass
         self._executor = futures.ThreadPoolExecutor(
             max_workers=4, thread_name_prefix="otlp-trace-proxy"
         )
@@ -74,10 +85,13 @@ class LocalOTLPTraceProxy:
             server = self._server = grpc.server(
                 self._executor,
                 maximum_concurrent_rpcs=64,
-                options=[("grpc.max_receive_message_length", _MAX_MESSAGE_BYTES)],
+                options=[
+                    ("grpc.max_receive_message_length", _MAX_MESSAGE_BYTES),
+                    ("grpc.so_reuseport", 0),
+                ],
             )
             server.add_generic_rpc_handlers((_RawOTLPTraceHandler(self._export),))
-            bound_port = server.add_insecure_port(f"127.0.0.1:{self._requested_port}")
+            bound_port = server.add_insecure_port(f"127.0.0.1:{port}")
             if not bound_port:
                 raise RuntimeError("Failed to bind local OTLP trace proxy on loopback")
             if self._client is None:
@@ -88,6 +102,8 @@ class LocalOTLPTraceProxy:
                     timeout=_FORWARD_TIMEOUT_SECONDS,
                 )
             server.start()
+            if not port and self._port_file is not None:
+                write_text_atomically(self._port_file, f"{bound_port}\n")
         except Exception:
             self.stop()
             raise
