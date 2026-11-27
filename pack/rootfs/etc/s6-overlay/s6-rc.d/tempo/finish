@@ -1,4 +1,7 @@
 #!/bin/sh
 
-# Tempo can exit successfully after a listener fails to bind.
-sleep 5
+# Tempo can exit successfully after a listener fails to bind. Back off only
+# when the supervisor still wants to run it.
+if [ "$(s6-svstat -o wantedup .)" = true ]; then
+    exec sleep 5
+fi

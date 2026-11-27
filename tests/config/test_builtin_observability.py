@@ -1,6 +1,7 @@
 import argparse
 import json
 from pathlib import Path
+import subprocess
 
 from starlette.requests import Request
 import pytest
@@ -10,6 +11,27 @@ from gpustack.cmd.prerun import prepare_observability_config, setup_prerun_cmd
 from gpustack.cmd.start import parse_args, set_common_options, setup_start_cmd
 from gpustack.config.config import Config
 from gpustack.routes import prometheus as prometheus_routes
+
+
+@pytest.mark.parametrize("wanted_up", ["true", "false"])
+def test_tempo_finish_only_delays_restarts(monkeypatch, tmp_path, wanted_up):
+    svstat = tmp_path / "s6-svstat"
+    svstat.write_text(f'#!/bin/sh\n[ "$*" = "-o wantedup ." ] && echo {wanted_up}\n')
+    sleep = tmp_path / "sleep"
+    sleep.write_text('#!/bin/sh\necho "$1"\n')
+    svstat.chmod(0o755)
+    sleep.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+
+    finish = (
+        Path(__file__).resolve().parents[2]
+        / "pack/rootfs/etc/s6-overlay/s6-rc.d/tempo/finish"
+    )
+    result = subprocess.run(
+        [str(finish), "0", "0", "."], check=True, capture_output=True, text=True
+    )
+
+    assert result.stdout == ("5\n" if wanted_up == "true" else "")
 
 
 def test_config_uses_non_default_builtin_observability_ports(tmp_path):
