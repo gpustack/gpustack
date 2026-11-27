@@ -133,17 +133,14 @@ def render_router_command_template(
         addresses = peers.get(role, [])
         if len(addresses) > _MAX_VALUES:
             raise ValueError("Router template has too many peer endpoints.")
+        from gpustack.utils.network import join_host_port
+
         for peer in addresses:
-            host = (
-                f"[{peer.ip}]"
-                if ":" in peer.ip and not peer.ip.startswith("[")
-                else peer.ip
-            )
             entries.append(
                 {
                     "ip": peer.ip,
                     "port": peer.port,
-                    "url": f"http://{host}:{peer.port}",
+                    "url": f"http://{join_host_port(peer.ip, peer.port)}",
                     "ports": dict(peer.ports),
                 }
             )

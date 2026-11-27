@@ -1202,7 +1202,7 @@ class ServeManager(ContainerLogPersister):
             policy,
             item.component,
             worker.ip,
-            f'http://{current.worker_ip}:{main.component.api_port}',
+            f'http://{network.join_host_port(current.worker_ip, main.component.api_port)}',
         )
         fallback = registration.determine_default_registry(
             self._config.system_default_container_registry
@@ -3238,7 +3238,7 @@ class ServeManager(ContainerLogPersister):
                         target,
                         key[3],
                         main.dp_size,
-                        f'http://{mi.worker_ip}:{main.api_port}',
+                        f'http://{network.join_host_port(mi.worker_ip, main.api_port)}',
                         timeout,
                     )
                 else:
@@ -5595,7 +5595,9 @@ def is_ready(
         # Reasons:
         # 1. Connectivity to the loopback address does not work with Ascend MindIE.
         # 2. More adaptable to container networks.
-        health_check_url = f"http://{mi.worker_ip}:{mi.port}{health_check_path}"
+        health_check_url = (
+            f"http://{network.join_host_port(mi.worker_ip, mi.port)}{health_check_path}"
+        )
         response = requests.get(health_check_url, timeout=timeout)
         if response.status_code == 200:
             return True
@@ -5725,7 +5727,9 @@ def is_inference_ready(
         return True
 
     endpoint_path, payload = result
-    inference_url = f"http://{mi.worker_ip}:{mi.port}{endpoint_path}"
+    inference_url = (
+        f"http://{network.join_host_port(mi.worker_ip, mi.port)}{endpoint_path}"
+    )
 
     try:
         options = {} if allow_redirects else {"allow_redirects": False}
@@ -5755,7 +5759,7 @@ def _probe_rank_health(mi, model, path, kind, timeout) -> Tuple[bool, str]:
                 mi, model, timeout=timeout, allow_redirects=False
             )
             return healthy, 'inference request failed' if not healthy else ''
-        url = f"http://{mi.worker_ip}:{mi.port}{path}"
+        url = f"http://{network.join_host_port(mi.worker_ip, mi.port)}{path}"
         response = requests.get(url, timeout=timeout, allow_redirects=False)
         try:
             reason = f'HTTP {response.status_code}'
@@ -5801,7 +5805,7 @@ def _probe_sglang_component_health(
 ) -> Tuple[bool, str]:
     """Probe pinned native response contracts within one absolute time budget."""
     deadline = time.monotonic() + timeout
-    url = f'http://{mi.worker_ip}:{mi.port}'
+    url = f'http://{network.join_host_port(mi.worker_ip, mi.port)}'
     try:
         if kind == 'sglang_engine':
             health = _component_get(f'{url}/health', deadline)

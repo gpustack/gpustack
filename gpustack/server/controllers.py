@@ -1574,7 +1574,9 @@ class CacheServiceController:
             worker = await Worker.one_by_id(session, instance.worker_id)
             if worker is None or not worker.ip:
                 continue
-            addresses[name] = f"{worker.ip}:{instance.port}"
+            from gpustack.utils.network import join_host_port
+
+            addresses[name] = join_host_port(worker.ip, instance.port)
         return addresses
 
     async def _desired_component_workers(
@@ -4552,8 +4554,10 @@ async def _reconcile_router_membership(
         # that worker's model instances. Off the tunnel the server dials the
         # worker itself, where the address it has to use is the one the worker
         # publishes for outside access rather than the one it sees itself at.
+        from gpustack.utils.network import join_host_port
+
         host, proxy, proxy_token = await _router_dial(session, router_instance)
-        address = f"{host}:{router_instance.port}"
+        address = join_host_port(host, router_instance.port)
         model_identity = (model.id, getattr(model, "updated_at", None))
         router_identity = (
             router_instance.id,

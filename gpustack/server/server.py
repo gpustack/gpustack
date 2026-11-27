@@ -103,6 +103,12 @@ from gpustack.schemas.resource_events import ResourceEvent, ResourceEventArchive
 from gpustack.server.worker_instance_cleaner import WorkerInstanceCleaner
 from gpustack.server.worker_syncer import WorkerSyncer
 from gpustack.server.scaling_scheduler import ScalingScheduler
+from gpustack.utils.network import (
+    format_bind_address,
+    join_host_port,
+    loopback_host,
+    resolve_bind_host,
+)
 from gpustack.utils.platform import is_inside_kubernetes
 from gpustack.utils.process import add_signal_handlers_in_loop
 from gpustack.config.registration import write_registration_token
@@ -342,9 +348,9 @@ class Server:
         self._start_gpustack_operator_subscription()
 
         serving_host = (
-            "127.0.0.1"
+            loopback_host()
             if self._config.gateway_mode == GatewayModeEnum.embedded
-            else "0.0.0.0"
+            else resolve_bind_host(self._config.host)
         )
 
         config = uvicorn.Config(
@@ -357,15 +363,17 @@ class Server:
 
         setup_logging()
         logger.info(f"Gateway mode: {self._config.gateway_mode.value}.")
-        serving_api_message = f"Serving GPUStack API on {config.host}:{config.port}."
+        serving_api_message = (
+            f"Serving GPUStack API on {format_bind_address(config.host, config.port)}."
+        )
         if self._config.gateway_mode == GatewayModeEnum.embedded:
             logger.debug(serving_api_message)
             logger.info(
-                f"GPUStack Server will serve on 0.0.0.0:{self._config.get_gateway_port()}."
+                f"GPUStack Server will serve on {format_bind_address(resolve_bind_host(self._config.host), self._config.get_gateway_port())}."
             )
             if self._config.get_tls_secret_name() is not None:
                 logger.info(
-                    f"GPUStack Server will serve TLS on 0.0.0.0:{self._config.tls_port}."
+                    f"GPUStack Server will serve TLS on {format_bind_address(resolve_bind_host(self._config.host), self._config.tls_port)}."
                 )
         else:
             logger.info(serving_api_message)
@@ -777,7 +785,22 @@ class Server:
         async def wait_and_start_after_healthy():
             # Wait for the API to be healthy before starting the rest of the processes,
             # so that they can rely on the API being available when they start.
-            api_url = f"http://127.0.0.1:{self._config.api_port}/healthz"
+            configured = (
+                resolve_bind_host(self._config.host) if self._config.host else None
+            )
+            if (
+                self._config.gateway_mode == GatewayModeEnum.embedded
+                or not configured
+                or configured == "0.0.0.0"
+            ):
+                probe_host = loopback_host()
+            elif configured == "::":
+                probe_host = "::1"
+            else:
+                probe_host = configured
+            api_url = (
+                f"http://{join_host_port(probe_host, self._config.api_port)}/healthz"
+            )
             async with aiohttp.ClientSession() as session:
                 while True:
                     try:
@@ -845,9 +868,10 @@ class Server:
         ),
     )
     async def _check_ports_ready(self, *ports: int):
+        probe_host = loopback_host()
         for port in ports:
             try:
-                _, writer = await asyncio.open_connection("127.0.0.1", port)
+                _, writer = await asyncio.open_connection(probe_host, port)
                 writer.close()
                 await writer.wait_closed()
             except Exception:

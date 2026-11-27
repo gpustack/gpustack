@@ -1990,9 +1990,11 @@ class VLLMServer(InferenceServer):
                 ]
             )
         else:
+            from gpustack.utils.network import join_host_port
+
             arguments.extend(
                 [
-                    f"--address={self._model_instance.worker_ip}:{gcs_server_port}",
+                    f"--address={join_host_port(self._model_instance.worker_ip, gcs_server_port)}",
                 ]
             )
 

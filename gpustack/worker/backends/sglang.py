@@ -468,13 +468,15 @@ class SGLangServer(InferenceServer):
 
     def _smg_workload_plan(self, name, image, policy, component) -> WorkloadPlan:
         """Build an independent CPU-only router using the selected Engine image."""
+        from gpustack.utils.network import join_host_port
+
         return build_sglang_smg_workload(
             name,
             image,
             policy,
             component,
             self._worker.ip,
-            f"http://{self._model_instance.worker_ip}:{self._model_instance.port}",
+            f"http://{join_host_port(self._model_instance.worker_ip, self._model_instance.port)}",
         )
 
     def _get_configured_env(self, is_distributed: bool) -> Dict[str, str]:
