@@ -465,6 +465,75 @@ def _histogram_data(query, counts=10, other_bucket=None):
 
 
 @pytest.mark.asyncio
+async def test_first_bucket_tpot_keeps_average_without_fabricated_percentiles(
+    monkeypatch,
+):
+    module = _collector()
+    prefix = 'gpustack:time_per_output_token_seconds'
+
+    def instant(query):
+        if prefix + '_count{' in query:
+            return [_entry(10)]
+        if prefix + '_sum{' in query:
+            return [_entry(0.032)]
+        if prefix + '_bucket{' in query:
+            return [_entry(10, le=bound) for bound in ('0.01', '0.02', '+Inf')]
+        return []
+
+    def ranges(query):
+        if prefix + '_' not in query:
+            return []
+        labels = _entry(0)['metric']
+        if 'histogram_upper_bound' in query:
+            return [
+                {
+                    'metric': {**labels, 'histogram_upper_bound': '0.01'},
+                    'values': [[4910, '1'], [5000, '0.5']],
+                }
+            ]
+        for quantile, interpolated, resolved in (
+            ('0.5', 0.005, 0.01),
+            ('0.95', 0.0095, 0.019),
+            ('0.99', 0.0099, 0.0198),
+        ):
+            if f'histogram_quantile({quantile},' in query:
+                return [
+                    {
+                        'metric': labels,
+                        'values': [[4910, str(interpolated)], [5000, str(resolved)]],
+                    }
+                ]
+        return [{'metric': labels, 'values': [[4910, '0.0032'], [5000, '0.008']]}]
+
+    _prometheus(monkeypatch, module, instant, ranges)
+    result = await module.collect_model_metrics(
+        _model(),
+        [_instance()],
+        start=1400,
+        end=5000,
+        window_seconds=3600,
+        statistics=('avg', 'p50', 'p95', 'p99'),
+        section='llm',
+        client=object(),
+    )
+
+    metric = result.metrics['tpot']
+    assert metric.reason == 'histogram_quantile_out_of_range'
+    assert {s.statistic: s.value for s in metric.summaries} == {
+        'avg': 0.0032,
+        'p50': None,
+        'p95': None,
+        'p99': None,
+    }
+    assert {line.statistic: line.points for line in metric.series} == {
+        'avg': [(4910, 0.0032), (5000, 0.008)],
+        'p50': [(4910, None), (5000, 0.01)],
+        'p95': [(4910, None), (5000, 0.019)],
+        'p99': [(4910, None), (5000, 0.0198)],
+    }
+
+
+@pytest.mark.asyncio
 async def test_histogram_summaries_always_cover_four_full_window_statistics(
     monkeypatch,
 ):

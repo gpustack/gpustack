@@ -1,4 +1,4 @@
-"""Lower bounds for quantiles beyond the last finite histogram bucket."""
+"""Identify quantiles that a histogram cannot resolve."""
 
 import math
 from collections import defaultdict
@@ -38,6 +38,22 @@ def histogram_lower_bounds(
     }
 
 
+def first_bucket_ceiling(
+    profiles: Mapping[object, Mapping[float, float]]
+) -> Optional[float]:
+    bound = min(next(iter(profiles.values()), {}), default=math.inf)
+    return bound if 0 < bound < math.inf else None
+
+
+def all_in_first_bucket(
+    profiles: Mapping[object, Mapping[float, float]], count: float
+) -> bool:
+    bound = first_bucket_ceiling(profiles)
+    return bound is not None and math.isclose(
+        sum(profile[bound] for profile in profiles.values()), count, rel_tol=1e-9
+    )
+
+
 def group_key(dimensions: MetricDimensions, view: str) -> object:
     role = dimensions.role or ''
     return (role, dimensions.model_instance_id) if view == 'instances' else role
@@ -50,6 +66,14 @@ def trend_ceilings(groups: Mapping[object, dict]) -> Dict[object, float]:
         if not group.get('ambiguous_bounds')
         and (tail := histogram_tail(group['profiles'], count=group['count']))
         is not None
+    }
+
+
+def trend_first_bucket_ceilings(groups: Mapping[object, dict]) -> Dict[object, float]:
+    return {
+        key: bound
+        for key in trend_ceilings(groups)
+        if (bound := first_bucket_ceiling(groups[key]['profiles'])) is not None
     }
 
 
@@ -98,6 +122,26 @@ def requires_bound_check(
         line.statistic in QUANTILES
         and (bound := ceilings.get(group_key(line.dimensions, view))) is not None
         and any(value is not None and value >= bound for _, value in line.points)
+        for line in series
+    )
+
+
+def _is_first_bucket_estimate(
+    value: Optional[float], bound: float, quantile: float
+) -> bool:
+    return value is not None and math.isclose(value, bound * quantile, rel_tol=1e-9)
+
+
+def requires_first_bucket_check(
+    series: Sequence[MetricSeries], ceilings: Mapping[object, float], view: str
+) -> bool:
+    return any(
+        (quantile := QUANTILES.get(line.statistic)) is not None
+        and (bound := ceilings.get(group_key(line.dimensions, view))) is not None
+        and any(
+            _is_first_bucket_estimate(value, bound, quantile)
+            for _, value in line.points
+        )
         for line in series
     )
 
@@ -168,3 +212,29 @@ def apply_lower_bounds(
         line.points = points
         line.lower_bounds = limits or None
     return censored, incomplete
+
+
+def censor_first_bucket_estimates(
+    series: Sequence[MetricSeries],
+    ceilings: Mapping[object, float],
+    rows: Sequence[dict],
+    *,
+    view: str,
+) -> bool:
+    fractions = _cdf_fractions(rows, ceilings, view)
+    censored = False
+    for line in series:
+        quantile, key = QUANTILES.get(line.statistic), group_key(line.dimensions, view)
+        bound = ceilings.get(key)
+        if quantile is None or bound is None:
+            continue
+        for index, (timestamp, value) in enumerate(line.points):
+            fraction = fractions.get((key, timestamp))
+            if (
+                _is_first_bucket_estimate(value, bound, quantile)
+                and fraction is not None
+                and math.isclose(fraction, 1.0, rel_tol=1e-9)
+            ):
+                line.points[index] = timestamp, None
+                censored = True
+    return censored

@@ -29,11 +29,15 @@ from gpustack.utils.model_instance_workers import (
 )
 from .catalog import model_metric_definitions
 from .histogram_bounds import (
+    all_in_first_bucket,
     apply_lower_bounds,
     ceiling_scopes,
+    censor_first_bucket_estimates,
     histogram_lower_bounds,
     requires_bound_check,
+    requires_first_bucket_check,
     trend_ceilings,
+    trend_first_bucket_ceilings,
 )
 from .ingress import collect_ingress_metric
 from . import config as query_config
@@ -797,12 +801,25 @@ class _Collection:
             sums, counts, buckets, by_instance=self.view == 'instances'
         )
         ceilings = trend_ceilings(groups)
-        if not requires_bound_check(metric.series, ceilings, self.view):
+        first_buckets = trend_first_bucket_ceilings(groups)
+        check_tail = requires_bound_check(metric.series, ceilings, self.view)
+        check_first = requires_first_bucket_check(
+            metric.series, first_buckets, self.view
+        )
+        if not check_tail and not check_first:
             return
         rows, failed = [], False
         try:
             for candidate in candidates:
-                populations = ceiling_scopes(candidate, ceilings, buckets)
+                populations = (
+                    ceiling_scopes(candidate, ceilings, buckets) if check_tail else []
+                )
+                if check_first:
+                    populations.extend(
+                        item
+                        for item in ceiling_scopes(candidate, first_buckets, buckets)
+                        if item not in populations
+                    )
                 if not populations:
                     continue
                 try:
@@ -820,9 +837,15 @@ class _Collection:
                 except _QUERY_ERRORS:
                     failed = True
         finally:
-            censored, incomplete = apply_lower_bounds(
-                metric.series, ceilings, rows, view=self.view
-            )
+            censored, incomplete = False, False
+            if check_tail:
+                censored, incomplete = apply_lower_bounds(
+                    metric.series, ceilings, rows, view=self.view
+                )
+            if check_first:
+                censored |= censor_first_bucket_estimates(
+                    metric.series, first_buckets, rows, view=self.view
+                )
             if incomplete:
                 if failed:
                     metric.reason = 'query_failed'
@@ -898,19 +921,26 @@ class _Collection:
         for role, group in sorted(groups.items()):
             stats, compatible = self.histogram_group_statistics(group)
             incompatible |= group['count'] > 0 and not compatible
+            first_bucket_only = compatible and all_in_first_bucket(
+                group['profiles'], group['count']
+            )
             bounds = (
                 histogram_lower_bounds(group['profiles'], count=group['count'])
                 if compatible
                 else {}
             )
-            if bounds and metric.reason in (None, 'no_samples'):
+            if (bounds or first_bucket_only) and metric.reason in (None, 'no_samples'):
                 metric.reason = 'histogram_quantile_out_of_range'
             for stat in HISTOGRAM_STATISTICS:
                 metric.summaries.append(
                     MetricSummary(
                         statistic=stat,
                         dimensions=MetricDimensions(role=role or None),
-                        value=None if stat in bounds else _finite(stats[stat]),
+                        value=(
+                            None
+                            if stat in bounds or (first_bucket_only and stat != 'avg')
+                            else _finite(stats[stat])
+                        ),
                         lower_bound=bounds.get(stat),
                         sample_count=group['count'],
                     )
