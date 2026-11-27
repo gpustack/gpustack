@@ -460,13 +460,19 @@ async def get_serving_logs(  # noqa: C901
     if source is not None:
         await _resolve_visible_log_source(request, model_instance, worker, source)
 
-    timeout = aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT, sock_connect=5)
+    timeout_seconds = (
+        request.app.state.server_config.log_stream_timeout_seconds
+        if log_options.follow
+        else envs.PROXY_TIMEOUT
+    )
+    timeout = aiohttp.ClientTimeout(total=timeout_seconds or None, sock_connect=5)
 
     def on_exception(e: Exception, t: aiohttp.ClientTimeout) -> tuple[str, int]:
+        duration = f" ({t.total} seconds)" if t.total is not None else ""
         msg = (
             f"Unable to read logs: {type(e).__name__}"
             if not isinstance(e, TimeoutError)
-            else f"Log stream timed out ({t.total} seconds). Please reopen the log page."
+            else f"Log stream timed out{duration}. Please reopen the log page."
         )
         return f"\x1b[999;1H{msg}\n", status.HTTP_500_INTERNAL_SERVER_ERROR
 

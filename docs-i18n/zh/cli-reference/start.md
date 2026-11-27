@@ -71,6 +71,8 @@ gpustack start [OPTIONS]
 | `--disable-worker`                               | (empty)                                          | (DEPRECATED) 禁用 GPUStack Server 的内置 Worker。新安装默认不包含内置 Worker，如有需要，可通过 '--enable-worker' 启用。若两个参数均未设置，为保持向后兼容，v2.0.1 之前的旧安装默认启用内置 Worker。 |
 | `--enable-worker`                                | `False`                                          | 启用 GPUStack Server 的内置 Worker。                                                                                                                                                                                                                                                                                           |
 | `--bootstrap-password` value                     | Auto-generated.                                  | 默认管理员用户的初始密码。                                                                                                                                                                                                                                                                                                  |
+| `--jwt-token-expire-minutes` 值 | `120` | 每个 Web UI 会话令牌及其 Cookie 的有效期（分钟）。必须大于 0。活跃会话可在过期前续签。 也可通过环境变量设置 `GPUSTACK_JWT_TOKEN_EXPIRE_MINUTES`. |
+| `--log-stream-timeout-seconds` 值 | `GPUSTACK_PROXY_TIMEOUT_SECONDS` (默认为 `1800`) | 实时日志请求到 Worker 的总时长上限（秒），适用于模型实例、Benchmark 和 KV Cache。设为 `0` 可取消总时长上限。 也可通过环境变量设置 `GPUSTACK_LOG_STREAM_TIMEOUT_SECONDS`. |
 | `--database-url` value                           | Embedded PostgreSQL.                             | 数据库 URL。支持 PostgreSQL 13.0+、MySQL 8.0.36+，以及 openGauss（postgresql:// 协议）、OceanBase（mysql:// 协议）等兼容数据库。示例：postgresql://username:password@host:port/dbname 或 mysql://username:password@host:port/dbname                                                                      |
 | `--redis-url` value                              | None                                             | 外部 Redis URL，用于需要共享快速状态的功能（LB 插件的共享状态后端）。格式：`redis://host[:port][/db]`。不允许包含凭据（凭据会写入网关 CR），且不支持 TLS（`rediss://`）。                                                                                |
 | `--ssl-keyfile` value                            | (empty)                                          | SSL 密钥文件路径。                                                                                                                                                                                                                                                                                                                     |
@@ -193,6 +195,9 @@ metrics_port: 10161
 disable_metrics: false
 enable_worker: false
 bootstrap_password: your_admin_password
+jwt_token_expire_minutes: 120
+# If omitted, the log stream timeout inherits GPUSTACK_PROXY_TIMEOUT_SECONDS.
+# log_stream_timeout_seconds: 1800
 database_url: postgresql://username:password@host:port/dbname
 # database_url: mysql://username:password@host:port/dbname
 ssl_keyfile: /path/to/keyfile

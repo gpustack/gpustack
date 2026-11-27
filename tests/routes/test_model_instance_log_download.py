@@ -135,6 +135,8 @@ async def _serve_logs(instance, *, follow, chunks, status_code=200, consume=True
     ASGI instead, which is the only path that promotes the status code.
     """
     fetched = []
+    request = MagicMock()
+    request.app.state.server_config.log_stream_timeout_seconds = 1800
 
     async def fake_stream(**kwargs):
         fetched.append(kwargs["params"])
@@ -151,7 +153,7 @@ async def _serve_logs(instance, *, follow, chunks, status_code=200, consume=True
         patch(f"{MODULE}.stream_to_worker", fake_stream),
     ):
         response = await get_serving_logs(
-            request=MagicMock(),
+            request=request,
             ctx=MagicMock(),
             id=7,
             log_options=LogOptions(tail=-1, follow=follow),

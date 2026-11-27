@@ -70,6 +70,8 @@ gpustack start [OPTIONS]
 | `--disable-worker`                               | (empty)                                          | (DEPRECATED) Disable the embedded worker for the GPUStack server. New installations will not have the embedded worker by default. Use '--enable-worker' to enable the embedded worker if needed. If neither flag is set, for backward compatibility, the embedded worker will be enabled by default for legacy installations prior to v2.0.1. |
 | `--enable-worker`                                | `False`                                          | Enable the embedded worker for the GPUStack server.                                                                                                                                                                                                                                                                                           |
 | `--bootstrap-password` value                     | Auto-generated.                                  | Initial password for the default admin user.                                                                                                                                                                                                                                                                                                  |
+| `--jwt-token-expire-minutes` value               | `120`                                            | Lifetime of each Web UI session token and its cookie, in minutes. Must be greater than zero. Active sessions can renew before expiration. Can also be set with `GPUSTACK_JWT_TOKEN_EXPIRE_MINUTES`. |
+| `--log-stream-timeout-seconds` value             | `GPUSTACK_PROXY_TIMEOUT_SECONDS` (`1800` by default) | Total time in seconds for a live log request to a worker (model instances, benchmarks, and KV Cache). Use `0` to disable the total timeout. Can also be set with `GPUSTACK_LOG_STREAM_TIMEOUT_SECONDS`. |
 | `--database-url` value                           | Embedded PostgreSQL.                             | URL of the database. Supports PostgreSQL 13.0+, MySQL 8.0.36+, and compatible databases such as openGauss (postgresql:// scheme) and OceanBase (mysql:// scheme). Example: postgresql://username:password@host:port/dbname or mysql://username:password@host:port/dbname                                                                      |
 | `--redis-url` value                              | None                                             | URL of an external Redis for features that need shared, fast state (the LB plugin's shared-state backend). Format: `redis://host[:port][/db]`. Credentials are refused (they would be materialized in the gateway CR) and TLS (`rediss://`) is not supported.                                                                                |
 | `--ssl-keyfile` value                            | (empty)                                          | Path to the SSL key file.                                                                                                                                                                                                                                                                                                                     |
@@ -192,6 +194,9 @@ metrics_port: 10161
 disable_metrics: false
 enable_worker: false
 bootstrap_password: your_admin_password
+jwt_token_expire_minutes: 120
+# If omitted, the log stream timeout inherits GPUSTACK_PROXY_TIMEOUT_SECONDS.
+# log_stream_timeout_seconds: 1800
 database_url: postgresql://username:password@host:port/dbname
 # database_url: mysql://username:password@host:port/dbname
 ssl_keyfile: /path/to/keyfile

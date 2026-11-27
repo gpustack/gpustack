@@ -7,7 +7,6 @@ from sqlalchemy.orm import selectinload
 from fastapi import APIRouter, Request, status
 from fastapi.responses import RedirectResponse, StreamingResponse
 
-from gpustack import envs
 from gpustack.policies.worker_filters.label_matching_filter import label_matching
 from gpustack.api.streaming import tenant_streaming
 from gpustack.api.exceptions import (
@@ -460,7 +459,6 @@ async def _proxy_instance_logs(
 ):
     """Proxy the instance's container logs from its worker. The worker
     resolves the workload name from the (service, instance) id pair."""
-    timeout = aiohttp.ClientTimeout(total=envs.PROXY_TIMEOUT, sock_connect=5)
     params = {
         "tail": log_options.tail,
         "follow": log_options.follow,
@@ -475,7 +473,12 @@ async def _proxy_instance_logs(
                 message="offset cannot be combined with tail or follow"
             )
         params.update(offset=log_options.offset, limit=log_options.limit)
-    if not log_options.follow:
+    if log_options.follow:
+        timeout = aiohttp.ClientTimeout(
+            total=request.app.state.server_config.log_stream_timeout_seconds or None,
+            sock_connect=5,
+        )
+    else:
         # A bounded-memory download can outlast a total request deadline.
         timeout = aiohttp.ClientTimeout(total=None, sock_connect=5, sock_read=120)
 
