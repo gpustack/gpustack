@@ -1,7 +1,6 @@
 import asyncio
 import base64
 import json
-import re
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -365,7 +364,7 @@ async def test_list_searches_for_candidates_then_reads_request_branches():
     assert search.args == ("http://tempo/api/search",)
     assert lookup.args == (f"http://tempo/api/traces/{_TRACE}",)
     params = search.kwargs["params"]
-    assert params["limit"] == 10
+    assert params["limit"] == 11
     assert params["spss"] == 1
     assert "most_recent=true" in params["q"]
     assert "select(" not in params["q"]
@@ -780,20 +779,7 @@ async def test_exact_trace_does_not_advance_past_unread_request_matches(monkeypa
     span["startTimeUnixNano"] = str(100 * _NS)
     requests["abc"] = [engine]
     position = TracePagePosition(start=1, end=200, before=200)
-    client = MagicMock()
-
-    def get(url, **kwargs):
-        if not url.endswith("/api/search"):
-            return _tempo_client([], requests).get(url, **kwargs)
-        traces = [
-            match
-            for match in matches
-            if match["traceID"] not in position.seen
-            and int(match["startTimeUnixNano"]) < kwargs["params"]["end"] * _NS
-        ]
-        return _client({"traces": traces[:2]}).get(url, **kwargs)
-
-    client.get.side_effect = get
+    client = _paged_tempo_client(matches, requests)
     options = dict(
         page_size=2,
         identifier=identifier,
@@ -840,7 +826,8 @@ async def test_expired_identifier_candidate_still_advances_the_cursor(monkeypatc
 
     assert page.items == []
     assert page.next_cursor is None
-    assert position.seen == [_TRACE]
+    assert position.boundary == (100 * _NS, _TRACE)
+    assert position.skipped == 1
 
 
 def _candidate(trace_number, started):
@@ -871,12 +858,10 @@ def _paged_tempo_client(candidates, traces):
         if not url.endswith("/api/search"):
             return details(url, **kwargs)
         params = kwargs["params"]
-        seen = set(re.findall(r'trace:id!="([0-9a-f]+)"', params["q"]))
         matches = [
             trace
             for trace in candidates
-            if trace["traceID"] not in seen
-            and params["start"] * _NS
+            if params["start"] * _NS
             <= int(trace["startTimeUnixNano"])
             < params["end"] * _NS
         ]
@@ -927,13 +912,10 @@ async def test_foreign_trace_cannot_advance_the_model_cursor(monkeypatch, lookup
     )
 
     assert [row.trace_id for row in page.items] == ["1"]
-    assert page.next_cursor
-    next_position = TracePagePosition.model_validate_json(
-        base64.urlsafe_b64decode(page.next_cursor)
-    )
-    assert next_position.before == 103
-    assert next_position.seen == ["1"]
-    assert next_position.partial is None
+    assert page.next_cursor is None
+    assert position.before == 103
+    assert position.boundary == (102 * _NS, "1")
+    assert position.partial is None
 
 
 @pytest.mark.asyncio
@@ -973,23 +955,27 @@ async def test_filtered_page_scans_more_candidates_within_budget(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("count", [101, 240])
-async def test_pages_preserve_traces_in_the_boundary_second(count):
-    candidates = [_candidate(i, 102 * _NS + 10_000 * i) for i in range(count, 0, -1)]
+@pytest.mark.parametrize(
+    "count, tied, legacy", [(501, False, 0), (501, False, 240), (251, True, 0)]
+)
+async def test_pages_preserve_traces_in_the_boundary_second(count, tied, legacy):
+    candidates = [
+        _candidate(i, 102 * _NS + (0 if tied else 10_000 * i))
+        for i in range(count, 0, -1)
+    ]
     candidates.append(_candidate(count + 1, 101 * _NS))
-    position = TracePagePosition(start=1, end=200, before=200)
+    client = _paged_tempo_client(
+        candidates,
+        {trace["traceID"]: _candidate_batches(trace) for trace in candidates},
+    )
+    position = TracePagePosition(
+        start=1,
+        end=200,
+        before=103 if legacy else 200,
+        seen=[trace["traceID"] for trace in candidates[:legacy]],
+    )
     seen = []
-    for _ in range(count // 10 + 1):
-        matching = [
-            trace
-            for trace in candidates
-            if trace["traceID"] not in position.seen
-            and int(trace["startTimeUnixNano"]) < position.before * _NS
-        ][:10]
-        client = _tempo_client(
-            matching,
-            {trace["traceID"]: _candidate_batches(trace) for trace in matching},
-        )
+    for _ in range((count - legacy + 1) // 10 + 1):
         page = await search_request_trace_page(
             client,
             "http://tempo",
@@ -1004,19 +990,38 @@ async def test_pages_preserve_traces_in_the_boundary_second(count):
         seen.extend(row.trace_id for row in page.items)
         if not page.next_cursor:
             break
+        if not legacy:
+            assert len(page.next_cursor) < 256
         position = TracePagePosition.model_validate_json(
             base64.urlsafe_b64decode(page.next_cursor)
         )
         assert position.end == 200
         assert position.before == 103
 
-    expected = [f"{i:x}" for i in range(count, 0, -1)] + [f"{count + 1:x}"]
+    expected = [
+        trace["traceID"]
+        for trace in sorted(
+            candidates[legacy:],
+            key=lambda trace: (int(trace["startTimeUnixNano"]), trace["traceID"]),
+            reverse=True,
+        )
+    ]
     assert seen == expected
+    assert page.next_cursor is None
+    assert not position.seen
+    detail_lookups = []
+    for call in client.get.call_args_list:
+        url = call.args[0]
+        if url.endswith("/api/search"):
+            assert "trace:id!=" not in call.kwargs["params"]["q"]
+        else:
+            detail_lookups.append(url.rsplit("/", 1)[-1])
+    assert detail_lookups == expected
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("competing_traces", [1, 2])
-async def test_pages_resume_partial_trace_before_late_candidates(
+@pytest.mark.parametrize("competing_traces", [1, 20])
+async def test_pages_resume_partial_trace_after_late_arrivals(
     monkeypatch, competing_traces
 ):
     monkeypatch.setattr(
@@ -1032,8 +1037,9 @@ async def test_pages_resume_partial_trace_before_late_candidates(
             _attributes(**{"gpustack.request_id": f"old-{index}"})
         )
         older_requests.append(batch)
-    candidates = [old]
-    batches = {"1": older_requests}
+    older = _candidate(2, 101 * _NS)
+    candidates = [old, older]
+    batches = {"1": older_requests, "2": _candidate_batches(older)}
     client = _paged_tempo_client(candidates, batches)
     position = TracePagePosition(start=1, end=200, before=200)
     options = dict(
@@ -1044,8 +1050,9 @@ async def test_pages_resume_partial_trace_before_late_candidates(
     )
     assert [row.request_id for row in page.items] == ["old-2"]
 
+    candidates.remove(old)
     for index in range(competing_traces):
-        late_trace = _candidate(index + 2, 102 * _NS + 500_000_000 - index)
+        late_trace = _candidate(index + 3, 102 * _NS + 500_000_000 - index)
         candidates.insert(index, late_trace)
         batches[late_trace["traceID"]] = _candidate_batches(late_trace)
 
@@ -1058,18 +1065,13 @@ async def test_pages_resume_partial_trace_before_late_candidates(
         )
         assert [row.request_id for row in page.items] == [expected]
 
-    seen = []
-    for _ in range(competing_traces + 1):
-        if page.next_cursor is None:
-            break
-        position = TracePagePosition.model_validate_json(
-            base64.urlsafe_b64decode(page.next_cursor)
-        )
-        page = await search_request_trace_page(
-            client, "http://tempo", 42, position=position, **options
-        )
-        seen.extend(row.trace_id for row in page.items)
-    assert seen == [str(index + 2) for index in range(competing_traces)]
+    position = TracePagePosition.model_validate_json(
+        base64.urlsafe_b64decode(page.next_cursor)
+    )
+    page = await search_request_trace_page(
+        client, "http://tempo", 42, position=position, **options
+    )
+    assert [row.trace_id for row in page.items] == ["2"]
     assert page.next_cursor is None
 
 
@@ -1098,7 +1100,7 @@ async def test_large_page_searches_once_for_its_candidates():
         for call in client.get.call_args_list
         if call.args[0].endswith("/api/search")
     ]
-    assert searches == [50]
+    assert searches == [51]
 
 
 @pytest.mark.asyncio
@@ -1157,7 +1159,8 @@ async def test_timeout_returns_only_finished_batches_and_resumes_after_them(
     position = TracePagePosition.model_validate_json(
         base64.urlsafe_b64decode(first.next_cursor)
     )
-    assert position.seen == finished
+    assert position.boundary == (102 * _NS + 16, finished[-1])
+    assert position.skipped == len(finished)
 
     monkeypatch.setattr(request_traces, "_exact_trace_candidate", lookup)
     second = await search_request_trace_page(
@@ -1253,3 +1256,37 @@ async def test_legacy_v1_openai_paths_are_preserved_for_platform_and_router_span
         ("router", "/v1-openai/chat/completions"),
         ("platform", "/v1-openai/chat/completions"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_boundary_cursor_normalizes_uppercase_and_leading_zeros():
+    newer = _candidate(11, 102 * _NS)
+    boundary_trace = _candidate(10, 102 * _NS)
+    older = _candidate(9, 102 * _NS)
+    candidates = [newer, boundary_trace, older]
+    client = _paged_tempo_client(
+        candidates,
+        {trace["traceID"]: _candidate_batches(trace) for trace in candidates},
+    )
+    position = TracePagePosition(
+        start=1,
+        end=200,
+        before=103,
+        boundary=(102 * _NS, "0000000000000000000000000000000A"),
+        skipped=2,
+    )
+
+    page = await search_request_trace_page(
+        client,
+        "http://tempo",
+        42,
+        position=position,
+        page_size=10,
+        identifier=None,
+        outcome=None,
+        instance_id=None,
+        no_engine=False,
+    )
+
+    assert [row.trace_id for row in page.items] == ["9"]
+    assert page.next_cursor is None

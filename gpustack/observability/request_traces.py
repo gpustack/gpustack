@@ -54,7 +54,9 @@ _SEARCH_BATCH_SIZE = 100
 _IDENTIFIER_SEARCH_BATCH_SIZE = 10
 _TRACE_DETAIL_BATCH_SIZE = 10
 _TEMPO_QUERY_TIMEOUT = 8
-_CURSOR_ID_LIMIT = 240
+# Bound metadata overfetch independently of the per-page trace detail budget.
+_MAX_SEARCH_LIMIT = 10_000
+_LEGACY_CURSOR_ID_LIMIT = 240
 _TRACE_ID_BYTES = 16
 _NANOSECONDS_PER_SECOND = 1_000_000_000
 
@@ -116,13 +118,17 @@ class TracePagePosition(BaseModel):
     start: int = Field(ge=0)
     end: int
     before: int
-    seen: List[_TraceId] = Field(default_factory=list, max_length=_CURSOR_ID_LIMIT)
+    boundary: Optional[Tuple[int, _TraceId]] = None
+    skipped: int = Field(default=0, ge=0)
+    seen: List[_TraceId] = Field(
+        default_factory=list, max_length=_LEGACY_CURSOR_ID_LIMIT
+    )
     partial: Optional[_TraceId] = None
     offset: int = Field(default=0, ge=0)
 
     @field_serializer("seen", when_used="json")
     def _pack_seen(self, seen: List[str]) -> str:
-        # Fixed-width binary IDs keep the cursor small even in a dense second.
+        # Keep legacy exclusions compact until the cursor leaves their second.
         packed = b"".join(
             bytes.fromhex(trace_id.zfill(_TRACE_ID_BYTES * 2)) for trace_id in seen
         )
@@ -137,7 +143,7 @@ class TracePagePosition(BaseModel):
         packed = base64.b64decode(seen, altchars=b"-_", validate=True)
         if (
             len(packed) % _TRACE_ID_BYTES
-            or len(packed) > _CURSOR_ID_LIMIT * _TRACE_ID_BYTES
+            or len(packed) > _LEGACY_CURSOR_ID_LIMIT * _TRACE_ID_BYTES
         ):
             raise ValueError("Invalid packed trace IDs")
         return [
@@ -146,7 +152,9 @@ class TracePagePosition(BaseModel):
         ]
 
     def encode(self) -> str:
-        return base64.urlsafe_b64encode(self.model_dump_json().encode()).decode()
+        return base64.urlsafe_b64encode(
+            self.model_dump_json(exclude_defaults=True).encode()
+        ).decode()
 
 
 class RequestTraceSpan(BaseModel):
@@ -610,9 +618,7 @@ def _summarize(
     )
 
 
-def _search_query(
-    model_id: int, identifier: Optional[str], seen: Tuple[str, ...] = ()
-) -> str:
+def _search_query(model_id: int, identifier: Optional[str]) -> str:
     direct = f"router outbound.*[|][|]model-{model_id}-.* egress"
     scope = f'{{span.gpustack.model_id={model_id}||name=~"{direct}"}}'
     native_scope = (
@@ -636,9 +642,6 @@ def _search_query(
             f'&&(span.http.route=~"{paths}"||span.url.path=~"{paths}")))}}'
         )
         query = f"({scope}||{native})"
-    if seen:
-        excluded = "&&".join(f'trace:id!="{trace_id}"' for trace_id in seen)
-        query += " | {" + excluded + "}"
     return f"{query} with (most_recent=true)"
 
 
@@ -676,57 +679,103 @@ async def _tempo_get(
         ) from None
 
 
+async def _search_metadata(
+    client: aiohttp.ClientSession,
+    base_url: str,
+    model_id: int,
+    position: TracePagePosition,
+    identifier: Optional[str],
+    limit: int,
+) -> Tuple[Dict[str, dict], Optional[int]]:
+    seen = set(position.seen)
+    # The extra result establishes whether the oldest timestamp group is complete.
+    search_limit = min(position.skipped + len(seen) + limit + 1, _MAX_SEARCH_LIMIT)
+    query = _search_query(model_id, identifier)
+    while True:
+        payload = await _tempo_get(
+            client,
+            f"{base_url}/api/search",
+            {
+                "q": query,
+                "start": position.start,
+                "end": position.before,
+                "limit": search_limit,
+                "spss": 1,
+            },
+        )
+        traces = payload.get("traces") or []
+        # Tempo orders by timestamp only. A full result may contain only part
+        # of its oldest timestamp group, so leave that group for a larger search.
+        cutoff = (
+            min(int(trace["startTimeUnixNano"]) for trace in traces)
+            if len(traces) >= search_limit
+            else None
+        )
+        candidates = {}
+        skipped = 0
+        for trace in traces:
+            started, trace_id = key = _candidate_key(trace)
+            if not trace_id or trace_id in seen:
+                continue
+            consumed = position.boundary is not None and key >= position.boundary
+            skipped += consumed
+            if trace_id == position.partial or (
+                not consumed and (cutoff is None or started > cutoff)
+            ):
+                candidates[trace_id] = {**trace, "traceID": trace_id}
+        if candidates or cutoff is None:
+            position.skipped = skipped
+            return candidates, cutoff
+        # Late arrivals can fill the prefix ahead of the cursor. Only metadata
+        # is fetched again, and the query remains bounded even for forged cursors.
+        if search_limit == _MAX_SEARCH_LIMIT:
+            raise ServiceUnavailableException("Trace query reached the search limit")
+        search_limit = min(search_limit * 2, _MAX_SEARCH_LIMIT)
+
+
 async def _search_candidates(
     client: aiohttp.ClientSession,
     base_url: str,
     model_id: int,
-    start: int,
-    end: int,
+    position: TracePagePosition,
     identifier: Optional[str],
-    seen: Tuple[str, ...],
     *,
     limit: int,
 ) -> Tuple[List[dict], bool]:
-    search = _tempo_get(
-        client,
-        f"{base_url}/api/search",
-        {
-            "q": _search_query(model_id, identifier, seen),
-            "start": start,
-            "end": end,
-            "limit": limit,
-            "spss": 1,
-        },
-    )
+    search = _search_metadata(client, base_url, model_id, position, identifier, limit)
     trace_id = _tempo_trace_id(identifier or "")
-    exact = None
-    if trace_id and trace_id not in seen:
-        payload, exact = await asyncio.gather(
+    if trace_id and trace_id not in position.seen:
+        (candidates, cutoff), exact = await asyncio.gather(
             search,
             _exact_trace_candidate(client, base_url, trace_id, model_id=model_id),
         )
+        if exact is not None:
+            if trace_id in candidates:
+                candidates[trace_id]["detail_spans"] = exact["detail_spans"]
+            else:
+                started, _ = key = _candidate_key(exact)
+                # An exact lookup must respect both the cursor and any
+                # candidates still beyond the search limit.
+                if (
+                    started < position.before * _NANOSECONDS_PER_SECOND
+                    and (cutoff is None or started > cutoff)
+                    and (position.boundary is None or key < position.boundary)
+                ):
+                    candidates[trace_id] = exact
     else:
-        payload = await search
-    try:
-        candidates = payload.get("traces") or []
-        more = len(candidates) >= limit
-        candidates_by_id = {
-            candidate_id: {**trace, "traceID": candidate_id}
-            for trace in candidates
-            if (candidate_id := _tempo_trace_id(trace["traceID"]))
-        }
-        if (
-            exact is not None
-            and exact["startTimeUnixNano"] < end * _NANOSECONDS_PER_SECOND
+        candidates, cutoff = await search
+    partial = position.partial
+    if partial and partial not in candidates and partial not in position.seen:
+        if resumed := await _exact_trace_candidate(
+            client, base_url, partial, model_id=model_id
         ):
-            # Leave an older exact match for the page that reaches it.
-            if not more or _candidate_key(exact) >= min(
-                map(_candidate_key, candidates)
-            ):
-                candidates_by_id[trace_id] = exact
-        return list(candidates_by_id.values()), more
-    except (AttributeError, KeyError, TypeError, ValueError):
-        raise ServiceUnavailableException("Trace query returned invalid data") from None
+            candidates[partial] = resumed
+    ordered = sorted(
+        candidates.values(),
+        key=lambda trace: (trace["traceID"] == partial, _candidate_key(trace)),
+        reverse=True,
+    )
+    return ordered[:limit], cutoff is not None or len(ordered) > limit
 
 
 async def _detail_batches(
@@ -832,17 +881,13 @@ def _page_from_candidates(
 ) -> RequestTracePage:
     cursor = position.encode()
     items: List[RequestTraceRecord] = []
-    # Tempo search takes second-resolution bounds. Exclude consumed candidates
-    # in the overlapping second so advancing the window cannot skip ties.
     partial, offset = position.partial, position.offset
     for trace in candidates:
-        started, trace_id = _candidate_key(trace)
-        if not trace_id or trace_id in position.seen:
-            continue
+        started, trace_id = key = _candidate_key(trace)
         rows = filters.rows(trace)
         if trace_id == partial:
             rows = rows[offset:]
-        else:
+        if trace_id != partial or position.boundary is None:
             before = max(
                 position.start + 1,
                 min(position.before, started // _NANOSECONDS_PER_SECOND + 1),
@@ -850,6 +895,9 @@ def _page_from_candidates(
             if before != position.before:
                 position.before = before
                 position.seen.clear()
+                position.skipped = 0
+            position.boundary = key
+            position.skipped += 1
         remaining = page_size - len(items)
         items.extend(rows[:remaining])
         if len(rows) > remaining:
@@ -857,12 +905,6 @@ def _page_from_candidates(
             position.offset = (offset if trace_id == partial else 0) + remaining
             return RequestTracePage(
                 items=items, cursor=cursor, next_cursor=position.encode()
-            )
-        if len(position.seen) < _CURSOR_ID_LIMIT:
-            position.seen.append(trace_id)
-        else:
-            raise ServiceUnavailableException(
-                "Too many traces in a single second to page"
             )
     position.partial = None
     position.offset = 0
@@ -887,6 +929,9 @@ async def search_request_trace_page(
 ) -> RequestTracePage:
     position.seen = list(filter(None, map(_tempo_trace_id, position.seen)))
     position.partial = _tempo_trace_id(position.partial or "") or None
+    if position.boundary is not None:
+        boundary_id = _tempo_trace_id(position.boundary[1])
+        position.boundary = (position.boundary[0], boundary_id) if boundary_id else None
     filters = _RowFilter(
         model_id,
         position.start,
@@ -909,31 +954,15 @@ async def search_request_trace_page(
                     else max(_TRACE_DETAIL_BATCH_SIZE, page_size - len(items))
                 )
                 limit = min(fetch_size, _SEARCH_BATCH_SIZE - scanned)
-                scanned += limit
                 candidates, more = await _search_candidates(
                     client,
                     base_url,
                     model_id,
-                    position.start,
-                    position.before,
+                    position,
                     identifier,
-                    tuple(position.seen),
                     limit=limit,
                 )
-                partial = position.partial
-                if partial and not any(t["traceID"] == partial for t in candidates):
-                    # A newer candidate can shift the unfinished trace out of search.
-                    if resumed := await _exact_trace_candidate(
-                        client, base_url, partial, model_id=model_id
-                    ):
-                        candidates.append(resumed)
-                candidates.sort(
-                    key=lambda trace: (
-                        trace["traceID"] == partial,
-                        _candidate_key(trace),
-                    ),
-                    reverse=True,
-                )
+                scanned += len(candidates)
                 async for batch, remaining in _detail_batches(
                     client, base_url, candidates
                 ):

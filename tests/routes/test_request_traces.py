@@ -297,7 +297,7 @@ def test_trace_list_defaults_to_a_single_page(trace_client, monkeypatch):
     assert page["cursor"]
     assert page["next_cursor"] is None
     search.assert_awaited_once()
-    assert search.await_args.args[2]["limit"] == 10
+    assert search.await_args.args[2]["limit"] == 11
 
 
 @pytest.mark.parametrize("credentials_available", [True, False])
@@ -463,6 +463,20 @@ def test_dense_trace_cursor_fits_an_8_kib_request_line(trace_client, monkeypatch
     legacy = base64.urlsafe_b64encode(json.dumps(position.model_dump()).encode())
     assert client.get(url, params={"cursor": legacy.decode()}).status_code == 200
     assert query.await_args.kwargs["position"] == position
+
+    keyset = request_traces.TracePagePosition(
+        start=position.start,
+        end=before,
+        before=before,
+        boundary=(before * 1_000_000_000 - 1, "b" * 32),
+        skipped=501,
+        partial="b" * 32,
+        offset=7,
+    )
+    cursor = keyset.encode()
+    assert len(cursor) < 512
+    assert client.get(url, params={"cursor": cursor}).status_code == 200
+    assert query.await_args.kwargs["position"] == keyset
 
 
 @pytest.mark.parametrize("seen", ["!!!!", "YQ==", "A" * 5152])
