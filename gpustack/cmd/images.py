@@ -31,9 +31,9 @@ topograph_version = "v1.0.0"
 mooncake_version = "0.3.13.post1-cpu"
 model_transfer_version = "v0.1.1"
 modelexpress_server_version = "v0.8.0"
-llm_router_version = "v0.5.0"
+llm_router_version = "v0.6.1"
 envoy_version = "distroless-v1.33.2"
-llm_d_router_disagg_sidecar_version = "v0.11.0"
+llm_d_router_disagg_sidecar_version = "v1.0.0"
 python_version = "3.12-alpine"
 
 # Append images used by GPUStack here. The GPUStack image itself is appended
